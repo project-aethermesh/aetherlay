@@ -1,0 +1,39 @@
+{
+  "mainnet": {
+    "llama": {
+      "provider": "llama",
+      "type": "full",
+      "role": "primary",
+      "rpc_url": "https://eth.llamarpc.com"
+    },
+    "drpc": {
+      "provider": "drpc",
+      "type": "full",
+      "role": "fallback",
+      "rpc_url": "https://eth.drpc.org",
+      "ws_url": "wss://eth.drpc.org"
+    },
+    "public_node": {
+      "provider": "public_node",
+      "type": "archive",
+      "role": "fallback",
+      "rpc_url": "https://ethereum-rpc.publicnode.com",
+      "ws_url": "wss://ethereum-rpc.publicnode.com"
+    }
+  },
+  "arbitrum": {
+    "drpc": {
+      "provider": "drpc",
+      "type": "full",
+      "role": "primary",
+      "rpc_url": "https://arbitrum.drpc.org"
+    },
+    "public_node": {
+      "provider": "public_node",
+      "type": "archive",
+      "role": "fallback",
+      "rpc_url": "https://arbitrum-one-rpc.publicnode.com",
+      "ws_url": "wss://arbitrum-one-rpc.publicnode.com"
+    }
+  }
+}

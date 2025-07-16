@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: aetherlay-health-checker
+  namespace: aetherlay
+  labels:
+    app: aetherlay-health-checker
+spec:
+  serviceName: aetherlay-health-checker
+  replicas: 1 # Single instance for health checking
+  selector:
+    matchLabels:
+      app: aetherlay-health-checker
+  template:
+    metadata:
+      labels:
+        app: aetherlay-health-checker
+    spec:
+      containers:
+      - name: health-checker
+        image: ghcr.io/project-aethermesh/aetherlay:health-checker-latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: REDIS_HOST
+          value: "redis-service" # Update with your Redis service name
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASS
+          valueFrom:
+            secretKeyRef:
+              name: redis-secret
+              key: redis-pass
+        - name: STANDALONE_HEALTH_CHECKS
+          value: "true" # Enable standalone health checks
+        - name: HEALTH_CHECK_INTERVAL
+          value: "60" # Check every 60 seconds
+        - name: ALCHEMY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: rpc-api-keys
+              key: alchemy-api-key
+        - name: INFURA_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: rpc-api-keys
+              key: infura-api-key
+        volumeMounts:
+        - name: config-volume
+          mountPath: /root/configs
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "ps aux | grep aetherlay-hc | grep -v grep"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "ps aux | grep aetherlay-hc | grep -v grep"
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config-volume
+        configMap:
+          name: rpc-endpoints-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rpc-endpoints-config
+  namespace: aetherlay
+data:
+  endpoints.json: |
+    {
+      "mainnet": {
+        "infura": {
+          "provider": "infura",
+          "rpc_url": "https://mainnet.infura.io/v3/${INFURA_API_KEY}",
+          "ws_url": "wss://mainnet.infura.io/ws/v3/${INFURA_API_KEY}",
+          "role": "primary",
+          "type": "full",
+          "weight": 1
+        },
+        "alchemy": {
+          "provider": "alchemy",
+          "rpc_url": "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}",
+          "ws_url": "wss://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}",
+          "role": "fallback",
+          "type": "archive",
+          "weight": 2
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rpc-api-keys
+  namespace: aetherlay
+type: Opaque
+data:
+  # Replace this with your base64-encoded API keys
+  # To generate: echo -n "your_key" | base64
+  alchemy-api-key: <base64-encoded-alchemy-api-key>
+  infura-api-key: <base64-encoded-infura-api-key>

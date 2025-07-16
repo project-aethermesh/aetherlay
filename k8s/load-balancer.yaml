@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aetherlay-load-balancer
+  namespace: aetherlay
+  labels:
+    app: aetherlay-load-balancer
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: aetherlay-load-balancer
+  template:
+    metadata:
+      labels:
+        app: aetherlay-load-balancer
+    spec:
+      containers:
+      - name: load-balancer
+        image: ghcr.io/project-aethermesh/aetherlay:load-balancer-latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: REDIS_HOST
+          value: "redis-service" # Update with your Redis service name
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASS
+          valueFrom:
+            secretKeyRef:
+              name: redis-secret
+              key: redis-pass
+        - name: STANDALONE_HEALTH_CHECKS
+          value: "true" # Enable standalone health checks
+        - name: HEALTH_CHECK_INTERVAL
+          value: "0" # Disable integrated health checks
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/configs
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config-volume
+        configMap:
+          name: rpc-endpoints-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aetherlay-service
+  namespace: aetherlay
+  labels:
+    app: aetherlay-load-balancer
+spec:
+  type: ClusterIP # Or LoadBalancer, depending on your setup
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: aetherlay-load-balancer
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: aetherlay-hpa
+  namespace: aetherlay
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: aetherlay-load-balancer
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 90
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 90

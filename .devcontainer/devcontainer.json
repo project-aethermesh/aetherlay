@@ -1,0 +1,23 @@
+{
+	"name": "Aetherlay Development",
+	"dockerComposeFile": "docker-compose.yml",
+	"service": "app",
+	"workspaceFolder": "/workspace",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"golang.go",
+				"ms-azuretools.vscode-docker",
+				"redhat.vscode-yaml"
+			],
+			"settings": {
+				"go.goroot": "/usr/local/go",
+				"go.toolsEnvVars": {
+					"GO111MODULE": "on"
+				}
+			}
+		}
+	},
+	"forwardPorts": [8080],
+	"remoteUser": "root"
+}
