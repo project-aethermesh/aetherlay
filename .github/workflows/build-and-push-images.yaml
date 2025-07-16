@@ -89,11 +89,11 @@ jobs:
           file: ./services/health-checker/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/aetherlay-hc:latest
-            ghcr.io/${{ github.repository }}/aetherlay-hc:${{ needs.setup.outputs.short_sha }}
+            ghcr.io/project-aethermesh/aetherlay/aetherlay-hc:latest
+            ghcr.io/project-aethermesh/aetherlay/aetherlay-hc:${{ needs.setup.outputs.short_sha }}
           labels: |
-            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.url=https://github.com/project-aethermesh/aetherlay
+            org.opencontainers.image.source=https://github.com/project-aethermesh/aetherlay
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
             org.opencontainers.image.vendor="Project Aethermesh"
@@ -137,11 +137,11 @@ jobs:
           file: ./services/load-balancer/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/aetherlay-lb:latest
-            ghcr.io/${{ github.repository }}/aetherlay-lb:${{ needs.setup.outputs.short_sha }}
+            ghcr.io/project-aethermesh/aetherlay/aetherlay-lb:latest
+            ghcr.io/project-aethermesh/aetherlay/aetherlay-lb:${{ needs.setup.outputs.short_sha }}
           labels: |
-            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.url=https://github.com/project-aethermesh/aetherlay
+            org.opencontainers.image.source=https://github.com/project-aethermesh/aetherlay
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
             org.opencontainers.image.vendor="Project Aethermesh"
