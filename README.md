@@ -91,33 +91,54 @@ The load balancer will listen for incoming requests on predefined endpoints that
 
 - `?archive=true` - Request archive node endpoints only
 
-## Health Check Configuration
+## Configuration
+
+### Command Line Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-config` | `configs/endpoints.json` | Path to endpoints configuration file |
+| `-health-check-interval` | `30` | Health check interval in seconds |
+| `-redis-addr` | `localhost:6379` | Redis server address |
+| `-server-port` | `8080` | Port to use for the load balancer / proxy |
+| `-standalone-health-checks` | `true` | Enable standalone health checks |
+
+> **Note:** Command-line flags take precedence over environment variables if both are set.
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ALCHEMY_API_KEY` | - | API key for Alchemy RPC endpoints |
-| `INFURA_API_KEY` | - | API key for Infura RPC endpoints |
+| `ALCHEMY_API_KEY` | - | Example API key for Alchemy RPC endpoints. **Only needed for the example config.** The name must match the variable referenced in your `configs/endpoints.json`, if you need any. |
+| `INFURA_API_KEY` | - | Example API key for Infura RPC endpoints. **Only needed for the example config.** The name must match the variable referenced in your `configs/endpoints.json`, if you need any. |
 | `REDIS_HOST` | `localhost` | Redis server hostname |
 | `REDIS_PORT` | `6379` | Redis server port |
 | `REDIS_PASS` | - | Redis server password (optional) |
+| `EPHEMERAL_CHECKS_INTERVAL` | `30` | Interval in seconds for ephemeral health checks (when HEALTH_CHECK_INTERVAL=0) |
 | `HEALTH_CHECK_INTERVAL` | `30` | Health check interval in seconds |
 | `STANDALONE_HEALTH_CHECKS` | `true` | Enable/disable the standalone mode of the health checker |
 | `ZEROLOG_LEVEL` | `info` | Set the log level for zerolog |
+
+## Health Check Configuration
 
 ### Integrated Health Checks
 
 When `STANDALONE_HEALTH_CHECKS=false`, the load balancer will run integrated health checks using the `HEALTH_CHECK_INTERVAL` setting.
 
-You can also disable health checks altogether by setting `HEALTH_CHECK_INTERVAL` to `0`, which might affect the performance of the proxy but will prevent the service from wasting your RPC credits by constantly running health checks. In this case, health checks will be run in an ad-hoc fashion. For example:
+You can also disable health checks altogether by setting `HEALTH_CHECK_INTERVAL` to `0`, which might affect the performance of the proxy but will prevent the service from wasting your RPC credits by constantly running health checks. In this case, health checks will be run in an ephemeral fashion. For example:
 1. A user sends a request.
 2. The LB tries to proxy that request to RPC endpoint "A" but fails.
 3. 3 things happen at the same time:
    I. The RPC endpoint "A" is marked as unhealthy.
    II. The LB tries to proxy that request to another RPC endpoint.
-   III. An ephemeral health checker starts running to monitor RPC endpoint "A".
+   III. An ephemeral health checker starts running to monitor RPC endpoint "A" at the interval specified by `EPHEMERAL_CHECKS_INTERVAL` (default: 30s).
 4. As soon as RPC endpoint "A" is healthy again, the ephemeral health checker is stopped.
+
+#### Ephemeral Health Checks
+
+- **Trigger**: Only when a request to an endpoint fails and health checks are otherwise disabled.
+- **Interval**: Controlled by the `EPHEMERAL_CHECKS_INTERVAL` environment variable (in seconds).
+- **Behavior**: The system will monitor the failed endpoint at the specified interval and automatically start routing traffic to it as soon as it becomes healthy again.
 
 ### Standalone Health Checker (Recommended)
 

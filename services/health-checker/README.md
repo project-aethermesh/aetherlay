@@ -63,17 +63,6 @@ make k8s-deploy-redis
 make k8s-deploy-hc
 ```
 
-### Command Line Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-config` | `configs/endpoints.json` | Path to endpoints configuration file |
-| `-health-check-interval` | `30` | Health check interval in seconds (overrides `HEALTH_CHECK_INTERVAL` env var) |
-| `-redis-addr` | `localhost:6379` | Redis server address |
-| `-standalone-health-checks` | `true` | Enable standalone health checks (overrides `STANDALONE_HEALTH_CHECKS` env var) |
-
-> **Note:** Command-line flags take precedence over environment variables if both are set.
-
 ### Configuration File
 
 The health checker uses the same configuration format as the load balancer:
@@ -83,19 +72,17 @@ The health checker uses the same configuration format as the load balancer:
   "mainnet": {
     "infura": {
       "provider": "infura",
-      "rpc_url": "https://mainnet.infura.io/v3/YOUR_API_KEY",
-      "ws_url": "wss://mainnet.infura.io/ws/v3/YOUR_API_KEY",
       "role": "primary",
       "type": "full",
-      "weight": 1
+      "rpc_url": "https://mainnet.infura.io/v3/YOUR_API_KEY",
+      "ws_url": "wss://mainnet.infura.io/ws/v3/YOUR_API_KEY"
     },
     "alchemy": {
       "provider": "alchemy",
-      "rpc_url": "https://eth-mainnet.alchemyapi.io/v2/YOUR_API_KEY",
-      "ws_url": "wss://eth-mainnet.alchemyapi.io/v2/YOUR_API_KEY",
       "role": "fallback",
       "type": "full",
-      "weight": 2
+      "rpc_url": "https://eth-mainnet.alchemyapi.io/v2/YOUR_API_KEY",
+      "ws_url": "wss://eth-mainnet.alchemyapi.io/v2/YOUR_API_KEY"
     }
   }
 }
@@ -108,6 +95,12 @@ The health checker uses the same configuration format as the load balancer:
 3. **JSON-RPC Validation**: Sends `eth_blockNumber` requests to validate endpoint health.
 4. **Status Update**: Updates Redis with health status and request counts.
 5. **Logging**: Provides detailed logs for monitoring and debugging.
+
+### Note on Ephemeral Health Checks
+
+- The environment variable `EPHEMERAL_CHECKS_INTERVAL` is only relevant for the load balancer when regular health checks are disabled (`HEALTH_CHECK_INTERVAL=0`).
+- In this mode, the load balancer will use ephemeral health checks to monitor failed endpoints at the specified interval (default: 30s).
+- The standalone health checker will not run if `HEALTH_CHECK_INTERVAL=0`.
 
 ## Redis Data Structure
 
