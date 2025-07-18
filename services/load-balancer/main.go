@@ -85,7 +85,7 @@ func main() {
 
 		log.Info().Int("interval_seconds", *healthCheckInterval).Msg("Starting integrated health check service")
 		go checker.Start(ctx)
-	} else if *standaloneHealthChecks {
+	} else if *standaloneHealthChecks && *healthCheckInterval > 0 {
 		log.Info().Msg("Standalone health checks enabled (STANDALONE_HEALTH_CHECKS=true). Using external health checker service.")
 	}
 
