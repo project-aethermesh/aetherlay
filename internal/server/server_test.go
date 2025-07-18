@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"aetherlay/internal/config"
 	"aetherlay/internal/store"
@@ -38,6 +39,14 @@ func (m *mockRedisClient) GetCombinedRequestCounts(_ context.Context, chain, pro
 }
 
 func (m *mockRedisClient) IncrementRequestCount(_ context.Context, chain, provider string, requestType string) error {
+	return nil
+}
+
+func (m *mockRedisClient) UpdateEndpointStatus(_ context.Context, chain, provider string, status store.EndpointStatus) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := chain + ":" + provider
+	m.statuses[key] = &status
 	return nil
 }
 
@@ -350,4 +359,43 @@ func isNormalWebSocketClosure(err error) bool {
 		return closeErr.Code == websocket.CloseNormalClosure || closeErr.Code == websocket.CloseGoingAway
 	}
 	return false
+}
+
+// Add tests for ephemeral health check logic
+
+func TestEphemeralHealthCheckerLifecycle(t *testing.T) {
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"chainA": {
+				"ep1": config.Endpoint{Provider: "ep1", RPCURL: "http://a", Role: "primary", Type: "full"},
+			},
+		},
+	}
+	redisClient := &mockRedisClient{statuses: map[string]*store.EndpointStatus{}}
+	server := NewServer(cfg, redisClient)
+
+	// Set a short interval for fast test
+	server.SetEphemeralCheckInterval(1 * time.Millisecond)
+
+	// Initially, no ephemeral checkers
+	if n := server.GetActiveEphemeralCheckers(); n != 0 {
+		t.Errorf("Expected 0 ephemeral checkers, got %d", n)
+	}
+
+	// Mark endpoint as unhealthy, should start ephemeral checker
+	server.markEndpointUnhealthy("chainA", "ep1", cfg.Endpoints["chainA"]["ep1"])
+	if n := server.GetActiveEphemeralCheckers(); n != 1 {
+		t.Errorf("Expected 1 ephemeral checker after marking unhealthy, got %d", n)
+	}
+
+	// Simulate endpoint becoming healthy
+	redisClient.mu.Lock()
+	redisClient.statuses["chainA:ep1"] = &store.EndpointStatus{HasHTTP: true, HealthyHTTP: true}
+	redisClient.mu.Unlock()
+
+	// Wait for ephemeral checker to stop
+	time.Sleep(10 * time.Millisecond)
+	if n := server.GetActiveEphemeralCheckers(); n != 0 {
+		t.Errorf("Expected 0 ephemeral checkers after endpoint is healthy, got %d", n)
+	}
 }

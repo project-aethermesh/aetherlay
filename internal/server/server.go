@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"aetherlay/internal/config"
@@ -27,6 +28,11 @@ type Server struct {
 
 	forwardRequest func(w http.ResponseWriter, r *http.Request, targetURL string) error
 	proxyWebSocket func(w http.ResponseWriter, r *http.Request, backendURL string) error
+
+	// Ephemeral health checking
+	ephemeralCheckers map[string]*EphemeralHealthChecker
+	checkerMutex      sync.RWMutex
+	healthCheckInterval time.Duration
 }
 
 // NewServer creates a new server instance
@@ -35,6 +41,8 @@ func NewServer(cfg *config.Config, redisClient store.RedisClientIface) *Server {
 		config:      cfg,
 		redisClient: redisClient,
 		router:      mux.NewRouter(),
+		ephemeralCheckers: make(map[string]*EphemeralHealthChecker),
+		healthCheckInterval: 30 * time.Second, // Default interval for ephemeral checks
 	}
 
 	s.forwardRequest = s.defaultForwardRequest
@@ -78,7 +86,10 @@ func (s *Server) Shutdown() error {
 // handleHealthCheck handles the health check endpoint
 func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "healthy",
+		"ephemeral_checkers": s.GetActiveEphemeralCheckers(),
+	})
 }
 
 // handleChainRequest creates a handler for a specific chain
@@ -104,6 +115,40 @@ func (s *Server) handleChainRequest(chain string) http.HandlerFunc {
 		// Forward the request
 		if err := s.forwardRequest(w, r, endpoint.RPCURL); err != nil {
 			log.Error().Err(err).Str("endpoint", endpoint.RPCURL).Msg("Failed to forward request")
+			
+			// Mark endpoint as unhealthy and start ephemeral health checker
+			s.markEndpointUnhealthy(chain, endpoint.Provider, *endpoint)
+			
+			// Try to find another endpoint and retry
+			endpoints = s.getAvailableEndpoints(chain, archive, false)
+			if len(endpoints) > 0 {
+				// Remove the failed endpoint from the list
+				var availableEndpoints []config.Endpoint
+				for _, ep := range endpoints {
+					if ep.Provider != endpoint.Provider {
+						availableEndpoints = append(availableEndpoints, ep)
+					}
+				}
+				
+				if len(availableEndpoints) > 0 {
+					// Try with another endpoint
+					newEndpoint := s.selectBestEndpoint(chain, availableEndpoints)
+					if newEndpoint != nil {
+						log.Info().Str("chain", chain).Str("provider", newEndpoint.Provider).Msg("Retrying with different endpoint")
+						if err := s.forwardRequest(w, r, newEndpoint.RPCURL); err != nil {
+							log.Error().Err(err).Str("endpoint", newEndpoint.RPCURL).Msg("Failed to forward request to backup endpoint")
+							http.Error(w, "Failed to forward request", http.StatusBadGateway)
+							return
+						}
+						// Increment request count for successful retry
+						if err := s.redisClient.IncrementRequestCount(r.Context(), chain, newEndpoint.Provider, "proxy_requests"); err != nil {
+							log.Error().Err(err).Msg("Failed to increment request count")
+						}
+						return
+					}
+				}
+			}
+			
 			http.Error(w, "Failed to forward request", http.StatusBadGateway)
 			return
 		}
@@ -150,6 +195,40 @@ func (s *Server) handleChainWebSocket(chain string) http.HandlerFunc {
 					}
 				}
 				log.Error().Err(err).Str("endpoint", endpoint.WSURL).Msg("Failed to proxy WebSocket")
+				
+				// Mark endpoint as unhealthy and start ephemeral health checker
+				s.markEndpointUnhealthy(chain, endpoint.Provider, *endpoint)
+				
+				// Try to find another endpoint and retry
+				endpoints = s.getAvailableEndpoints(chain, archive, true)
+				if len(endpoints) > 0 {
+					// Remove the failed endpoint from the list
+					var availableEndpoints []config.Endpoint
+					for _, ep := range endpoints {
+						if ep.Provider != endpoint.Provider {
+							availableEndpoints = append(availableEndpoints, ep)
+						}
+					}
+					
+					if len(availableEndpoints) > 0 {
+						// Try with another endpoint
+						newEndpoint := s.selectBestEndpoint(chain, availableEndpoints)
+						if newEndpoint != nil && newEndpoint.WSURL != "" {
+							log.Info().Str("chain", chain).Str("provider", newEndpoint.Provider).Msg("Retrying WebSocket with different endpoint")
+							if err := s.proxyWebSocket(w, r, newEndpoint.WSURL); err != nil {
+								log.Error().Err(err).Str("endpoint", newEndpoint.WSURL).Msg("Failed to proxy WebSocket to backup endpoint")
+								http.Error(w, "Failed to proxy WebSocket", http.StatusBadGateway)
+								return
+							}
+							// Increment request count for successful retry
+							if err := s.redisClient.IncrementRequestCount(r.Context(), chain, newEndpoint.Provider, "proxy_requests"); err != nil {
+								log.Error().Err(err).Msg("Failed to increment WebSocket request count")
+							}
+							return
+						}
+					}
+				}
+				
 				http.Error(w, "Failed to proxy WebSocket", http.StatusBadGateway)
 				return
 			}

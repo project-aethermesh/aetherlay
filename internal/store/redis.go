@@ -56,6 +56,7 @@ func NewEndpointStatus() EndpointStatus {
 // Only include methods actually used by the server.
 type RedisClientIface interface {
 	GetEndpointStatus(ctx context.Context, chain, endpoint string) (*EndpointStatus, error)
+	UpdateEndpointStatus(ctx context.Context, chain, endpoint string, status EndpointStatus) error
 	IncrementRequestCount(ctx context.Context, chain, endpoint string, requestType string) error
 	GetCombinedRequestCounts(ctx context.Context, chain, endpoint string) (int64, int64, int64, error)
 }
