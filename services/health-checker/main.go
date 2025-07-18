@@ -48,13 +48,13 @@ func main() {
 
 	// If HEALTH_CHECK_INTERVAL == 0, do not run the standalone health checker, only ephemeral checks should run
 	if *healthCheckInterval == 0 {
-		log.Info().Msg("HEALTH_CHECK_INTERVAL=0 detected. Standalone health checker will not run, only ephemeral checks will run when needed.")
+		log.Warn().Msg("HEALTH_CHECK_INTERVAL=0 detected. Standalone health checker will not run, only ephemeral checks will run when needed.")
 		return
 	}
 
 	// Check if standalone health checks are enabled
 	if !*standaloneHealthChecks {
-		log.Info().Msg("Standalone health checks disabled (STANDALONE_HEALTH_CHECKS=false). Exiting.")
+		log.Warn().Msg("Standalone health checks disabled (STANDALONE_HEALTH_CHECKS=false). Exiting.")
 		return
 	}
 
