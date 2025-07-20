@@ -165,6 +165,8 @@ Contributions are welcome! Please submit a pull request or open an issue for any
 
 ## License
 
-This project is licensed under the Business Source License 1.1. See the LICENSE file for more details.
+This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 
-**Important**: This license allows free use for non-commercial purposes (personal use, educational purposes, non-profit organizations, open source projects, etc.) but requires a commercial license for commercial use. For commercial licensing inquiries, please send an email to [aetherlay@projectaethermesh.com](mailto:aetherlay@projectaethermesh.com).
+You may use, modify, and distribute this software under the terms of the AGPL-3.0. See the LICENSE file for details.
+
+**TL;DR:** The AGPL-3.0 ensures that all changes and derivative works must also be licensed under AGPL-3.0, and that **proper attribution is maintained**. No one may claim this code as their own proprietary work. The main goal of this project is to serve the Web3 community as a whole.
