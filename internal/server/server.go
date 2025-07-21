@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"aetherlay/internal/config"
@@ -28,11 +27,6 @@ type Server struct {
 
 	forwardRequest func(w http.ResponseWriter, r *http.Request, targetURL string) error
 	proxyWebSocket func(w http.ResponseWriter, r *http.Request, backendURL string) error
-
-	// Ephemeral health checking
-	ephemeralCheckers map[string]*EphemeralHealthChecker
-	checkerMutex      sync.RWMutex
-	healthCheckInterval time.Duration
 }
 
 // NewServer creates a new server instance
@@ -41,8 +35,6 @@ func NewServer(cfg *config.Config, redisClient store.RedisClientIface) *Server {
 		config:      cfg,
 		redisClient: redisClient,
 		router:      mux.NewRouter(),
-		ephemeralCheckers: make(map[string]*EphemeralHealthChecker),
-		healthCheckInterval: 30 * time.Second, // Default interval for ephemeral checks
 	}
 
 	s.forwardRequest = s.defaultForwardRequest
@@ -88,7 +80,6 @@ func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "healthy",
-		"ephemeral_checkers": s.GetActiveEphemeralCheckers(),
 	})
 }
 
@@ -115,10 +106,7 @@ func (s *Server) handleChainRequest(chain string) http.HandlerFunc {
 		// Forward the request
 		if err := s.forwardRequest(w, r, endpoint.RPCURL); err != nil {
 			log.Error().Err(err).Str("endpoint", endpoint.RPCURL).Msg("Failed to forward request")
-			
-			// Mark endpoint as unhealthy and start ephemeral health checker
-			s.markEndpointUnhealthy(chain, endpoint.Provider, *endpoint)
-			
+
 			// Try to find another endpoint and retry
 			endpoints = s.getAvailableEndpoints(chain, archive, false)
 			if len(endpoints) > 0 {
@@ -129,7 +117,7 @@ func (s *Server) handleChainRequest(chain string) http.HandlerFunc {
 						availableEndpoints = append(availableEndpoints, ep)
 					}
 				}
-				
+
 				if len(availableEndpoints) > 0 {
 					// Try with another endpoint
 					newEndpoint := s.selectBestEndpoint(chain, availableEndpoints)
@@ -148,7 +136,7 @@ func (s *Server) handleChainRequest(chain string) http.HandlerFunc {
 					}
 				}
 			}
-			
+
 			http.Error(w, "Failed to forward request", http.StatusBadGateway)
 			return
 		}
@@ -195,10 +183,7 @@ func (s *Server) handleChainWebSocket(chain string) http.HandlerFunc {
 					}
 				}
 				log.Error().Err(err).Str("endpoint", endpoint.WSURL).Msg("Failed to proxy WebSocket")
-				
-				// Mark endpoint as unhealthy and start ephemeral health checker
-				s.markEndpointUnhealthy(chain, endpoint.Provider, *endpoint)
-				
+
 				// Try to find another endpoint and retry
 				endpoints = s.getAvailableEndpoints(chain, archive, true)
 				if len(endpoints) > 0 {
@@ -209,7 +194,7 @@ func (s *Server) handleChainWebSocket(chain string) http.HandlerFunc {
 							availableEndpoints = append(availableEndpoints, ep)
 						}
 					}
-					
+
 					if len(availableEndpoints) > 0 {
 						// Try with another endpoint
 						newEndpoint := s.selectBestEndpoint(chain, availableEndpoints)
@@ -228,7 +213,7 @@ func (s *Server) handleChainWebSocket(chain string) http.HandlerFunc {
 						}
 					}
 				}
-				
+
 				http.Error(w, "Failed to proxy WebSocket", http.StatusBadGateway)
 				return
 			}
@@ -248,7 +233,8 @@ func isWebSocketUpgrade(r *http.Request) bool {
 	return containsToken(conn, "upgrade") && containsToken(upg, "websocket")
 }
 
-// containsToken checks if a comma-separated header contains a token (case-insensitive)
+// containsToken checks if a comma-separated header contains a token (case-insensitive, exact match).
+// It splits the header value, trims whitespace, and compares each token to the target using equalFold.
 func containsToken(headerVal, token string) bool {
 	for _, part := range splitAndTrim(headerVal) {
 		if len(part) == len(token) && equalFold(part, token) {
@@ -258,6 +244,7 @@ func containsToken(headerVal, token string) bool {
 	return false
 }
 
+// splitAndTrim splits a comma-separated string and trims whitespace from each part.
 func splitAndTrim(s string) []string {
 	parts := strings.Split(s, ",")
 	for i := range parts {
@@ -266,18 +253,23 @@ func splitAndTrim(s string) []string {
 	return parts
 }
 
+// equalFold compares two ASCII strings for equality, ignoring case, without allocating new strings.
+// It works by converting any uppercase ASCII letter to lowercase using arithmetic on their byte values.
+// For example, 'B' (66) becomes 'b' (98) by adding 32 to it, which is the value of 'a' minus 'A'.
 func equalFold(a, b string) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for i := 0; i < len(a); i++ {
 		ca, cb := a[i], b[i]
+		// Convert uppercase ASCII to lowercase
 		if ca >= 'A' && ca <= 'Z' {
 			ca += 'a' - 'A'
 		}
 		if cb >= 'A' && cb <= 'Z' {
 			cb += 'a' - 'A'
 		}
+		// Compare 2 lowercase letters
 		if ca != cb {
 			return false
 		}
@@ -356,7 +348,42 @@ func (s *Server) selectBestEndpoint(chain string, endpoints []config.Endpoint) *
 	return bestEndpoint
 }
 
-// forwardRequest forwards the request to the target endpoint
+// markEndpointUnhealthyProtocol marks the given endpoint as unhealthy for the specified protocol ("http" or "ws") in Redis.
+func (s *Server) markEndpointUnhealthyProtocol(chain, provider, protocol string) {
+	status, err := s.redisClient.GetEndpointStatus(context.Background(), chain, provider)
+	if err != nil {
+		log.Error().Err(err).Str("chain", chain).Str("provider", provider).Str("protocol", protocol).Msg("Failed to get endpoint status to mark unhealthy")
+		return
+	}
+	switch protocol {
+	case "http":
+		status.HealthyHTTP = false
+	case "ws":
+		status.HealthyWS = false
+	default:
+		log.Warn().Str("protocol", protocol).Msg("Unknown protocol for marking unhealthy")
+		return
+	}
+	if err := s.redisClient.UpdateEndpointStatus(context.Background(), chain, provider, *status); err != nil {
+		log.Error().Err(err).Str("chain", chain).Str("provider", provider).Str("protocol", protocol).Msg("Failed to update endpoint status to unhealthy")
+	} else {
+		log.Info().Str("chain", chain).Str("provider", provider).Str("protocol", protocol).Msg("Marked endpoint as unhealthy")
+	}
+}
+
+// findChainAndProviderByURL searches the config for an endpoint matching the given URL (RPCURL or WSURL) and returns the chain and provider.
+func (s *Server) findChainAndProviderByURL(url string) (chain string, provider string, found bool) {
+	for chainName, endpoints := range s.config.Endpoints {
+		for providerName, endpoint := range endpoints {
+			if endpoint.RPCURL == url || endpoint.WSURL == url {
+				return chainName, providerName, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// defaultForwardRequest forwards the request to the target endpoint
 func (s *Server) defaultForwardRequest(w http.ResponseWriter, r *http.Request, targetURL string) error {
 	// Create a new request
 	req, err := http.NewRequest(r.Method, targetURL, r.Body)
@@ -375,6 +402,11 @@ func (s *Server) defaultForwardRequest(w http.ResponseWriter, r *http.Request, t
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		if chain, provider, found := s.findChainAndProviderByURL(targetURL); found {
+			s.markEndpointUnhealthyProtocol(chain, provider, "http")
+		} else {
+			log.Warn().Str("url", targetURL).Msg("Failed to find chain and provider for failed HTTP endpoint URL, cannot mark it as unhealthy")
+		}
 		return err
 	}
 	defer resp.Body.Close()
@@ -394,7 +426,20 @@ func (s *Server) defaultForwardRequest(w http.ResponseWriter, r *http.Request, t
 	return err
 }
 
-// proxyWebSocket proxies a WebSocket connection between the client and the backend
+// proxyWebSocketCopy copies messages from src to dst
+func proxyWebSocketCopy(src, dst *websocket.Conn) error {
+	for {
+		msgType, msg, err := src.ReadMessage()
+		if err != nil {
+			return err
+		}
+		if err := dst.WriteMessage(msgType, msg); err != nil {
+			return err
+		}
+	}
+}
+
+// defaultProxyWebSocket proxies a WebSocket connection between the client and the backend
 func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, backendURL string) error {
 	// Upgrade the incoming request to a WebSocket
 	var upgrader = websocket.Upgrader{
@@ -410,6 +455,11 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 	// Connect to the backend WebSocket
 	backendConn, _, err := websocket.DefaultDialer.Dial(backendURL, nil)
 	if err != nil {
+		if chain, provider, found := s.findChainAndProviderByURL(backendURL); found {
+			s.markEndpointUnhealthyProtocol(chain, provider, "ws")
+		} else {
+			log.Warn().Str("url", backendURL).Msg("Failed to find chain and provider for failed WS endpoint URL, cannot mark it as unhealthy.")
+		}
 		return err
 	}
 	defer backendConn.Close()
@@ -427,33 +477,18 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 	// Wait for one direction to fail/close
 	err = <-errc
 
-	// Check if this is a normal WebSocket closure (close codes 1000 and 1001)
+	// Mark endpoint as unhealthy for WS if error is not a normal closure
 	if err != nil {
 		if closeErr, ok := err.(*websocket.CloseError); ok {
 			if closeErr.Code == websocket.CloseNormalClosure || closeErr.Code == websocket.CloseGoingAway {
-				// This is a normal closure, not an error
-				log.Debug().
-					Int("close_code", closeErr.Code).
-					Str("close_text", closeErr.Text).
-					Str("endpoint", helpers.RedactAPIKey(backendURL)).
-					Msg("WebSocket connection closed normally")
+				log.Debug().Int("close_code", closeErr.Code).Str("close_text", closeErr.Text).Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket connection closed normally")
 				return nil
 			}
+		}
+		if chain, provider, found := s.findChainAndProviderByURL(backendURL); found {
+			s.markEndpointUnhealthyProtocol(chain, provider, "ws")
 		}
 	}
 
 	return err
-}
-
-// proxyWebSocketCopy copies messages from src to dst
-func proxyWebSocketCopy(src, dst *websocket.Conn) error {
-	for {
-		msgType, msg, err := src.ReadMessage()
-		if err != nil {
-			return err
-		}
-		if err := dst.WriteMessage(msgType, msg); err != nil {
-			return err
-		}
-	}
 }

@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
-	"time"
 
 	"aetherlay/internal/config"
 	"aetherlay/internal/store"
@@ -290,6 +289,8 @@ func TestWSSelection_NoFallbackAvailable(t *testing.T) {
 	req := httptest.NewRequest("GET", "/chainB", nil)
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==") // "the sample nonce" in base64, valid length
 	w := httptest.NewRecorder()
 	server.router.ServeHTTP(w, req)
 
@@ -361,41 +362,52 @@ func isNormalWebSocketClosure(err error) bool {
 	return false
 }
 
-// Add tests for ephemeral health check logic
-
-func TestEphemeralHealthCheckerLifecycle(t *testing.T) {
+func TestMarkEndpointUnhealthy_HTTP(t *testing.T) {
 	cfg := &config.Config{
 		Endpoints: map[string]config.ChainEndpoints{
 			"chainA": {
-				"ep1": config.Endpoint{Provider: "ep1", RPCURL: "http://a", Role: "primary", Type: "full"},
+				"ep1": config.Endpoint{Provider: "ep1", RPCURL: "http://fail", Role: "primary", Type: "full"},
 			},
 		},
 	}
-	redisClient := &mockRedisClient{statuses: map[string]*store.EndpointStatus{}}
+	redisClient := &mockRedisClient{statuses: map[string]*store.EndpointStatus{
+		"chainA:ep1": {HasHTTP: true, HealthyHTTP: true},
+	}}
 	server := NewServer(cfg, redisClient)
 
-	// Set a short interval for fast test
-	server.SetEphemeralCheckInterval(1 * time.Millisecond)
-
-	// Initially, no ephemeral checkers
-	if n := server.GetActiveEphemeralCheckers(); n != 0 {
-		t.Errorf("Expected 0 ephemeral checkers, got %d", n)
+	// Simulate a failed HTTP request
+	err := server.defaultForwardRequest(httptest.NewRecorder(), httptest.NewRequest("POST", "/chainA", nil), "http://fail")
+	if err == nil {
+		t.Error("Expected error from failed HTTP request")
 	}
 
-	// Mark endpoint as unhealthy, should start ephemeral checker
-	server.markEndpointUnhealthy("chainA", "ep1", cfg.Endpoints["chainA"]["ep1"])
-	if n := server.GetActiveEphemeralCheckers(); n != 1 {
-		t.Errorf("Expected 1 ephemeral checker after marking unhealthy, got %d", n)
+	status, _ := redisClient.GetEndpointStatus(context.Background(), "chainA", "ep1")
+	if status.HealthyHTTP {
+		t.Error("Expected HealthyHTTP to be false after failed request")
 	}
+}
 
-	// Simulate endpoint becoming healthy
-	redisClient.mu.Lock()
-	redisClient.statuses["chainA:ep1"] = &store.EndpointStatus{HasHTTP: true, HealthyHTTP: true}
-	redisClient.mu.Unlock()
+// TestMarkEndpointUnhealthy_WS verifies that the server marks an endpoint as unhealthy for WS.
+// Note: We cannot fully simulate a WebSocket upgrade with httptest.NewRecorder because it does not implement http.Hijacker.
+// Instead, we directly test the marking logic here.
+func TestMarkEndpointUnhealthy_WS(t *testing.T) {
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"chainB": {
+				"ep1": config.Endpoint{Provider: "ep1", WSURL: "ws://fail", Role: "primary", Type: "full"},
+			},
+		},
+	}
+	redisClient := &mockRedisClient{statuses: map[string]*store.EndpointStatus{
+		"chainB:ep1": {HasWS: true, HealthyWS: true},
+	}}
+	server := NewServer(cfg, redisClient)
 
-	// Wait for ephemeral checker to stop
-	time.Sleep(10 * time.Millisecond)
-	if n := server.GetActiveEphemeralCheckers(); n != 0 {
-		t.Errorf("Expected 0 ephemeral checkers after endpoint is healthy, got %d", n)
+	// Directly call the marking logic
+	server.markEndpointUnhealthyProtocol("chainB", "ep1", "ws")
+
+	status, _ := redisClient.GetEndpointStatus(context.Background(), "chainB", "ep1")
+	if status.HealthyWS {
+		t.Error("Expected HealthyWS to be false after marking unhealthy for WS")
 	}
 }

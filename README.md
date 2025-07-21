@@ -97,11 +97,15 @@ The load balancer will listen for incoming requests on predefined endpoints that
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-config` | `configs/endpoints.json` | Path to endpoints configuration file |
-| `-health-check-interval` | `30` | Health check interval in seconds |
-| `-redis-addr` | `localhost:6379` | Redis server address |
-| `-server-port` | `8080` | Port to use for the load balancer / proxy |
-| `-standalone-health-checks` | `true` | Enable standalone health checks |
+| `--config` | `configs/endpoints.json` | Path to endpoints configuration file |
+| `--ephemeral-checks-interval` | `30` | Interval in seconds for ephemeral health checks |
+| `--ephemeral-checks-healthy-threshold` | `3` | Amount of consecutive successful responses required to consider endpoint healthy again |
+| `--health-check-interval` | `30` | Health check interval in seconds |
+| `--log-level` | `info` | Set the log level. Valid options are: `debug`, `info`, `warn`, `error`, `fatal`, `panic` |
+| `--redis-host` | `localhost` | Redis server hostname |
+| `--redis-port` | `6379` | Redis server port |
+| `--server-port` | `8080` | Port to use for the load balancer / proxy |
+| `--standalone-health-checks` | `true` | Enable standalone health checks |
 
 > **Note:** Command-line flags take precedence over environment variables if both are set.
 
@@ -111,13 +115,15 @@ The load balancer will listen for incoming requests on predefined endpoints that
 |----------|---------|-------------|
 | `ALCHEMY_API_KEY` | - | Example API key for Alchemy RPC endpoints. **Only needed for the example config.** The name must match the variable referenced in your `configs/endpoints.json`, if you need any. |
 | `INFURA_API_KEY` | - | Example API key for Infura RPC endpoints. **Only needed for the example config.** The name must match the variable referenced in your `configs/endpoints.json`, if you need any. |
+| `EPHEMERAL_CHECKS_HEALTHY_THRESHOLD` | `3` | Amount of consecutive successful responses from the endpoint required to consider it as being healthy again |
+| `EPHEMERAL_CHECKS_INTERVAL` | `30` | Interval in seconds for ephemeral health checks |
+| `HEALTH_CHECK_INTERVAL` | `30` | Health check interval in seconds |
+| `LOG_LEVEL` | `info` | Set the log level |
 | `REDIS_HOST` | `localhost` | Redis server hostname |
 | `REDIS_PORT` | `6379` | Redis server port |
 | `REDIS_PASS` | - | Redis server password (optional) |
-| `EPHEMERAL_CHECKS_INTERVAL` | `30` | Interval in seconds for ephemeral health checks (when HEALTH_CHECK_INTERVAL=0) |
-| `HEALTH_CHECK_INTERVAL` | `30` | Health check interval in seconds |
+| `SERVER_PORT` | `8080` | Port to use for the load balancer / proxy |
 | `STANDALONE_HEALTH_CHECKS` | `true` | Enable/disable the standalone mode of the health checker |
-| `ZEROLOG_LEVEL` | `info` | Set the log level for zerolog |
 
 ## Health Check Configuration
 
@@ -136,9 +142,15 @@ You can also disable health checks altogether by setting `HEALTH_CHECK_INTERVAL`
 
 #### Ephemeral Health Checks
 
-- **Trigger**: Only when a request to an endpoint fails and health checks are otherwise disabled.
+- **Trigger**: Only when a request to an endpoint fails and health checks are otherwise disabled. The server marks the endpoint as unhealthy for the specific protocol (HTTP or WS) that failed.
 - **Interval**: Controlled by the `EPHEMERAL_CHECKS_INTERVAL` environment variable (in seconds).
-- **Behavior**: The system will monitor the failed endpoint at the specified interval and automatically start routing traffic to it as soon as it becomes healthy again.
+- **Behavior**: The health checker service observes the unhealthy status and starts ephemeral checks for the affected protocol. The system will monitor the failed endpoint at the specified interval and automatically start routing traffic to it as soon as it becomes healthy again.
+
+#### Per-Protocol Unhealthy Marking
+
+- When a request to an endpoint fails (HTTP or WebSocket), the server marks that endpoint as unhealthy for the specific protocol that failed (e.g., `HealthyHTTP = false` or `HealthyWS = false` in Redis).
+- The health checker service detects this change and starts ephemeral health checks for that protocol only.
+- Once the endpoint passes the configured number of consecutive health checks, it is marked healthy again and ephemeral checks stop.
 
 ### Standalone Health Checker (Recommended)
 

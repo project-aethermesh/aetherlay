@@ -24,10 +24,10 @@ const (
 // EndpointStatus represents the health status and metrics of an endpoint.
 // It contains information about the endpoint's health, protocol support, and request counts.
 type EndpointStatus struct {
-	LastHealthCheck  time.Time `json:"last_health_check"`  // When the last health check was performed
-	Requests24h      int64     `json:"requests_24h"`       // Number of requests in the last 24 hours
-	Requests1Month   int64     `json:"requests_1_month"`   // Number of requests in the last month
-	RequestsLifetime int64     `json:"requests_lifetime"`  // Total number of requests since start
+	LastHealthCheck  time.Time `json:"last_health_check"` // When the last health check was performed
+	Requests24h      int64     `json:"requests_24h"`      // Number of requests in the last 24 hours
+	Requests1Month   int64     `json:"requests_1_month"`  // Number of requests in the last month
+	RequestsLifetime int64     `json:"requests_lifetime"` // Total number of requests since start
 
 	// Protocol support and health flags
 	HasHTTP     bool `json:"has_http"`     // Whether the endpoint supports HTTP/HTTPS

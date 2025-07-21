@@ -18,12 +18,12 @@ func GetBoolFromEnv(key string, defaultValue bool) bool {
 	if envVal := os.Getenv(key); envVal != "" {
 		envVal = strings.ToLower(strings.TrimSpace(envVal))
 		switch envVal {
-		case "true", "1", "yes", "on":
-			return true
-		case "false", "0", "no", "off":
-			return false
-		default:
-			log.Warn().Msg(envVal + " is an invalid boolean value for " + key + ", defaulting to: " + strconv.FormatBool(defaultValue))
+			case "true", "1", "yes", "on":
+				return true
+			case "false", "0", "no", "off":
+				return false
+			default:
+				log.Warn().Msg(envVal + " is an invalid boolean value for " + key + ", defaulting to: " + strconv.FormatBool(defaultValue))
 		}
 	} else {
 		log.Warn().Msg("Missing " + key + " from env vars, defaulting it to: " + strconv.FormatBool(defaultValue))

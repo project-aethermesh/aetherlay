@@ -23,7 +23,7 @@ make build-hc
 make run-hc
 
 # Or with custom config
-./bin/aetherlay-hc -config /custom/path/endpoints.json -redis-addr localhost:6379
+./bin/aetherlay-hc --config /custom/path/endpoints.json --redis-host localhost --redis-port 6379
 ```
 
 ### 3. Run with Docker
@@ -108,29 +108,34 @@ The health checker stores data in Redis with the following key patterns:
 
 ### Health Status
 ```
-health:{chain}:{provider} -> JSON encoded EndpointStatus
+health:{chain}:{endpoint} -> JSON encoded EndpointStatus
 ```
 
 #### Example EndpointStatus JSON
 ```json
 {
-  "health_status": true,
   "last_health_check": "2024-06-10T12:34:56.789Z",
   "requests_24h": 1234,
   "requests_1_month": 5678,
-  "requests_lifetime": 9012
+  "requests_lifetime": 9012,
+  "has_http": true,
+  "has_ws": true,
+  "healthy_http": true,
+  "healthy_ws": false
 }
 ```
 
 ### Request Counts
 ```
-metrics:{chain}:{provider}:proxy_requests:requests_24h -> int64
-metrics:{chain}:{provider}:proxy_requests:requests_1m -> int64
-metrics:{chain}:{provider}:proxy_requests:requests_all -> int64
-metrics:{chain}:{provider}:health_requests:requests_24h -> int64
-metrics:{chain}:{provider}:health_requests:requests_1m -> int64
-metrics:{chain}:{provider}:health_requests:requests_all -> int64
+metrics:{chain}:{endpoint}:proxy_requests:requests_24h -> int64
+metrics:{chain}:{endpoint}:proxy_requests:requests_1m -> int64
+metrics:{chain}:{endpoint}:proxy_requests:requests_all -> int64
+metrics:{chain}:{endpoint}:health_requests:requests_24h -> int64
+metrics:{chain}:{endpoint}:health_requests:requests_1m -> int64
+metrics:{chain}:{endpoint}:health_requests:requests_all -> int64
 ```
+
+**Note**: The 24-hour and 1-month counters have automatic expiration set (24 hours and 30 days respectively). The lifetime counter persists indefinitely.
 
 ## Monitoring
 
@@ -181,48 +186,17 @@ redis-cli keys "metrics:*"
    - Ensure configuration file exists
    - Check file permissions
 
-3. **Health Check Timeouts**
-   ```
-   Health check request failed: context deadline exceeded
-   ```
-   - Increase HTTP client timeout
-   - Check network connectivity to RPC endpoints
-
 ### Debug Mode
 
 Enable verbose logging by setting the log level:
 
 ```bash
-export ZEROLOG_LEVEL=debug
+export LOG_LEVEL=debug
 ./bin/aetherlay-hc
 ```
 
-## Integration with Load Balancer
+You can also use the CLI flag (takes precedence over the environment variable):
 
-### Load Balancer Configuration
-
-To use the standalone health checker, configure your load balancer pods with:
-
-```yaml
-env:
-- name: STANDALONE_HEALTH_CHECKS
-  value: "true"
+```bash
+./bin/aetherlay-hc --log-level=debug
 ```
-
-### Verification
-
-1. **Check Health Checker is Running**:
-   ```bash
-   kubectl logs -f deployment/aetherlay-hc
-   ```
-
-2. **Verify Load Balancer Health**:
-   ```bash
-   kubectl logs deployment/rpc-load-balancer | grep "Health checks disabled"
-   ```
-
-3. **Test Endpoint Health**:
-   ```bash
-   # Check Redis for health status
-   redis-cli get "health:mainnet:infura"
-   ```

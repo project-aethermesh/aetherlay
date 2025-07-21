@@ -28,25 +28,28 @@ func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
 
-	// Set zerolog global log level from ZEROLOG_LEVEL env var, default to "info"
-	levelStr := helpers.GetStringFromEnv("ZEROLOG_LEVEL", "info")
-	if level, err := zerolog.ParseLevel(levelStr); err == nil {
-		zerolog.SetGlobalLevel(level)
-	} else {
-		log.Warn().Str("ZEROLOG_LEVEL", levelStr).Msg("Invalid ZEROLOG_LEVEL, defaulting to Info")
-		zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	}
-
 	// Parse command line flags
 	configPath := flag.String("config", "configs/endpoints.json", "Path to the endpoints configuration file")
-	healthCheckInterval := flag.Int("health-check-interval", helpers.GetIntFromEnv("HEALTH_CHECK_INTERVAL", 30), "Health check interval in seconds (overrides HEALTH_CHECK_INTERVAL env var)")
-	redisAddr := flag.String("redis-addr", helpers.GetStringFromEnv("REDIS_HOST", "localhost") + ":" + helpers.GetStringFromEnv("REDIS_PORT", "6379"), "Redis server address")
+	ephemeralChecksInterval := flag.Int("ephemeral-checks-interval", helpers.GetIntFromEnv("EPHEMERAL_CHECKS_INTERVAL", 30), "Interval in seconds for ephemeral health checks")
+	ephemeralChecksHealthyThreshold := flag.Int("ephemeral-checks-healthy-threshold", helpers.GetIntFromEnv("EPHEMERAL_CHECKS_HEALTHY_THRESHOLD", 3), "Amount of consecutive successful responses required to consider endpoint healthy again")
+	healthCheckInterval := flag.Int("health-check-interval", helpers.GetIntFromEnv("HEALTH_CHECK_INTERVAL", 30), "Health check interval in seconds")
+	logLevel := flag.String("log-level", helpers.GetStringFromEnv("LOG_LEVEL", "info"), "Set the log level")
+	redisHost := flag.String("redis-host", helpers.GetStringFromEnv("REDIS_HOST", "localhost"), "Redis server hostname")
+	redisPort := flag.String("redis-port", helpers.GetStringFromEnv("REDIS_PORT", "6379"), "Redis server port")
 	serverPort := flag.Int("server-port", helpers.GetIntFromEnv("SERVER_PORT", 8080), "Server port")
-	standaloneHealthChecks := flag.Bool("standalone-health-checks", helpers.GetBoolFromEnv("STANDALONE_HEALTH_CHECKS", true), "Enable standalone health checks (overrides STANDALONE_HEALTH_CHECKS env var)")
+	standaloneHealthChecks := flag.Bool("standalone-health-checks", helpers.GetBoolFromEnv("STANDALONE_HEALTH_CHECKS", true), "Enable standalone health checks")
 	flag.Parse()
 
 	// Get Redis password from the env var
 	redisPassword := helpers.GetStringFromEnv("REDIS_PASS", "")
+
+	// Set the requested log level if it's valid, otherwise default to info
+	if level, err := zerolog.ParseLevel(*logLevel); err == nil {
+		zerolog.SetGlobalLevel(level)
+	} else {
+		log.Warn().Str("LOG_LEVEL", *logLevel).Msg("Invalid log level, defaulting to Info")
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	}
 
 	// Load configuration
 	cfg, err := config.LoadConfig(*configPath)
@@ -72,7 +75,8 @@ func main() {
 	}
 
 	// Initialize Redis client
-	redisClient := store.NewRedisClient(*redisAddr, redisPassword)
+	redisAddr := *redisHost + ":" + *redisPort
+	redisClient := store.NewRedisClient(redisAddr, redisPassword)
 	if err := redisClient.Ping(context.Background()); err != nil {
 		log.Fatal().Err(err).Msg("Failed to connect to Redis")
 	}
@@ -81,7 +85,7 @@ func main() {
 	if !*standaloneHealthChecks && *healthCheckInterval > 0 {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		checker := health.NewChecker(cfg, redisClient, time.Duration(*healthCheckInterval)*time.Second)
+		checker := health.NewChecker(cfg, redisClient, time.Duration(*healthCheckInterval)*time.Second, time.Duration(*ephemeralChecksInterval)*time.Second, *ephemeralChecksHealthyThreshold)
 
 		log.Info().Int("interval_seconds", *healthCheckInterval).Msg("Starting integrated health check service")
 		go checker.Start(ctx)
@@ -91,13 +95,6 @@ func main() {
 
 	// Initialize and start the server
 	srv := server.NewServer(cfg, redisClient)
-
-	// Run ephemeral health checks if regular health checks are disabled
-	if *healthCheckInterval == 0 {
-		log.Info().Msg("Ephemeral health checking enabled (HEALTH_CHECK_INTERVAL=0)")
-		intervalSec := helpers.GetIntFromEnv("EPHEMERAL_CHECKS_INTERVAL", 30)
-		srv.SetEphemeralCheckInterval(time.Duration(intervalSec) * time.Second)
-	}
 
 	// Handle graceful shutdown
 	stop := make(chan os.Signal, 1)

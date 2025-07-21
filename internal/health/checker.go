@@ -14,19 +14,31 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// Checker represents the health checker
+// Checker represents a health checker
 type Checker struct {
 	config      *config.Config
 	redisClient *store.RedisClient
 	interval    time.Duration
+
+	ephemeralChecks          map[string]*ephemeralState // key: chain|provider|protocol
+	ephemeralChecksInterval  time.Duration
+	ephemeralChecksThreshold int
+}
+
+// Add a map to track running ephemeral checks (at the top of the file, after Checker struct)
+type ephemeralState struct {
+	cancel context.CancelFunc
 }
 
 // NewChecker creates a new health checker
-func NewChecker(cfg *config.Config, redisClient *store.RedisClient, interval time.Duration) *Checker {
+func NewChecker(cfg *config.Config, redisClient *store.RedisClient, interval time.Duration, ephemeralChecksInterval time.Duration, ephemeralChecksThreshold int) *Checker {
 	return &Checker{
-		config:      cfg,
-		redisClient: redisClient,
-		interval:    interval,
+		config:                   cfg,
+		redisClient:              redisClient,
+		interval:                 interval,
+		ephemeralChecks:          make(map[string]*ephemeralState),
+		ephemeralChecksInterval:  ephemeralChecksInterval,
+		ephemeralChecksThreshold: ephemeralChecksThreshold,
 	}
 }
 
@@ -40,10 +52,10 @@ func (c *Checker) Start(ctx context.Context) {
 
 	for {
 		select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				c.checkAllEndpoints(ctx)
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.checkAllEndpoints(ctx)
 		}
 	}
 }
@@ -51,6 +63,119 @@ func (c *Checker) Start(ctx context.Context) {
 // RunOnce runs the health check a single time
 func (c *Checker) RunOnce(ctx context.Context) {
 	c.checkAllEndpoints(ctx)
+}
+
+// Add a new method to start ephemeral checks for unhealthy endpoints
+func (c *Checker) StartEphemeralChecks(ctx context.Context) {
+	log.Info().Msg("Ephemeral check manager started")
+
+	ticker := time.NewTicker(5 * time.Second) // How often to scan for unhealthy endpoints
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info().Msg("Ephemeral check manager shutting down")
+			return
+		case <-ticker.C:
+			// Scan all endpoints for unhealthy status
+			for chain, endpoints := range c.config.Endpoints {
+				for provider, endpoint := range endpoints {
+					status, err := c.redisClient.GetEndpointStatus(ctx, chain, provider)
+					if err != nil {
+						log.Error().Err(err).Str("chain", chain).Str("provider", provider).Msg("Failed to get endpoint status for ephemeral check")
+						continue
+					}
+					// HTTP
+					httpKey := chain + "|" + provider + "|http"
+					if endpoint.RPCURL != "" && !status.HealthyHTTP {
+						if _, running := c.ephemeralChecks[httpKey]; !running {
+							ctxEphemeral, cancel := context.WithCancel(ctx)
+							c.ephemeralChecks[httpKey] = &ephemeralState{cancel: cancel}
+							go c.runEphemeralCheckProtocol(ctxEphemeral, chain, provider, endpoint, c.ephemeralChecksInterval, c.ephemeralChecksThreshold, httpKey, "http")
+							log.Info().Str("chain", chain).Str("provider", provider).Msg("Started ephemeral check for HTTP endpoint")
+						}
+					} else if status.HealthyHTTP {
+						if state, running := c.ephemeralChecks[httpKey]; running {
+							state.cancel()
+							delete(c.ephemeralChecks, httpKey)
+							log.Info().Str("chain", chain).Str("provider", provider).Msg("Stopped ephemeral check for HTTP endpoint (now healthy)")
+						}
+					}
+					// WS
+					wsKey := chain + "|" + provider + "|ws"
+					if endpoint.WSURL != "" && !status.HealthyWS {
+						if _, running := c.ephemeralChecks[wsKey]; !running {
+							ctxEphemeral, cancel := context.WithCancel(ctx)
+							c.ephemeralChecks[wsKey] = &ephemeralState{cancel: cancel}
+							go c.runEphemeralCheckProtocol(ctxEphemeral, chain, provider, endpoint, c.ephemeralChecksInterval, c.ephemeralChecksThreshold, wsKey, "ws")
+							log.Info().Str("chain", chain).Str("provider", provider).Msg("Started ephemeral check for WS endpoint")
+						}
+					} else if status.HealthyWS {
+						if state, running := c.ephemeralChecks[wsKey]; running {
+							state.cancel()
+							delete(c.ephemeralChecks, wsKey)
+							log.Info().Str("chain", chain).Str("provider", provider).Msg("Stopped ephemeral check for WS endpoint (now healthy)")
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// runEphemeralCheckProtocol runs repeated health checks for a single protocol until healthy for threshold times
+func (c *Checker) runEphemeralCheckProtocol(ctx context.Context, chain, provider string, endpoint config.Endpoint, interval time.Duration, threshold int, key string, protocol string) {
+	consecutive := 0
+	for {
+		select {
+		case <-ctx.Done():
+			log.Debug().Str("chain", chain).Str("provider", provider).Str("protocol", protocol).Msg("Ephemeral check cancelled")
+			return
+		default:
+			var healthy bool
+			switch protocol {
+			case "http":
+				healthy = c.checkHTTPHealth(ctx, chain, provider, endpoint)
+			case "ws":
+				healthy = c.checkWSHealth(ctx, chain, provider, endpoint)
+			default:
+				log.Error().Str("chain", chain).Str("provider", provider).Str("protocol", protocol).Msg("Unknown protocol for ephemeral check")
+				return
+			}
+
+			if healthy {
+				consecutive++
+				log.Debug().Str("chain", chain).Str("provider", provider).Str("protocol", protocol).Int("consecutive", consecutive).Msg("Ephemeral check: success")
+				if consecutive >= threshold {
+					log.Info().Str("chain", chain).Str("provider", provider).Str("protocol", protocol).Msg("Ephemeral check: protocol considered healthy again")
+					// Mark protocol healthy in Redis
+					status, err := c.redisClient.GetEndpointStatus(ctx, chain, provider)
+					if err == nil {
+						switch protocol {
+						case "http":
+							status.HealthyHTTP = true
+						case "ws":
+							status.HealthyWS = true
+						}
+						c.updateStatus(ctx, chain, provider, *status)
+					}
+					// Remove from ephemeralChecks
+					if state, ok := c.ephemeralChecks[key]; ok {
+						state.cancel()
+						delete(c.ephemeralChecks, key)
+					}
+					return
+				}
+			} else {
+				if consecutive > 0 {
+					log.Debug().Str("chain", chain).Str("provider", provider).Str("protocol", protocol).Msg("Ephemeral check failed, resetting counter")
+				}
+				consecutive = 0
+			}
+			time.Sleep(interval)
+		}
+	}
 }
 
 // checkAllEndpoints checks the health of all endpoints
