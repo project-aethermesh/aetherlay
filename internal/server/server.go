@@ -51,9 +51,9 @@ func (s *Server) setupRoutes() {
 
 	// Chain-specific endpoints
 	for chain := range s.config.Endpoints {
-		s.router.HandleFunc("/"+chain, s.handleChainRequest(chain)).Methods("POST")
+		s.router.HandleFunc("/"+chain, s.handleRequestHTTP(chain)).Methods("POST")
 		// Add GET handler for WebSocket upgrade
-		s.router.HandleFunc("/"+chain, s.handleChainWebSocket(chain)).Methods("GET")
+		s.router.HandleFunc("/"+chain, s.handleRequestWS(chain)).Methods("GET")
 	}
 }
 
@@ -83,8 +83,8 @@ func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleChainRequest creates a handler for a specific chain
-func (s *Server) handleChainRequest(chain string) http.HandlerFunc {
+// handleRequestHTTP creates a handler for HTTP requests for a specific chain
+func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Check if archive node is requested
 		archive := r.URL.Query().Get("archive") == "true"
@@ -104,16 +104,16 @@ func (s *Server) handleChainRequest(chain string) http.HandlerFunc {
 		}
 
 		// Forward the request
-		if err := s.forwardRequest(w, r, endpoint.RPCURL); err != nil {
-			log.Error().Err(err).Str("endpoint", endpoint.RPCURL).Msg("Failed to forward request")
+		if err := s.forwardRequest(w, r, endpoint.Endpoint.RPCURL); err != nil {
+			log.Error().Err(err).Str("endpoint", endpoint.Endpoint.RPCURL).Msg("Failed to forward request")
 
 			// Try to find another endpoint and retry
 			endpoints = s.getAvailableEndpoints(chain, archive, false)
 			if len(endpoints) > 0 {
 				// Remove the failed endpoint from the list
-				var availableEndpoints []config.Endpoint
+				var availableEndpoints []EndpointWithID
 				for _, ep := range endpoints {
-					if ep.Provider != endpoint.Provider {
+					if ep.ID != endpoint.ID {
 						availableEndpoints = append(availableEndpoints, ep)
 					}
 				}
@@ -122,14 +122,14 @@ func (s *Server) handleChainRequest(chain string) http.HandlerFunc {
 					// Try with another endpoint
 					newEndpoint := s.selectBestEndpoint(chain, availableEndpoints)
 					if newEndpoint != nil {
-						log.Info().Str("chain", chain).Str("provider", newEndpoint.Provider).Msg("Retrying with different endpoint")
-						if err := s.forwardRequest(w, r, newEndpoint.RPCURL); err != nil {
-							log.Error().Err(err).Str("endpoint", newEndpoint.RPCURL).Msg("Failed to forward request to backup endpoint")
+						log.Info().Str("chain", chain).Str("provider", newEndpoint.Endpoint.Provider).Msg("Retrying with different endpoint")
+						if err := s.forwardRequest(w, r, newEndpoint.Endpoint.RPCURL); err != nil {
+							log.Error().Err(err).Str("endpoint", newEndpoint.Endpoint.RPCURL).Msg("Failed to forward request to backup endpoint")
 							http.Error(w, "Failed to forward request", http.StatusBadGateway)
 							return
 						}
 						// Increment request count for successful retry
-						if err := s.redisClient.IncrementRequestCount(r.Context(), chain, newEndpoint.Provider, "proxy_requests"); err != nil {
+						if err := s.redisClient.IncrementRequestCount(r.Context(), chain, newEndpoint.ID, "proxy_requests"); err != nil {
 							log.Error().Err(err).Msg("Failed to increment request count")
 						}
 						return
@@ -142,16 +142,16 @@ func (s *Server) handleChainRequest(chain string) http.HandlerFunc {
 		}
 
 		// Increment request count
-		if err := s.redisClient.IncrementRequestCount(r.Context(), chain, endpoint.Provider, "proxy_requests"); err != nil {
+		if err := s.redisClient.IncrementRequestCount(r.Context(), chain, endpoint.ID, "proxy_requests"); err != nil {
 			log.Error().Err(err).Msg("Failed to increment request count")
 		}
 	}
 }
 
-// handleChainWebSocket creates a handler for WebSocket proxying for a specific chain
-func (s *Server) handleChainWebSocket(chain string) http.HandlerFunc {
+// handleRequestWS creates a handler for WebSocket requests for a specific chain
+func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		log.Info().Str("path", r.URL.Path).Msg("Entered handleChainWebSocket")
+		log.Info().Str("path", r.URL.Path).Msg("Entered handleRequestWS")
 		for k, v := range r.Header {
 			log.Info().Str("header", k).Strs("values", v).Msg("Request header")
 		}
@@ -164,11 +164,11 @@ func (s *Server) handleChainWebSocket(chain string) http.HandlerFunc {
 				return
 			}
 			endpoint := s.selectBestEndpoint(chain, endpoints)
-			if endpoint == nil || endpoint.WSURL == "" {
+			if endpoint == nil || endpoint.Endpoint.WSURL == "" {
 				http.Error(w, "No suitable WebSocket endpoint found", http.StatusServiceUnavailable)
 				return
 			}
-			if err := s.proxyWebSocket(w, r, endpoint.WSURL); err != nil {
+			if err := s.proxyWebSocket(w, r, endpoint.Endpoint.WSURL); err != nil {
 				// Check if this is a normal WebSocket closure
 				if closeErr, ok := err.(*websocket.CloseError); ok {
 					if closeErr.Code == websocket.CloseNormalClosure || closeErr.Code == websocket.CloseGoingAway {
@@ -176,21 +176,21 @@ func (s *Server) handleChainWebSocket(chain string) http.HandlerFunc {
 						log.Debug().
 							Int("close_code", closeErr.Code).
 							Str("close_text", closeErr.Text).
-							Str("endpoint", helpers.RedactAPIKey(endpoint.WSURL)).
+							Str("endpoint", helpers.RedactAPIKey(endpoint.Endpoint.WSURL)).
 							Str("chain", chain).
 							Msg("WebSocket connection closed normally")
 						return
 					}
 				}
-				log.Error().Err(err).Str("endpoint", endpoint.WSURL).Msg("Failed to proxy WebSocket")
+				log.Error().Err(err).Str("endpoint", endpoint.Endpoint.WSURL).Msg("Failed to proxy WebSocket")
 
 				// Try to find another endpoint and retry
 				endpoints = s.getAvailableEndpoints(chain, archive, true)
 				if len(endpoints) > 0 {
 					// Remove the failed endpoint from the list
-					var availableEndpoints []config.Endpoint
+					var availableEndpoints []EndpointWithID
 					for _, ep := range endpoints {
-						if ep.Provider != endpoint.Provider {
+						if ep.ID != endpoint.ID {
 							availableEndpoints = append(availableEndpoints, ep)
 						}
 					}
@@ -198,15 +198,15 @@ func (s *Server) handleChainWebSocket(chain string) http.HandlerFunc {
 					if len(availableEndpoints) > 0 {
 						// Try with another endpoint
 						newEndpoint := s.selectBestEndpoint(chain, availableEndpoints)
-						if newEndpoint != nil && newEndpoint.WSURL != "" {
-							log.Info().Str("chain", chain).Str("provider", newEndpoint.Provider).Msg("Retrying WebSocket with different endpoint")
-							if err := s.proxyWebSocket(w, r, newEndpoint.WSURL); err != nil {
-								log.Error().Err(err).Str("endpoint", newEndpoint.WSURL).Msg("Failed to proxy WebSocket to backup endpoint")
+						if newEndpoint != nil && newEndpoint.Endpoint.WSURL != "" {
+							log.Info().Str("chain", chain).Str("provider", newEndpoint.Endpoint.Provider).Msg("Retrying WebSocket with different endpoint")
+							if err := s.proxyWebSocket(w, r, newEndpoint.Endpoint.WSURL); err != nil {
+								log.Error().Err(err).Str("endpoint", newEndpoint.Endpoint.WSURL).Msg("Failed to proxy WebSocket to backup endpoint")
 								http.Error(w, "Failed to proxy WebSocket", http.StatusBadGateway)
 								return
 							}
 							// Increment request count for successful retry
-							if err := s.redisClient.IncrementRequestCount(r.Context(), chain, newEndpoint.Provider, "proxy_requests"); err != nil {
+							if err := s.redisClient.IncrementRequestCount(r.Context(), chain, newEndpoint.ID, "proxy_requests"); err != nil {
 								log.Error().Err(err).Msg("Failed to increment WebSocket request count")
 							}
 							return
@@ -217,7 +217,7 @@ func (s *Server) handleChainWebSocket(chain string) http.HandlerFunc {
 				http.Error(w, "Failed to proxy WebSocket", http.StatusBadGateway)
 				return
 			}
-			if err := s.redisClient.IncrementRequestCount(r.Context(), chain, endpoint.Provider, "proxy_requests"); err != nil {
+			if err := s.redisClient.IncrementRequestCount(r.Context(), chain, endpoint.ID, "proxy_requests"); err != nil {
 				log.Error().Err(err).Msg("Failed to increment WebSocket request count")
 			}
 			return
@@ -277,23 +277,35 @@ func equalFold(a, b string) bool {
 	return true
 }
 
+// EndpointWithID represents an endpoint along with its ID (map key)
+type EndpointWithID struct {
+	ID       string
+	Endpoint config.Endpoint
+}
+
 // getAvailableEndpoints returns available endpoints for a chain and protocol
-func (s *Server) getAvailableEndpoints(chain string, archive bool, ws bool) []config.Endpoint {
-	var endpoints []config.Endpoint
+func (s *Server) getAvailableEndpoints(chain string, archive bool, ws bool) []EndpointWithID {
+	var endpoints []EndpointWithID
 
 	// Try primary endpoints first
-	primaryEndpoints := s.config.GetPrimaryEndpoints(chain)
-	for _, endpoint := range primaryEndpoints {
-		if !archive || (archive && endpoint.Type == "archive") {
-			status, err := s.redisClient.GetEndpointStatus(context.Background(), chain, endpoint.Provider)
-			if err == nil {
-				if ws {
-					if status.HasWS && status.HealthyWS {
-						endpoints = append(endpoints, endpoint)
-					}
-				} else {
-					if status.HasHTTP && status.HealthyHTTP {
-						endpoints = append(endpoints, endpoint)
+	chainEndpoints, exists := s.config.GetEndpointsForChain(chain)
+	if !exists {
+		return endpoints
+	}
+
+	for endpointID, endpoint := range chainEndpoints {
+		if endpoint.Role == "primary" {
+			if !archive || (archive && endpoint.Type == "archive") {
+				status, err := s.redisClient.GetEndpointStatus(context.Background(), chain, endpointID)
+				if err == nil {
+					if ws {
+						if status.HasWS && status.HealthyWS {
+							endpoints = append(endpoints, EndpointWithID{ID: endpointID, Endpoint: endpoint})
+						}
+					} else {
+						if status.HasHTTP && status.HealthyHTTP {
+							endpoints = append(endpoints, EndpointWithID{ID: endpointID, Endpoint: endpoint})
+						}
 					}
 				}
 			}
@@ -302,18 +314,19 @@ func (s *Server) getAvailableEndpoints(chain string, archive bool, ws bool) []co
 
 	// If no primary endpoints are available, try fallback endpoints
 	if len(endpoints) == 0 {
-		fallbackEndpoints := s.config.GetFallbackEndpoints(chain)
-		for _, endpoint := range fallbackEndpoints {
-			if !archive || (archive && endpoint.Type == "archive") {
-				status, err := s.redisClient.GetEndpointStatus(context.Background(), chain, endpoint.Provider)
-				if err == nil {
-					if ws {
-						if status.HasWS && status.HealthyWS {
-							endpoints = append(endpoints, endpoint)
-						}
-					} else {
-						if status.HasHTTP && status.HealthyHTTP {
-							endpoints = append(endpoints, endpoint)
+		for endpointID, endpoint := range chainEndpoints {
+			if endpoint.Role == "fallback" {
+				if !archive || (archive && endpoint.Type == "archive") {
+					status, err := s.redisClient.GetEndpointStatus(context.Background(), chain, endpointID)
+					if err == nil {
+						if ws {
+							if status.HasWS && status.HealthyWS {
+								endpoints = append(endpoints, EndpointWithID{ID: endpointID, Endpoint: endpoint})
+							}
+						} else {
+							if status.HasHTTP && status.HealthyHTTP {
+								endpoints = append(endpoints, EndpointWithID{ID: endpointID, Endpoint: endpoint})
+							}
 						}
 					}
 				}
@@ -325,16 +338,16 @@ func (s *Server) getAvailableEndpoints(chain string, archive bool, ws bool) []co
 }
 
 // selectBestEndpoint selects the best endpoint based on request counts
-func (s *Server) selectBestEndpoint(chain string, endpoints []config.Endpoint) *config.Endpoint {
+func (s *Server) selectBestEndpoint(chain string, endpoints []EndpointWithID) *EndpointWithID {
 	if len(endpoints) == 0 {
 		return nil
 	}
 
-	var bestEndpoint *config.Endpoint
+	var bestEndpoint *EndpointWithID
 	var minRequests int64 = -1
 
 	for i := range endpoints {
-		r24h, _, _, err := s.redisClient.GetCombinedRequestCounts(context.Background(), chain, endpoints[i].Provider)
+		r24h, _, _, err := s.redisClient.GetCombinedRequestCounts(context.Background(), chain, endpoints[i].ID)
 		if err != nil {
 			continue
 		}
@@ -349,10 +362,10 @@ func (s *Server) selectBestEndpoint(chain string, endpoints []config.Endpoint) *
 }
 
 // markEndpointUnhealthyProtocol marks the given endpoint as unhealthy for the specified protocol ("http" or "ws") in Redis.
-func (s *Server) markEndpointUnhealthyProtocol(chain, provider, protocol string) {
-	status, err := s.redisClient.GetEndpointStatus(context.Background(), chain, provider)
+func (s *Server) markEndpointUnhealthyProtocol(chain, endpointID, protocol string) {
+	status, err := s.redisClient.GetEndpointStatus(context.Background(), chain, endpointID)
 	if err != nil {
-		log.Error().Err(err).Str("chain", chain).Str("provider", provider).Str("protocol", protocol).Msg("Failed to get endpoint status to mark unhealthy")
+		log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Failed to get endpoint status to mark unhealthy")
 		return
 	}
 	switch protocol {
@@ -361,22 +374,22 @@ func (s *Server) markEndpointUnhealthyProtocol(chain, provider, protocol string)
 	case "ws":
 		status.HealthyWS = false
 	default:
-		log.Warn().Str("protocol", protocol).Msg("Unknown protocol for marking unhealthy")
+		log.Warn().Str("protocol", protocol).Msg("Unknown protocol, can't mark the endpoint as unhealthy")
 		return
 	}
-	if err := s.redisClient.UpdateEndpointStatus(context.Background(), chain, provider, *status); err != nil {
-		log.Error().Err(err).Str("chain", chain).Str("provider", provider).Str("protocol", protocol).Msg("Failed to update endpoint status to unhealthy")
+	if err := s.redisClient.UpdateEndpointStatus(context.Background(), chain, endpointID, *status); err != nil {
+		log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Failed to update endpoint status to unhealthy")
 	} else {
-		log.Info().Str("chain", chain).Str("provider", provider).Str("protocol", protocol).Msg("Marked endpoint as unhealthy")
+		log.Info().Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Marked endpoint as unhealthy")
 	}
 }
 
-// findChainAndProviderByURL searches the config for an endpoint matching the given URL (RPCURL or WSURL) and returns the chain and provider.
-func (s *Server) findChainAndProviderByURL(url string) (chain string, provider string, found bool) {
+// findChainAndEndpointByURL searches the config for an endpoint matching the given URL (RPCURL or WSURL) and returns the chain and endpoint ID.
+func (s *Server) findChainAndEndpointByURL(url string) (chain string, endpointID string, found bool) {
 	for chainName, endpoints := range s.config.Endpoints {
-		for providerName, endpoint := range endpoints {
+		for endpointID, endpoint := range endpoints {
 			if endpoint.RPCURL == url || endpoint.WSURL == url {
-				return chainName, providerName, true
+				return chainName, endpointID, true
 			}
 		}
 	}
@@ -402,10 +415,10 @@ func (s *Server) defaultForwardRequest(w http.ResponseWriter, r *http.Request, t
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		if chain, provider, found := s.findChainAndProviderByURL(targetURL); found {
-			s.markEndpointUnhealthyProtocol(chain, provider, "http")
+		if chain, endpointID, found := s.findChainAndEndpointByURL(targetURL); found {
+			s.markEndpointUnhealthyProtocol(chain, endpointID, "http")
 		} else {
-			log.Warn().Str("url", targetURL).Msg("Failed to find chain and provider for failed HTTP endpoint URL, cannot mark it as unhealthy")
+			log.Warn().Str("url", targetURL).Msg("Failed to find chain and endpoint for failed HTTP endpoint URL, cannot mark it as unhealthy")
 		}
 		return err
 	}
@@ -455,10 +468,10 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 	// Connect to the backend WebSocket
 	backendConn, _, err := websocket.DefaultDialer.Dial(backendURL, nil)
 	if err != nil {
-		if chain, provider, found := s.findChainAndProviderByURL(backendURL); found {
-			s.markEndpointUnhealthyProtocol(chain, provider, "ws")
+		if chain, endpointID, found := s.findChainAndEndpointByURL(backendURL); found {
+			s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")
 		} else {
-			log.Warn().Str("url", backendURL).Msg("Failed to find chain and provider for failed WS endpoint URL, cannot mark it as unhealthy.")
+			log.Warn().Str("url", backendURL).Msg("Failed to find chain and endpoint for failed WS endpoint URL, cannot mark it as unhealthy.")
 		}
 		return err
 	}
@@ -485,8 +498,8 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 				return nil
 			}
 		}
-		if chain, provider, found := s.findChainAndProviderByURL(backendURL); found {
-			s.markEndpointUnhealthyProtocol(chain, provider, "ws")
+		if chain, endpointID, found := s.findChainAndEndpointByURL(backendURL); found {
+			s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")
 		}
 	}
 

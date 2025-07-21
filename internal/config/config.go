@@ -57,9 +57,9 @@ func LoadConfig(path string) (*Config, error) {
 
 	// Substitute environment variables in all endpoints
 	for chainName, chainEndpoints := range config.Endpoints {
-		for endpointName, endpoint := range chainEndpoints {
+		for endpointID, endpoint := range chainEndpoints {
 			substituteEnvVarsInEndpoint(&endpoint)
-			config.Endpoints[chainName][endpointName] = endpoint
+			config.Endpoints[chainName][endpointID] = endpoint
 		}
 	}
 

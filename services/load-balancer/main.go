@@ -61,10 +61,10 @@ func main() {
 	log.Info().Msg("RPC Load Balancer - Loaded configuration:")
 	for chainName, chainEndpoints := range cfg.Endpoints {
 		log.Info().Str("chain", chainName).Msg("Chain configuration")
-		for endpointName, endpoint := range chainEndpoints {
+		for endpointID, endpoint := range chainEndpoints {
 			log.Info().
 				Str("chain", chainName).
-				Str("endpoint", endpointName).
+				Str("endpoint", endpointID).
 				Str("provider", endpoint.Provider).
 				Str("role", endpoint.Role).
 				Str("type", endpoint.Type).
