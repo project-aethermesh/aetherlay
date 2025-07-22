@@ -17,12 +17,16 @@ import (
 // Checker represents a health checker
 type Checker struct {
 	config      *config.Config
-	redisClient *store.RedisClient
+	redisClient store.RedisClientIface
 	interval    time.Duration
 
 	ephemeralChecks          map[string]*ephemeralState // key: chain|provider|protocol
 	ephemeralChecksInterval  time.Duration
 	ephemeralChecksThreshold int
+
+	// For testability: allow patching health check methods
+	CheckHTTPHealthFunc func(ctx context.Context, chain, provider string, endpoint config.Endpoint) bool
+	CheckWSHealthFunc   func(ctx context.Context, chain, provider string, endpoint config.Endpoint) bool
 }
 
 // Add a map to track running ephemeral checks (at the top of the file, after Checker struct)
@@ -31,8 +35,8 @@ type ephemeralState struct {
 }
 
 // NewChecker creates a new health checker
-func NewChecker(cfg *config.Config, redisClient *store.RedisClient, interval time.Duration, ephemeralChecksInterval time.Duration, ephemeralChecksThreshold int) *Checker {
-	return &Checker{
+func NewChecker(cfg *config.Config, redisClient store.RedisClientIface, interval time.Duration, ephemeralChecksInterval time.Duration, ephemeralChecksThreshold int) *Checker {
+	c := &Checker{
 		config:                   cfg,
 		redisClient:              redisClient,
 		interval:                 interval,
@@ -40,9 +44,12 @@ func NewChecker(cfg *config.Config, redisClient *store.RedisClient, interval tim
 		ephemeralChecksInterval:  ephemeralChecksInterval,
 		ephemeralChecksThreshold: ephemeralChecksThreshold,
 	}
+	c.CheckHTTPHealthFunc = c.checkHTTPHealth
+	c.CheckWSHealthFunc = c.checkWSHealth
+	return c
 }
 
-// Start starts the health checker
+// Start starts the health checker loop
 func (c *Checker) Start(ctx context.Context) {
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
@@ -65,7 +72,7 @@ func (c *Checker) RunOnce(ctx context.Context) {
 	c.checkAllEndpoints(ctx)
 }
 
-// Add a new method to start ephemeral checks for unhealthy endpoints
+// StartEphemeralChecks starts ephemeral health checks for unhealthy endpoints.
 func (c *Checker) StartEphemeralChecks(ctx context.Context) {
 	log.Info().Msg("Ephemeral check manager started")
 
@@ -88,7 +95,7 @@ func (c *Checker) StartEphemeralChecks(ctx context.Context) {
 					}
 					// HTTP
 					httpKey := chain + "|" + provider + "|http"
-					if endpoint.RPCURL != "" && !status.HealthyHTTP {
+					if endpoint.HTTPURL != "" && !status.HealthyHTTP {
 						if _, running := c.ephemeralChecks[httpKey]; !running {
 							ctxEphemeral, cancel := context.WithCancel(ctx)
 							c.ephemeralChecks[httpKey] = &ephemeralState{cancel: cancel}
@@ -136,9 +143,9 @@ func (c *Checker) runEphemeralCheckProtocol(ctx context.Context, chain, provider
 			var healthy bool
 			switch protocol {
 			case "http":
-				healthy = c.checkHTTPHealth(ctx, chain, provider, endpoint)
+				healthy = c.CheckHTTPHealthFunc(ctx, chain, provider, endpoint)
 			case "ws":
-				healthy = c.checkWSHealth(ctx, chain, provider, endpoint)
+				healthy = c.CheckWSHealthFunc(ctx, chain, provider, endpoint)
 			default:
 				log.Error().Str("chain", chain).Str("provider", provider).Str("protocol", protocol).Msg("Unknown protocol for ephemeral check")
 				return
@@ -198,18 +205,18 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, provider string, end
 
 	// Run HTTP health check in parallel
 	go func() {
-		healthy := c.checkHTTPHealth(ctx, chain, provider, endpoint)
+		healthy := c.CheckHTTPHealthFunc(ctx, chain, provider, endpoint)
 		httpResult <- healthy
 	}()
 
 	// Run WS health check in parallel
 	go func() {
-		healthy := c.checkWSHealth(ctx, chain, provider, endpoint)
+		healthy := c.CheckWSHealthFunc(ctx, chain, provider, endpoint)
 		wsResult <- healthy
 	}()
 
 	// Collect results
-	status.HasHTTP = endpoint.RPCURL != ""
+	status.HasHTTP = endpoint.HTTPURL != ""
 	status.HasWS = endpoint.WSURL != ""
 	status.HealthyHTTP = <-httpResult
 	status.HealthyWS = <-wsResult
@@ -228,12 +235,12 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, provider string, end
 
 // checkHTTPHealth performs HTTP health check and returns health status
 func (c *Checker) checkHTTPHealth(ctx context.Context, chain, provider string, endpoint config.Endpoint) bool {
-	if endpoint.RPCURL == "" {
+	if endpoint.HTTPURL == "" {
 		return false
 	}
 
 	payload := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint.RPCURL, bytes.NewBuffer(payload))
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint.HTTPURL, bytes.NewBuffer(payload))
 	if err != nil {
 		return false
 	}
@@ -257,7 +264,7 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, provider string, e
 		bodyBytes := make([]byte, 512)
 		n, _ := io.ReadFull(resp.Body, bodyBytes)
 		log.Error().
-			Str("endpoint", endpoint.RPCURL).
+			Str("endpoint", endpoint.HTTPURL).
 			Str("chain", chain).
 			Str("provider", provider).
 			Int("status_code", resp.StatusCode).

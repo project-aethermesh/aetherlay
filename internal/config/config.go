@@ -12,7 +12,7 @@ type Endpoint struct {
 	Role     string `json:"role"`     // Role of the endpoint: "primary" or "fallback"
 	Type     string `json:"type"`     // Type of node: "full" or "archive"
 	Weight   int    `json:"weight"`   // Weight for load balancing (higher = more requests)
-	RPCURL   string `json:"rpc_url"`  // HTTP/HTTPS URL for RPC requests
+	HTTPURL  string `json:"http_url"` // HTTP/HTTPS URL for RPC requests
 	WSURL    string `json:"ws_url"`   // WebSocket URL for real-time connections
 }
 
@@ -35,9 +35,9 @@ func substituteEnvVars(s string) string {
 }
 
 // substituteEnvVarsInEndpoint recursively substitutes environment variables in an endpoint.
-// It processes both RPCURL and WSURL fields for environment variable substitution.
+// It processes both HTTPURL and WSURL fields for environment variable substitution.
 func substituteEnvVarsInEndpoint(endpoint *Endpoint) {
-	endpoint.RPCURL = substituteEnvVars(endpoint.RPCURL)
+	endpoint.HTTPURL = substituteEnvVars(endpoint.HTTPURL)
 	endpoint.WSURL = substituteEnvVars(endpoint.WSURL)
 }
 

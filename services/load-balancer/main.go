@@ -29,15 +29,51 @@ func main() {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
 
 	// Parse command line flags
-	configPath := flag.String("config", "configs/endpoints.json", "Path to the endpoints configuration file")
-	ephemeralChecksInterval := flag.Int("ephemeral-checks-interval", helpers.GetIntFromEnv("EPHEMERAL_CHECKS_INTERVAL", 30), "Interval in seconds for ephemeral health checks")
-	ephemeralChecksHealthyThreshold := flag.Int("ephemeral-checks-healthy-threshold", helpers.GetIntFromEnv("EPHEMERAL_CHECKS_HEALTHY_THRESHOLD", 3), "Amount of consecutive successful responses required to consider endpoint healthy again")
-	healthCheckInterval := flag.Int("health-check-interval", helpers.GetIntFromEnv("HEALTH_CHECK_INTERVAL", 30), "Health check interval in seconds")
-	logLevel := flag.String("log-level", helpers.GetStringFromEnv("LOG_LEVEL", "info"), "Set the log level")
-	redisHost := flag.String("redis-host", helpers.GetStringFromEnv("REDIS_HOST", "localhost"), "Redis server hostname")
-	redisPort := flag.String("redis-port", helpers.GetStringFromEnv("REDIS_PORT", "6379"), "Redis server port")
-	serverPort := flag.Int("server-port", helpers.GetIntFromEnv("SERVER_PORT", 8080), "Server port")
-	standaloneHealthChecks := flag.Bool("standalone-health-checks", helpers.GetBoolFromEnv("STANDALONE_HEALTH_CHECKS", true), "Enable standalone health checks")
+	configFile := flag.String(
+		"config-file",
+		helpers.GetStringFromEnv("CONFIG_FILE", "configs/endpoints.json"),
+		"Path to the endpoints configuration file",
+	)
+	ephemeralChecksInterval := flag.Int(
+		"ephemeral-checks-interval",
+		helpers.GetIntFromEnv("EPHEMERAL_CHECKS_INTERVAL", 30),
+		"Interval in seconds for ephemeral health checks",
+	)
+	ephemeralChecksHealthyThreshold := flag.Int(
+		"ephemeral-checks-healthy-threshold",
+		helpers.GetIntFromEnv("EPHEMERAL_CHECKS_HEALTHY_THRESHOLD", 3),
+		"Amount of consecutive successful responses required to consider endpoint healthy again",
+	)
+	healthCheckInterval := flag.Int(
+		"health-check-interval",
+		helpers.GetIntFromEnv("HEALTH_CHECK_INTERVAL", 30),
+		"Health check interval in seconds",
+	)
+	logLevel := flag.String(
+		"log-level",
+		helpers.GetStringFromEnv("LOG_LEVEL", "info"),
+		"Set the log level",
+	)
+	redisHost := flag.String(
+		"redis-host",
+		helpers.GetStringFromEnv("REDIS_HOST", "localhost"),
+		"Redis server hostname",
+	)
+	redisPort := flag.String(
+		"redis-port",
+		helpers.GetStringFromEnv("REDIS_PORT", "6379"),
+		"Redis server port",
+	)
+	serverPort := flag.Int(
+		"server-port",
+		helpers.GetIntFromEnv("SERVER_PORT", 8080),
+		"Server port",
+	)
+	standaloneHealthChecks := flag.Bool(
+		"standalone-health-checks",
+		helpers.GetBoolFromEnv("STANDALONE_HEALTH_CHECKS", true),
+		"Enable standalone health checks",
+	)
 	flag.Parse()
 
 	// Get Redis password from the env var
@@ -52,7 +88,7 @@ func main() {
 	}
 
 	// Load configuration
-	cfg, err := config.LoadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configFile)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to load configuration")
 	}
@@ -68,7 +104,7 @@ func main() {
 				Str("provider", endpoint.Provider).
 				Str("role", endpoint.Role).
 				Str("type", endpoint.Type).
-				Str("rpc_url", helpers.RedactAPIKey(endpoint.RPCURL)).
+				Str("http_url", helpers.RedactAPIKey(endpoint.HTTPURL)).
 				Str("ws_url", helpers.RedactAPIKey(endpoint.WSURL)).
 				Msg("Endpoint configuration")
 		}

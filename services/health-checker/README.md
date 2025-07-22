@@ -74,14 +74,14 @@ The health checker uses the same configuration format as the load balancer:
       "provider": "infura",
       "role": "primary",
       "type": "full",
-      "rpc_url": "https://mainnet.infura.io/v3/YOUR_API_KEY",
+      "http_url": "https://mainnet.infura.io/v3/YOUR_API_KEY",
       "ws_url": "wss://mainnet.infura.io/ws/v3/YOUR_API_KEY"
     },
     "alchemy": {
       "provider": "alchemy",
       "role": "fallback",
       "type": "full",
-      "rpc_url": "https://eth-mainnet.alchemyapi.io/v2/YOUR_API_KEY",
+      "http_url": "https://eth-mainnet.alchemyapi.io/v2/YOUR_API_KEY",
       "ws_url": "wss://eth-mainnet.alchemyapi.io/v2/YOUR_API_KEY"
     }
   }
