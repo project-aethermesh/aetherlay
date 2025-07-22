@@ -1,39 +1,55 @@
 {
   "mainnet": {
-    "llama": {
+    "llama-1": {
       "provider": "llama",
-      "type": "full",
       "role": "primary",
-      "rpc_url": "https://eth.llamarpc.com"
-    },
-    "drpc": {
-      "provider": "drpc",
       "type": "full",
+      "http_url": "https://eth.llamarpc.com"
+    },
+    "drpc-1": {
+      "provider": "drpc",
       "role": "fallback",
-      "rpc_url": "https://eth.drpc.org",
+      "type": "full",
+      "http_url": "https://eth.drpc.org",
       "ws_url": "wss://eth.drpc.org"
     },
-    "public_node": {
-      "provider": "public_node",
-      "type": "archive",
+    "publicnode-1": {
+      "provider": "publicnode",
       "role": "fallback",
-      "rpc_url": "https://ethereum-rpc.publicnode.com",
+      "type": "archive",
+      "http_url": "https://ethereum-rpc.publicnode.com",
       "ws_url": "wss://ethereum-rpc.publicnode.com"
     }
   },
   "arbitrum": {
-    "drpc": {
+    "drpc-1": {
       "provider": "drpc",
-      "type": "full",
       "role": "primary",
-      "rpc_url": "https://arbitrum.drpc.org"
+      "type": "full",
+      "http_url": "https://arbitrum.drpc.org"
     },
-    "public_node": {
+    "publicnode-1": {
       "provider": "public_node",
-      "type": "archive",
       "role": "fallback",
-      "rpc_url": "https://arbitrum-one-rpc.publicnode.com",
+      "type": "archive",
+      "http_url": "https://arbitrum-one-rpc.publicnode.com",
       "ws_url": "wss://arbitrum-one-rpc.publicnode.com"
+    }
+  },
+  "base": {
+    "alchemy-test": {
+      "provider": "alchemy",
+      "role": "primary",
+      "type": "archive",
+      "http_url": "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}",
+      "ws_url": "wss://base-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}"
+    },
+    "infura-staging": {
+      "provider": "infura",
+      "role": "primary",
+      "type": "archive",
+      "http_url": "https://base-mainnet.infura.io/v3/${INFURA_API_KEY}",
+      "ws_url": "wss://base-mainnet.infura.io/ws/v3/${INFURA_API_KEY}"
     }
   }
 }

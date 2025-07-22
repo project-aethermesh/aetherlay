@@ -5,35 +5,22 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
-
-	"aetherlay/internal/store"
 )
 
-// HealthCheck represents the health status of an endpoint
-type HealthCheck struct {
+// Check represents the health status of an endpoint
+type Check struct {
 	EndpointURL  string    `json:"endpoint_url"`
 	HealthStatus bool      `json:"health_status"`
 	LastChecked  time.Time `json:"last_checked"`
 }
 
-// HealthChecker represents a health checking service
-type HealthChecker struct {
-	RedisClient store.RedisClientIface
-}
-
-// NewHealthChecker creates a new health checker instance
-func NewHealthChecker(redisClient store.RedisClientIface) *HealthChecker {
-	return &HealthChecker{RedisClient: redisClient}
-}
-
 // CheckHealth performs a health check on the specified endpoint
-func (hc *HealthChecker) CheckHealth(endpointURL string) error {
+func (hc *Checker) CheckHealth(endpointURL string) error {
 	// Create HTTP client with timeout
 	client := &http.Client{
-		Timeout: 1 * time.Second,
+		Timeout: 5 * time.Second,
 	}
-	
-	resp, err := client.Get(endpointURL + "/health")
+	resp, err := client.Get(endpointURL)
 	if err != nil {
 		return err
 	}
@@ -42,40 +29,38 @@ func (hc *HealthChecker) CheckHealth(endpointURL string) error {
 	healthStatus := resp.StatusCode == http.StatusOK
 	now := time.Now()
 
-	healthCheck := HealthCheck{
+	check := Check{
 		EndpointURL:  endpointURL,
 		HealthStatus: healthStatus,
 		LastChecked:  now,
 	}
 
-	return hc.updateHealthStatusInRedis(healthCheck)
+	return hc.updateHealthStatusInRedis(check)
 }
 
 // updateHealthStatusInRedis stores the health check result in Redis
-func (hc *HealthChecker) updateHealthStatusInRedis(healthCheck HealthCheck) error {
+func (hc *Checker) updateHealthStatusInRedis(check Check) error {
 	ctx := context.Background()
-	data, err := json.Marshal(healthCheck)
+	data, err := json.Marshal(check)
 	if err != nil {
 		return err
 	}
-
-	// Use the endpoint URL as the key for storing health status
-	return hc.RedisClient.(interface {
+	return hc.redisClient.(interface {
 		Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error
-	}).Set(ctx, healthCheck.EndpointURL, data, 0)
+	}).Set(ctx, check.EndpointURL, data, 0)
 }
 
 // GetHealthStatus retrieves the health status of an endpoint from Redis
-func (hc *HealthChecker) GetHealthStatus(endpointURL string) (HealthCheck, error) {
+func (hc *Checker) GetHealthStatus(endpointURL string) (Check, error) {
 	ctx := context.Background()
-	data, err := hc.RedisClient.(interface {
+	data, err := hc.redisClient.(interface {
 		Get(ctx context.Context, key string) (string, error)
 	}).Get(ctx, endpointURL)
 	if err != nil {
-		return HealthCheck{}, err
+		return Check{}, err
 	}
 
-	var healthCheck HealthCheck
-	err = json.Unmarshal([]byte(data), &healthCheck)
-	return healthCheck, err
+	var check Check
+	err = json.Unmarshal([]byte(data), &check)
+	return check, err
 }

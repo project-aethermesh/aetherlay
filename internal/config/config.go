@@ -11,13 +11,12 @@ type Endpoint struct {
 	Provider string `json:"provider"` // Name of the RPC provider (e.g., "alchemy", "infura")
 	Role     string `json:"role"`     // Role of the endpoint: "primary" or "fallback"
 	Type     string `json:"type"`     // Type of node: "full" or "archive"
-	Weight   int    `json:"weight"`   // Weight for load balancing (higher = more requests)
-	RPCURL   string `json:"rpc_url"`  // HTTP/HTTPS URL for RPC requests
+	HTTPURL  string `json:"http_url"` // HTTP/HTTPS URL for RPC requests
 	WSURL    string `json:"ws_url"`   // WebSocket URL for real-time connections
 }
 
 // ChainEndpoints represents all endpoints for a specific blockchain.
-// The key is the provider name, and the value is the endpoint configuration.
+// The key is the endpoint ID, and the value is the endpoint configuration.
 type ChainEndpoints map[string]Endpoint
 
 // Config represents the entire configuration structure for the load balancer.
@@ -35,9 +34,9 @@ func substituteEnvVars(s string) string {
 }
 
 // substituteEnvVarsInEndpoint recursively substitutes environment variables in an endpoint.
-// It processes both RPCURL and WSURL fields for environment variable substitution.
+// It processes both HTTPURL and WSURL fields for environment variable substitution.
 func substituteEnvVarsInEndpoint(endpoint *Endpoint) {
-	endpoint.RPCURL = substituteEnvVars(endpoint.RPCURL)
+	endpoint.HTTPURL = substituteEnvVars(endpoint.HTTPURL)
 	endpoint.WSURL = substituteEnvVars(endpoint.WSURL)
 }
 
@@ -57,9 +56,9 @@ func LoadConfig(path string) (*Config, error) {
 
 	// Substitute environment variables in all endpoints
 	for chainName, chainEndpoints := range config.Endpoints {
-		for endpointName, endpoint := range chainEndpoints {
+		for endpointID, endpoint := range chainEndpoints {
 			substituteEnvVarsInEndpoint(&endpoint)
-			config.Endpoints[chainName][endpointName] = endpoint
+			config.Endpoints[chainName][endpointID] = endpoint
 		}
 	}
 

@@ -28,8 +28,8 @@ func findConfigFile(t *testing.T) string {
 
 func TestLoadConfig(t *testing.T) {
 	// Test loading a valid configuration file
-	configPath := findConfigFile(t)
-	config, err := LoadConfig(configPath)
+	configFile := findConfigFile(t)
+	config, err := LoadConfig(configFile)
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestLoadConfig(t *testing.T) {
 	}
 
 	// Check if llama endpoint exists
-	llamaEndpoint, exists := mainnetEndpoints["llama"]
+	llamaEndpoint, exists := mainnetEndpoints["llama-1"]
 	if !exists {
 		t.Fatal("Llama endpoint should exist in mainnet chain")
 	}
@@ -86,8 +86,8 @@ func TestEnvironmentVariableSubstitution(t *testing.T) {
 }
 
 func TestGetPrimaryEndpoints(t *testing.T) {
-	configPath := findConfigFile(t)
-	config, err := LoadConfig(configPath)
+	configFile := findConfigFile(t)
+	config, err := LoadConfig(configFile)
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
@@ -105,8 +105,8 @@ func TestGetPrimaryEndpoints(t *testing.T) {
 }
 
 func TestGetFallbackEndpoints(t *testing.T) {
-	configPath := findConfigFile(t)
-	config, err := LoadConfig(configPath)
+	configFile := findConfigFile(t)
+	config, err := LoadConfig(configFile)
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
@@ -124,8 +124,8 @@ func TestGetFallbackEndpoints(t *testing.T) {
 }
 
 func TestGetEndpointsForChain(t *testing.T) {
-	configPath := findConfigFile(t)
-	config, err := LoadConfig(configPath)
+	configFile := findConfigFile(t)
+	config, err := LoadConfig(configFile)
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
