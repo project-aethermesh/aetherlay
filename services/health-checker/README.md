@@ -127,42 +127,26 @@ health:{chain}:{endpoint} -> JSON encoded EndpointStatus
 
 ### Request Counts
 ```
-metrics:{chain}:{endpoint}:proxy_requests:requests_24h -> int64
-metrics:{chain}:{endpoint}:proxy_requests:requests_1m -> int64
-metrics:{chain}:{endpoint}:proxy_requests:requests_all -> int64
-metrics:{chain}:{endpoint}:health_requests:requests_24h -> int64
-metrics:{chain}:{endpoint}:health_requests:requests_1m -> int64
-metrics:{chain}:{endpoint}:health_requests:requests_all -> int64
+metrics:{chain}:{endpoint_id}:proxy_requests:requests_24h -> int64
+metrics:{chain}:{endpoint_id}:proxy_requests:requests_1m -> int64
+metrics:{chain}:{endpoint_id}:proxy_requests:requests_all -> int64
+metrics:{chain}:{endpoint_id}:health_requests:requests_24h -> int64
+metrics:{chain}:{endpoint_id}:health_requests:requests_1m -> int64
+metrics:{chain}:{endpoint_id}:health_requests:requests_all -> int64
 ```
 
 **Note**: The 24-hour and 1-month counters have automatic expiration set (24 hours and 30 days respectively). The lifetime counter persists indefinitely.
 
 ## Monitoring
 
-### Health Checker Status
-
-The health checker logs its activity with structured logging:
-
-```json
-{
-  "level": "info",
-  "chain": "mainnet",
-  "provider": "infura",
-  "healthy": true,
-  "message": "Updated endpoint status"
-}
-```
-
-### Redis Monitoring
-
-Monitor Redis keys to track health status:
+You can use Redis keys to track health status:
 
 ```bash
 # Check health status for all endpoints
 redis-cli keys "health:*"
 
 # Get specific endpoint status
-redis-cli get "health:mainnet:infura"
+redis-cli get "health:mainnet:infura-1"
 
 # Monitor request counts
 redis-cli keys "metrics:*"
@@ -177,7 +161,7 @@ redis-cli keys "metrics:*"
    Failed to connect to Redis: dial tcp: connection refused
    ```
    - Verify Redis is running
-   - Check REDIS_HOST and REDIS_PORT environment variables
+   - Check REDIS_HOST, REDIS_PORT and REDIS_PASS environment variables
 
 2. **Configuration File Not Found**
    ```

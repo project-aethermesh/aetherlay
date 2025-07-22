@@ -11,13 +11,12 @@ type Endpoint struct {
 	Provider string `json:"provider"` // Name of the RPC provider (e.g., "alchemy", "infura")
 	Role     string `json:"role"`     // Role of the endpoint: "primary" or "fallback"
 	Type     string `json:"type"`     // Type of node: "full" or "archive"
-	Weight   int    `json:"weight"`   // Weight for load balancing (higher = more requests)
 	HTTPURL  string `json:"http_url"` // HTTP/HTTPS URL for RPC requests
 	WSURL    string `json:"ws_url"`   // WebSocket URL for real-time connections
 }
 
 // ChainEndpoints represents all endpoints for a specific blockchain.
-// The key is the provider name, and the value is the endpoint configuration.
+// The key is the endpoint ID, and the value is the endpoint configuration.
 type ChainEndpoints map[string]Endpoint
 
 // Config represents the entire configuration structure for the load balancer.

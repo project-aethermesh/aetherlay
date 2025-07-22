@@ -8,11 +8,6 @@ import (
 	"testing"
 )
 
-// mockRedisClientForHealthChecker returns a mock Redis client with Ping and Close methods
-func mockRedisClientForHealthChecker() store.RedisClientIface {
-	return store.NewMockRedisClient()
-}
-
 // mockConfig returns a minimal valid *config.Config for testing
 func mockConfig() *config.Config {
 	return &config.Config{
@@ -22,7 +17,6 @@ func mockConfig() *config.Config {
 					Provider: "mock",
 					Role:     "primary",
 					Type:     "full",
-					Weight:   1,
 					HTTPURL:  "http://mock",
 					WSURL:    "ws://mock",
 				},
@@ -52,8 +46,8 @@ func TestRunHealthCheckerFromEnv_Standalone(t *testing.T) {
 
 	// Patch health check methods to always return healthy
 	testCheckerPatch = func(checker *health.Checker) {
-		checker.CheckHTTPHealthFunc = func(ctx context.Context, chain, provider string, endpoint config.Endpoint) bool { return true }
-		checker.CheckWSHealthFunc = func(ctx context.Context, chain, provider string, endpoint config.Endpoint) bool { return true }
+		checker.CheckHTTPHealthFunc = func(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool { return true }
+		checker.CheckWSHealthFunc = func(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool { return true }
 	}
 	defer func() { testCheckerPatch = nil }()
 
@@ -101,8 +95,8 @@ func TestRunHealthCheckerFromEnv_Ephemeral(t *testing.T) {
 
 	// Patch health check methods to always return healthy
 	testCheckerPatch = func(checker *health.Checker) {
-		checker.CheckHTTPHealthFunc = func(ctx context.Context, chain, provider string, endpoint config.Endpoint) bool { return true }
-		checker.CheckWSHealthFunc = func(ctx context.Context, chain, provider string, endpoint config.Endpoint) bool { return true }
+		checker.CheckHTTPHealthFunc = func(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool { return true }
+		checker.CheckWSHealthFunc = func(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool { return true }
 	}
 	defer func() { testCheckerPatch = nil }()
 
@@ -150,8 +144,8 @@ func TestRunHealthCheckerFromEnv_Disabled(t *testing.T) {
 
 	// Patch health check methods to always return healthy
 	testCheckerPatch = func(checker *health.Checker) {
-		checker.CheckHTTPHealthFunc = func(ctx context.Context, chain, provider string, endpoint config.Endpoint) bool { return true }
-		checker.CheckWSHealthFunc = func(ctx context.Context, chain, provider string, endpoint config.Endpoint) bool { return true }
+		checker.CheckHTTPHealthFunc = func(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool { return true }
+		checker.CheckWSHealthFunc = func(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool { return true }
 	}
 	defer func() { testCheckerPatch = nil }()
 

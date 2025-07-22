@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -143,9 +144,9 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 // handleRequestWS creates a handler for WebSocket requests for a specific chain
 func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		log.Info().Str("path", r.URL.Path).Msg("Entered handleRequestWS")
+		log.Debug().Str("path", r.URL.Path).Msg("Entered handleRequestWS")
 		for k, v := range r.Header {
-			log.Info().Str("header", k).Strs("values", v).Msg("Request header")
+			log.Debug().Str("header", k).Strs("values", v).Msg("Request header")
 		}
 		// Only handle WebSocket upgrade requests (case-insensitive, robust)
 		if isWebSocketUpgrade(r) {
@@ -363,6 +364,7 @@ func (s *Server) markEndpointUnhealthyProtocol(chain, endpointID, protocol strin
 	case "ws":
 		status.HealthyWS = false
 	default:
+		// Log a warning because this would be odd, so it would be nice to investigate how we got here
 		log.Warn().Str("protocol", protocol).Msg("Unknown protocol, can't mark the endpoint as unhealthy")
 		return
 	}
@@ -486,6 +488,11 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 				log.Debug().Int("close_code", closeErr.Code).Str("close_text", closeErr.Text).Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket connection closed normally")
 				return nil
 			}
+		}
+		// Do not mark as unhealthy for timeouts
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			log.Debug().Err(err).Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket timeout, not marking endpoint as unhealthy")
+			return err
 		}
 		if chain, endpointID, found := s.findChainAndEndpointByURL(backendURL); found {
 			s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")

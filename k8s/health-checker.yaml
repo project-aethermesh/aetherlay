@@ -89,16 +89,14 @@ data:
           "http_url": "https://mainnet.infura.io/v3/${INFURA_API_KEY}",
           "ws_url": "wss://mainnet.infura.io/ws/v3/${INFURA_API_KEY}",
           "role": "primary",
-          "type": "full",
-          "weight": 1
+          "type": "full"
         },
         "alchemy": {
           "provider": "alchemy",
           "http_url": "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}",
           "ws_url": "wss://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}",
           "role": "fallback",
-          "type": "archive",
-          "weight": 2
+          "type": "archive"
         }
       }
     }
