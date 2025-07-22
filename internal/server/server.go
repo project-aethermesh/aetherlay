@@ -26,16 +26,18 @@ type Server struct {
 	redisClient store.RedisClientIface
 	router      *mux.Router
 
+	Timeout        time.Duration
 	forwardRequest func(w http.ResponseWriter, r *http.Request, targetURL string) error
 	proxyWebSocket func(w http.ResponseWriter, r *http.Request, backendURL string) error
 }
 
 // NewServer creates a new server instance
-func NewServer(cfg *config.Config, redisClient store.RedisClientIface) *Server {
+func NewServer(cfg *config.Config, redisClient store.RedisClientIface, timeout time.Duration) *Server {
 	s := &Server{
 		config:      cfg,
 		redisClient: redisClient,
 		router:      mux.NewRouter(),
+		Timeout:     timeout,
 	}
 
 	s.forwardRequest = s.defaultForwardRequest
@@ -106,6 +108,7 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 				http.Error(w, "No suitable endpoint found", http.StatusServiceUnavailable)
 				return
 			}
+			log.Debug().Str("chain", chain).Str("endpoint_id", endpoint.ID).Str("url", endpoint.Endpoint.HTTPURL).Msg("Selected HTTP endpoint")
 
 			// Forward the request
 			if err := s.forwardRequest(w, r, endpoint.Endpoint.HTTPURL); err != nil {
@@ -165,6 +168,7 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 					http.Error(w, "No suitable WebSocket endpoint found", http.StatusServiceUnavailable)
 					return
 				}
+				log.Debug().Str("chain", chain).Str("endpoint_id", endpoint.ID).Str("url", endpoint.Endpoint.WSURL).Msg("Selected WebSocket endpoint")
 
 				if err := s.proxyWebSocket(w, r, endpoint.Endpoint.WSURL); err != nil {
 					// Check if this is a normal WebSocket closure
@@ -403,7 +407,7 @@ func (s *Server) defaultForwardRequest(w http.ResponseWriter, r *http.Request, t
 	}
 
 	// Forward the request
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: s.Timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		if chain, endpointID, found := s.findChainAndEndpointByURL(targetURL); found {
@@ -457,7 +461,8 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 	defer clientConn.Close()
 
 	// Connect to the backend WebSocket
-	backendConn, _, err := websocket.DefaultDialer.Dial(backendURL, nil)
+	wsDialer := websocket.Dialer{HandshakeTimeout: s.Timeout}
+	backendConn, _, err := wsDialer.Dial(backendURL, nil)
 	if err != nil {
 		if chain, endpointID, found := s.findChainAndEndpointByURL(backendURL); found {
 			s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")

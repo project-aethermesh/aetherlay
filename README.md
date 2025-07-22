@@ -101,6 +101,7 @@ The load balancer will listen for incoming requests on predefined endpoints that
 | `--ephemeral-checks-interval` | `30` | Interval in seconds for ephemeral health checks |
 | `--ephemeral-checks-healthy-threshold` | `3` | Amount of consecutive successful responses required to consider endpoint healthy again |
 | `--health-check-interval` | `30` | Health check interval in seconds |
+| `--internal-timeout` | `10` | Timeout in seconds for internal HTTP/WebSocket requests (failover/retry) |
 | `--log-level` | `info` | Set the log level. Valid options are: `debug`, `info`, `warn`, `error`, `fatal`, `panic` |
 | `--redis-host` | `localhost` | Redis server hostname |
 | `--redis-port` | `6379` | Redis server port |
@@ -119,6 +120,7 @@ The load balancer will listen for incoming requests on predefined endpoints that
 | `EPHEMERAL_CHECKS_HEALTHY_THRESHOLD` | `3` | Amount of consecutive successful responses from the endpoint required to consider it as being healthy again |
 | `EPHEMERAL_CHECKS_INTERVAL` | `30` | Interval in seconds for ephemeral health checks |
 | `HEALTH_CHECK_INTERVAL` | `30` | Health check interval in seconds |
+| `INTERNAL_TIMEOUT` | `10` | Timeout in seconds for internal HTTP/WebSocket requests (failover/retry) |
 | `LOG_LEVEL` | `info` | Set the log level |
 | `REDIS_HOST` | `localhost` | Redis server hostname |
 | `REDIS_PORT` | `6379` | Redis server port |

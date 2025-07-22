@@ -74,6 +74,11 @@ func main() {
 		helpers.GetBoolFromEnv("STANDALONE_HEALTH_CHECKS", true),
 		"Enable standalone health checks",
 	)
+	internalTimeout := flag.Int(
+		"internal-timeout",
+		helpers.GetIntFromEnv("INTERNAL_TIMEOUT", 10),
+		"Timeout in seconds for internal HTTP/WebSocket requests (failover/retry).",
+	)
 	flag.Parse()
 
 	// Get Redis password from the env var
@@ -130,7 +135,7 @@ func main() {
 	}
 
 	// Initialize and start the server
-	srv := server.NewServer(cfg, redisClient)
+	srv := server.NewServer(cfg, redisClient, time.Duration(*internalTimeout)*time.Second)
 
 	// Handle graceful shutdown
 	stop := make(chan os.Signal, 1)

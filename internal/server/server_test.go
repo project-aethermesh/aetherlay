@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"aetherlay/internal/config"
 	"aetherlay/internal/store"
@@ -35,7 +36,7 @@ func failingForwardRequest(w http.ResponseWriter, r *http.Request, targetURL str
 func TestServerHealthCheck(t *testing.T) {
 	cfg := &config.Config{}
 	redisClient := store.NewMockRedisClient()
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
@@ -62,7 +63,7 @@ func TestHTTPSelection_HealthyOnly(t *testing.T) {
 		"chainA:ep1": {HasHTTP: true, HealthyHTTP: true},
 		"chainA:ep2": {HasHTTP: true, HealthyHTTP: false},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 	server.forwardRequest = stubForwardRequest
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -88,7 +89,7 @@ func TestHTTPSelection_NoneHealthy(t *testing.T) {
 	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainA:ep1": {HasHTTP: true, HealthyHTTP: false},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 	server.forwardRequest = stubForwardRequest
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -116,7 +117,7 @@ func TestWSSelection_HealthyOnly(t *testing.T) {
 		"chainB:ep1": {HasWS: true, HealthyWS: true},
 		"chainB:ep2": {HasWS: true, HealthyWS: false},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 	server.forwardRequest = stubForwardRequest
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -144,7 +145,7 @@ func TestWSSelection_NoneHealthy(t *testing.T) {
 	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainB:ep1": {HasWS: true, HealthyWS: false},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 	server.forwardRequest = stubForwardRequest
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -178,7 +179,7 @@ func TestHTTPSelection_FallbackWhenPrimaryUnhealthy(t *testing.T) {
 		"chainA:fallback1": {HasHTTP: true, HealthyHTTP: true},
 		"chainA:fallback2": {HasHTTP: true, HealthyHTTP: true},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 	server.forwardRequest = stubForwardRequest
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -210,7 +211,7 @@ func TestWSSelection_FallbackWhenPrimaryUnhealthy(t *testing.T) {
 		"chainB:fallback1": {HasWS: true, HealthyWS: true},
 		"chainB:fallback2": {HasWS: true, HealthyWS: true},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 	server.forwardRequest = stubForwardRequest
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -240,7 +241,7 @@ func TestHTTPSelection_NoFallbackAvailable(t *testing.T) {
 		"chainA:primary1":  {HasHTTP: true, HealthyHTTP: false},
 		"chainA:fallback1": {HasHTTP: true, HealthyHTTP: false},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 	server.forwardRequest = stubForwardRequest
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -268,7 +269,7 @@ func TestWSSelection_NoFallbackAvailable(t *testing.T) {
 		"chainB:primary1":  {HasWS: true, HealthyWS: false},
 		"chainB:fallback1": {HasWS: true, HealthyWS: false},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 	server.forwardRequest = stubForwardRequest
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -300,7 +301,7 @@ func TestHTTPSelection_PrimaryHealthyNoFallback(t *testing.T) {
 		"chainA:primary1":  {HasHTTP: true, HealthyHTTP: true},
 		"chainA:fallback1": {HasHTTP: true, HealthyHTTP: false},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 	server.forwardRequest = stubForwardRequest
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -330,7 +331,7 @@ func TestHTTPRetryLoop(t *testing.T) {
 		"chainA:ep2": {HasHTTP: true, HealthyHTTP: false},
 		"chainA:ep3": {HasHTTP: true, HealthyHTTP: true},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 
 	// Create a custom forward function that fails for specific URLs
 	server.forwardRequest = func(w http.ResponseWriter, r *http.Request, targetURL string) error {
@@ -371,7 +372,7 @@ func TestHTTPRetryLoop_AllFail(t *testing.T) {
 		"chainA:ep1": {HasHTTP: true, HealthyHTTP: false},
 		"chainA:ep2": {HasHTTP: true, HealthyHTTP: false},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 	server.forwardRequest = failingForwardRequest
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -402,7 +403,7 @@ func TestWSRetryLoop(t *testing.T) {
 		"chainB:ep2": {HasWS: true, HealthyWS: false},
 		"chainB:ep3": {HasWS: true, HealthyWS: true},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 	server.forwardRequest = stubForwardRequest
 
 	// Create a custom proxy function that fails for specific URLs
@@ -441,7 +442,7 @@ func TestWSRetryLoop_AllFail(t *testing.T) {
 		"chainB:ep1": {HasWS: true, HealthyWS: false},
 		"chainB:ep2": {HasWS: true, HealthyWS: false},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 	server.forwardRequest = stubForwardRequest
 	server.proxyWebSocket = func(w http.ResponseWriter, r *http.Request, backendURL string) error {
 		return fmt.Errorf("websocket endpoint failed: %s", backendURL)
@@ -510,7 +511,7 @@ func TestMarkEndpointUnhealthy_HTTP(t *testing.T) {
 	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainA:ep1": {HasHTTP: true, HealthyHTTP: true},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 
 	// Simulate a failed HTTP request
 	err := server.defaultForwardRequest(httptest.NewRecorder(), httptest.NewRequest("POST", "/chainA", nil), "http://fail")
@@ -539,7 +540,7 @@ func TestMarkEndpointUnhealthy_WS(t *testing.T) {
 	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainB:ep1": {HasWS: true, HealthyWS: true},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, 10*time.Second)
 
 	// Directly call the marking logic
 	server.markEndpointUnhealthyProtocol("chainB", "ep1", "ws")
