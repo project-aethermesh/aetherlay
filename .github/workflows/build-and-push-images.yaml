@@ -77,7 +77,7 @@ jobs:
       - name: Build health-checker binary
         id: build_hc
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/aetherlay-hc ./services/health-checker/main.go
+          make build-hc
 
       - name: Build and push health-checker image
         id: container_image_hc
@@ -125,7 +125,7 @@ jobs:
       - name: Build load-balancer binary
         id: build_lb
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/aetherlay-lb ./services/load-balancer/main.go
+          make build-lb
 
       - name: Build and push load-balancer image
         id: container_image_lb
