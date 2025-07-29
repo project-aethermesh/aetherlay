@@ -2,15 +2,14 @@ name: Build and Push Docker Images to GHCR
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag for manual builds. If not set, the branch name is used for non-main branches.'
+        required: false
+        type: string
   push:
-    branches: [main]
-    paths:
-      - '**.go'
-      - '**/Dockerfile'
-      - '.github/workflows/build-and-push-images.yaml'
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-    branches: [main]
+    branches:
+      - main
     paths:
       - '**.go'
       - '**/Dockerfile'
@@ -57,7 +56,7 @@ jobs:
   health-checker:
     name: Build health-checker image
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'build-images'))
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     needs:
       - setup
@@ -87,9 +86,10 @@ jobs:
         with:
           images: ghcr.io/project-aethermesh/aetherlay/aetherlay-hc
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,format=short,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
+            type=raw,value=latest,enable=${{ github.ref_name == github.event.repository.default_branch }}
+            type=sha,format=short,enable=${{ github.ref_name == github.event.repository.default_branch }}
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
+            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag == '' && github.ref_name != github.event.repository.default_branch }}
           labels: |
             org.opencontainers.image.vendor=Project Aethermesh
             org.opencontainers.image.licenses=AGPL-3.0
@@ -107,7 +107,7 @@ jobs:
   load-balancer:
     name: Build load-balancer image
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'build-images'))
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     needs:
       - setup
@@ -137,9 +137,10 @@ jobs:
         with:
           images: ghcr.io/project-aethermesh/aetherlay/aetherlay-lb
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,format=short,enable={{is_default_branch}}
-            type=ref,event=pr,prefix=pr-
+            type=raw,value=latest,enable=${{ github.ref_name == github.event.repository.default_branch }}
+            type=sha,format=short,enable=${{ github.ref_name == github.event.repository.default_branch }}
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
+            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag == '' && github.ref_name != github.event.repository.default_branch }}
           labels: |
             org.opencontainers.image.vendor=Project Aethermesh
             org.opencontainers.image.licenses=AGPL-3.0
