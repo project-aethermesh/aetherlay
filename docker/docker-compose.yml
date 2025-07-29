@@ -1,0 +1,46 @@
+services:
+  redis:
+    image: redis:8.0-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./.redis-data:/data
+      - ./.redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf --requirepass SOME_PASS
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    ports:
+      - "5540:5540"
+    volumes:
+      - ./.redis-insight:/data
+    depends_on:
+      - redis
+
+  aetherlay-hc:
+    build:
+      context: ..
+      dockerfile: services/health-checker/Dockerfile
+    container_name: aetherlay-hc
+    volumes:
+      - ../configs:/configs:ro
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PASS=SOME_PASS
+    depends_on:
+      - redis
+
+  aetherlay-lb:
+    build:
+      context: ..
+      dockerfile: services/load-balancer/Dockerfile
+    container_name: aetherlay-lb
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../configs:/configs:ro
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PASS=SOME_PASS
+    depends_on:
+      - aetherlay-hc

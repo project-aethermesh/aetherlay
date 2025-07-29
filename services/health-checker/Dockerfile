@@ -1,7 +1,7 @@
-FROM scratch
+FROM alpine:latest
 
 # Be careful with the next line.
 # The binary path is relative to Docker's context path set on the Makefile, not to the actual placement of this Dockerfile.
-COPY bin/aetherlay-hc /aetherlay-hc
+COPY bin/aetherlay-hc /app/aetherlay-hc
 
-ENTRYPOINT ["/aetherlay-hc"]
+ENTRYPOINT ["/app/aetherlay-hc"]
