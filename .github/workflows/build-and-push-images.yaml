@@ -2,13 +2,18 @@ name: Build and Push Docker Images to GHCR
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag for manual builds. If not set, the branch name is used for non-main branches.'
+        required: false
+        type: string
   push:
+    branches:
+      - main
     paths:
       - '**.go'
       - '**/Dockerfile'
       - '.github/workflows/build-and-push-images.yaml'
-    branches:
-      - main
 
 jobs:
   setup:
@@ -51,6 +56,7 @@ jobs:
   health-checker:
     name: Build health-checker image
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     needs:
       - setup
@@ -74,10 +80,19 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.AETHERLAY_GITHUB_TOKEN }}
 
-      - name: Build health-checker binary
-        id: build_hc
-        run: |
-          make build-hc
+      - name: Docker meta for health-checker
+        id: meta_hc
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/project-aethermesh/aetherlay/aetherlay-hc
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref_name == github.event.repository.default_branch }}
+            type=sha,format=short,enable=${{ github.ref_name == github.event.repository.default_branch }}
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
+            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag == '' && github.ref_name != github.event.repository.default_branch }}
+          labels: |
+            org.opencontainers.image.vendor=Project Aethermesh
+            org.opencontainers.image.licenses=AGPL-3.0
 
       - name: Build and push health-checker image
         id: container_image_hc
@@ -86,26 +101,20 @@ jobs:
           context: .
           file: ./services/health-checker/Dockerfile
           push: true
-          tags: |
-            ghcr.io/project-aethermesh/aetherlay/aetherlay-hc:latest
-            ghcr.io/project-aethermesh/aetherlay/aetherlay-hc:${{ needs.setup.outputs.short_sha }}
-          labels: |
-            org.opencontainers.image.url=https://github.com/project-aethermesh/aetherlay
-            org.opencontainers.image.source=https://github.com/project-aethermesh/aetherlay
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
-            org.opencontainers.image.vendor="Project Aethermesh"
+          tags: ${{ steps.meta_hc.outputs.tags }}
+          labels: ${{ steps.meta_hc.outputs.labels }}
 
   load-balancer:
     name: Build load-balancer image
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     needs:
       - setup
       - test
     steps:
       - name: Checkout code
-        id: checkout
+        id: checkout_lb
         uses: actions/checkout@v4
 
       - name: Set up Go
@@ -115,17 +124,26 @@ jobs:
           go-version: '1.24'
 
       - name: Log in to GitHub Container Registry
-        id: login_ghcr
+        id: login_ghcr_lb
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.AETHERLAY_GITHUB_TOKEN }}
 
-      - name: Build load-balancer binary
-        id: build_lb
-        run: |
-          make build-lb
+      - name: Docker meta for load-balancer
+        id: meta_lb
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/project-aethermesh/aetherlay/aetherlay-lb
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref_name == github.event.repository.default_branch }}
+            type=sha,format=short,enable=${{ github.ref_name == github.event.repository.default_branch }}
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
+            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag == '' && github.ref_name != github.event.repository.default_branch }}
+          labels: |
+            org.opencontainers.image.vendor=Project Aethermesh
+            org.opencontainers.image.licenses=AGPL-3.0
 
       - name: Build and push load-balancer image
         id: container_image_lb
@@ -134,12 +152,5 @@ jobs:
           context: .
           file: ./services/load-balancer/Dockerfile
           push: true
-          tags: |
-            ghcr.io/project-aethermesh/aetherlay/aetherlay-lb:latest
-            ghcr.io/project-aethermesh/aetherlay/aetherlay-lb:${{ needs.setup.outputs.short_sha }}
-          labels: |
-            org.opencontainers.image.url=https://github.com/project-aethermesh/aetherlay
-            org.opencontainers.image.source=https://github.com/project-aethermesh/aetherlay
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
-            org.opencontainers.image.vendor="Project Aethermesh"
+          tags: ${{ steps.meta_lb.outputs.tags }}
+          labels: ${{ steps.meta_lb.outputs.labels }}
