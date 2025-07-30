@@ -34,21 +34,6 @@ func main() {
 		helpers.GetStringFromEnv("CONFIG_FILE", "configs/endpoints.json"),
 		"Path to the endpoints configuration file",
 	)
-	ephemeralChecksInterval := flag.Int(
-		"ephemeral-checks-interval",
-		helpers.GetIntFromEnv("EPHEMERAL_CHECKS_INTERVAL", 30),
-		"Interval in seconds for ephemeral health checks",
-	)
-	ephemeralChecksHealthyThreshold := flag.Int(
-		"ephemeral-checks-healthy-threshold",
-		helpers.GetIntFromEnv("EPHEMERAL_CHECKS_HEALTHY_THRESHOLD", 3),
-		"Amount of consecutive successful responses required to consider endpoint healthy again",
-	)
-	healthCheckInterval := flag.Int(
-		"health-check-interval",
-		helpers.GetIntFromEnv("HEALTH_CHECK_INTERVAL", 30),
-		"Health check interval in seconds",
-	)
 	logLevel := flag.String(
 		"log-level",
 		helpers.GetStringFromEnv("LOG_LEVEL", "info"),
@@ -74,6 +59,27 @@ func main() {
 		helpers.GetBoolFromEnv("STANDALONE_HEALTH_CHECKS", true),
 		"Enable standalone health checks",
 	)
+
+	// These flags are only used if the standalone health checker is NOT enabled
+	var ephemeralChecksInterval, ephemeralChecksHealthyThreshold, healthCheckInterval *int
+	if !*standaloneHealthChecks {
+		ephemeralChecksInterval = flag.Int(
+			"ephemeral-checks-interval",
+			helpers.GetIntFromEnv("EPHEMERAL_CHECKS_INTERVAL", 30),
+			"Interval in seconds for ephemeral health checks",
+		)
+		ephemeralChecksHealthyThreshold = flag.Int(
+			"ephemeral-checks-healthy-threshold",
+			helpers.GetIntFromEnv("EPHEMERAL_CHECKS_HEALTHY_THRESHOLD", 3),
+			"Amount of consecutive successful responses required to consider endpoint healthy again",
+		)
+		healthCheckInterval = flag.Int(
+			"health-check-interval",
+			helpers.GetIntFromEnv("HEALTH_CHECK_INTERVAL", 30),
+			"Health check interval in seconds",
+		)
+	}
+
 	flag.Parse()
 
 	// Get Redis password from the env var
@@ -125,7 +131,7 @@ func main() {
 
 		log.Info().Int("interval_seconds", *healthCheckInterval).Msg("Starting integrated health check service")
 		go checker.Start(ctx)
-	} else if *standaloneHealthChecks && *healthCheckInterval > 0 {
+	} else if *standaloneHealthChecks {
 		log.Info().Msg("Standalone health checks enabled (STANDALONE_HEALTH_CHECKS=true). Using external health checker service.")
 	}
 
