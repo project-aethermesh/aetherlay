@@ -107,6 +107,8 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 				return
 			}
 
+			log.Debug().Str("chain", chain).Str("endpoint", endpoint.ID).Msg("Selected endpoint for HTTP request")
+
 			// Forward the request
 			if err := s.forwardRequest(w, r, endpoint.Endpoint.HTTPURL); err != nil {
 				log.Error().Err(err).Str("endpoint", endpoint.Endpoint.HTTPURL).Msg("Failed to forward request")
@@ -165,6 +167,8 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 					http.Error(w, "No suitable WebSocket endpoint found", http.StatusServiceUnavailable)
 					return
 				}
+
+				log.Debug().Str("chain", chain).Str("endpoint", endpoint.ID).Msg("Selected endpoint for WS request")
 
 				if err := s.proxyWebSocket(w, r, endpoint.Endpoint.WSURL); err != nil {
 					// Check if this is a normal WebSocket closure
