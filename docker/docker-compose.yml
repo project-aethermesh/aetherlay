@@ -25,6 +25,7 @@ services:
     volumes:
       - ../configs:/configs:ro
     environment:
+      - LOG_LEVEL=debug
       - REDIS_HOST=redis
       - REDIS_PASS=SOME_PASS
     depends_on:
@@ -40,6 +41,7 @@ services:
     volumes:
       - ../configs:/configs:ro
     environment:
+      - LOG_LEVEL=debug
       - REDIS_HOST=redis
       - REDIS_PASS=SOME_PASS
     depends_on:
