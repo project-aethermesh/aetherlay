@@ -58,7 +58,6 @@ func RunHealthChecker(
 	}
 
 	mode := ""
-	log.Debug().Str("initial_mode", mode).Msg("Health checker mode initialized")
 
 	if !standaloneHealthChecks {
 		mode = "disabled"
