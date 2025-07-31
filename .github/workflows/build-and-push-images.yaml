@@ -50,7 +50,6 @@ jobs:
       - name: Run tests
         id: run_tests
         run: |
-          mv configs/endpoints{-example,}.json
           go test ./...
 
   health-checker:
