@@ -39,23 +39,11 @@ func RunHealthChecker(
 	ephemeralChecksInterval int,
 	ephemeralChecksHealthyThreshold int,
 	healthCheckInterval int,
-	logLevel string,
 	redisHost string,
 	redisPort string,
 	redisPassword string,
 	standaloneHealthChecks bool,
 ) {
-	// Initialize logger
-	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
-
-	// Set the requested log level if it's valid, otherwise default to info
-	if level, err := zerolog.ParseLevel(logLevel); err == nil {
-		zerolog.SetGlobalLevel(level)
-	} else {
-		log.Warn().Str("LOG_LEVEL", logLevel).Msg("Invalid log level, defaulting to Info")
-		zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	}
 
 	mode := ""
 
@@ -141,6 +129,12 @@ func RunHealthChecker(
 // main initializes and starts the health checker service
 func main() {
 	_ = godotenv.Load()
+
+	// Initialize logger
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
+
+	// Parse command line flags
 	configFile := flag.String(
 		"config-file",
 		helpers.GetStringFromEnv("CONFIG_FILE", "configs/endpoints.json"),
@@ -183,12 +177,20 @@ func main() {
 	)
 	flag.Parse()
 	redisPassword := helpers.GetStringFromEnv("REDIS_PASS", "")
+
+	// Set the requested log level if it's valid, otherwise default to info
+	if level, err := zerolog.ParseLevel(*logLevel); err == nil {
+		zerolog.SetGlobalLevel(level)
+	} else {
+		log.Warn().Str("LOG_LEVEL", *logLevel).Msg("Invalid log level, defaulting to Info")
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	}
+
 	RunHealthChecker(
 		*configFile,
 		*ephemeralChecksInterval,
 		*ephemeralChecksHealthyThreshold,
 		*healthCheckInterval,
-		*logLevel,
 		*redisHost,
 		*redisPort,
 		redisPassword,
