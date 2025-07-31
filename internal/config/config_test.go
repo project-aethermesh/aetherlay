@@ -5,30 +5,9 @@ import (
 	"testing"
 )
 
-// Helper function to find the config file
-func findConfigFile(t *testing.T) string {
-	// Try different possible paths
-	possiblePaths := []string{
-		"configs/endpoints.json",
-		"../configs/endpoints.json",
-		"../../configs/endpoints.json",
-		"./configs/endpoints.json",
-	}
-
-	for _, path := range possiblePaths {
-		if _, err := os.Stat(path); err == nil {
-			t.Logf("Found config file at: %s", path)
-			return path
-		}
-	}
-
-	t.Fatal("Could not find configs/endpoints.json in any of the expected locations")
-	return ""
-}
-
 func TestLoadConfig(t *testing.T) {
 	// Test loading a valid configuration file
-	configFile := findConfigFile(t)
+	configFile := "../../configs/endpoints-example.json"
 	config, err := LoadConfig(configFile)
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
@@ -86,7 +65,7 @@ func TestEnvironmentVariableSubstitution(t *testing.T) {
 }
 
 func TestGetPrimaryEndpoints(t *testing.T) {
-	configFile := findConfigFile(t)
+	configFile := "../../configs/endpoints-example.json"
 	config, err := LoadConfig(configFile)
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
@@ -105,7 +84,7 @@ func TestGetPrimaryEndpoints(t *testing.T) {
 }
 
 func TestGetFallbackEndpoints(t *testing.T) {
-	configFile := findConfigFile(t)
+	configFile := "../../configs/endpoints-example.json"
 	config, err := LoadConfig(configFile)
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
@@ -124,7 +103,7 @@ func TestGetFallbackEndpoints(t *testing.T) {
 }
 
 func TestGetEndpointsForChain(t *testing.T) {
-	configFile := findConfigFile(t)
+	configFile := "../../configs/endpoints-example.json"
 	config, err := LoadConfig(configFile)
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)

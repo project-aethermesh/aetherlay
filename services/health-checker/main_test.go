@@ -62,7 +62,6 @@ func TestRunHealthCheckerFromEnv_Standalone(t *testing.T) {
 		30,          // ephemeralChecksInterval
 		3,           // ephemeralChecksHealthyThreshold
 		30,          // healthCheckInterval
-		"info",      // logLevel
 		"localhost", // redisHost
 		"6379",      // redisPort
 		"",          // redisPassword
@@ -111,7 +110,6 @@ func TestRunHealthCheckerFromEnv_Ephemeral(t *testing.T) {
 		30,          // ephemeralChecksInterval
 		3,           // ephemeralChecksHealthyThreshold
 		0,           // healthCheckInterval (ephemeral mode)
-		"info",      // logLevel
 		"localhost", // redisHost
 		"6379",      // redisPort
 		"",          // redisPassword
@@ -160,7 +158,6 @@ func TestRunHealthCheckerFromEnv_Disabled(t *testing.T) {
 		30,          // ephemeralChecksInterval
 		3,           // ephemeralChecksHealthyThreshold
 		0,           // healthCheckInterval (doesn't matter)
-		"info",      // logLevel
 		"localhost", // redisHost
 		"6379",      // redisPort
 		"",          // redisPassword

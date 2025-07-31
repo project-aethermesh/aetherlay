@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"aetherlay/internal/config"
+	"aetherlay/internal/helpers"
 	"aetherlay/internal/store"
 
 	"github.com/gorilla/websocket"
@@ -247,7 +248,7 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 
 // checkHTTPHealth performs HTTP health check and returns health status
 func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool {
-	log.Info().Str("chain", chain).Str("endpoint_id", endpointID).Str("url", endpoint.HTTPURL).Msg("Running HTTP health check")
+	log.Info().Str("chain", chain).Str("endpoint_id", endpointID).Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Running HTTP health check")
 	if endpoint.HTTPURL == "" {
 		return false
 	}
@@ -307,7 +308,7 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 
 // checkWSHealth performs WebSocket health check and returns health status
 func (c *Checker) checkWSHealth(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool {
-	log.Info().Str("chain", chain).Str("endpoint_id", endpointID).Str("url", endpoint.WSURL).Msg("Running WS health check")
+	log.Info().Str("chain", chain).Str("endpoint_id", endpointID).Str("url", helpers.RedactAPIKey(endpoint.WSURL)).Msg("Running WS health check")
 	if endpoint.WSURL == "" {
 		return false
 	}
