@@ -7,7 +7,7 @@ services:
       - ..:/workspace:cached
     command: sleep infinity
     environment:
-      - REDIS_URL=rediss://:SOME_PASS@redis:6380
+      - REDIS_URL=redis://:SOME_PASS@redis:6379
     depends_on:
       - redis
 
