@@ -104,6 +104,7 @@ The load balancer will listen for incoming requests on predefined endpoints that
 | `--log-level` | `info` | Set the log level. Valid options are: `debug`, `info`, `warn`, `error`, `fatal`, `panic` |
 | `--redis-host` | `localhost` | Redis server hostname |
 | `--redis-port` | `6379` | Redis server port |
+| `--redis-use-tls` | `false` | Whether to use TLS for connecting to Redis |
 | `--server-port` | `8080` | Port to use for the load balancer / proxy |
 | `--standalone-health-checks` | `true` | Enable standalone health checks |
 
@@ -122,7 +123,9 @@ The load balancer will listen for incoming requests on predefined endpoints that
 | `LOG_LEVEL` | `info` | Set the log level |
 | `REDIS_HOST` | `localhost` | Redis server hostname |
 | `REDIS_PORT` | `6379` | Redis server port |
-| `REDIS_PASS` | - | Redis server password (optional) |
+| `REDIS_PASS` | - | Redis server password |
+| `REDIS_USE_TLS` | `false` | Whether to use TLS for connecting to Redis |
+| `REDIS_SKIP_TLS_CHECK` | `false` | Whether to skip TLS certificate validation when connecting to Redis |
 | `SERVER_PORT` | `8080` | Port to use for the load balancer / proxy |
 | `STANDALONE_HEALTH_CHECKS` | `true` | Enable/disable the standalone mode of the health checker |
 

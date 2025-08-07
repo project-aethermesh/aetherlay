@@ -31,11 +31,13 @@ func TestRunHealthCheckerFromEnv_Standalone(t *testing.T) {
 	defer func() { testExitAfterSetup = false }()
 
 	// Patch newRedisClient
-	newRedisClient = func(addr string, password string) store.RedisClientIface {
+	newRedisClient = func(addr string, password string, redisUseTLS bool) store.RedisClientIface {
 		return store.NewMockRedisClient()
 	}
 	defer func() {
-		newRedisClient = func(addr string, password string) store.RedisClientIface { return store.NewRedisClient(addr, password) }
+		newRedisClient = func(addr string, password string, redisUseTLS bool) store.RedisClientIface {
+			return store.NewRedisClient(addr, password, redisUseTLS)
+		}
 	}()
 
 	// Patch loadConfig
@@ -65,6 +67,7 @@ func TestRunHealthCheckerFromEnv_Standalone(t *testing.T) {
 		"localhost", // redisHost
 		"6379",      // redisPort
 		"",          // redisPassword
+		false,       // redisUseTLS
 		true,        // standaloneHealthChecks
 	)
 
@@ -79,11 +82,13 @@ func TestRunHealthCheckerFromEnv_Ephemeral(t *testing.T) {
 	defer func() { testExitAfterSetup = false }()
 
 	// Patch newRedisClient
-	newRedisClient = func(addr string, password string) store.RedisClientIface {
+	newRedisClient = func(addr string, password string, redisUseTLS bool) store.RedisClientIface {
 		return store.NewMockRedisClient()
 	}
 	defer func() {
-		newRedisClient = func(addr string, password string) store.RedisClientIface { return store.NewRedisClient(addr, password) }
+		newRedisClient = func(addr string, password string, redisUseTLS bool) store.RedisClientIface {
+			return store.NewRedisClient(addr, password, redisUseTLS)
+		}
 	}()
 
 	// Patch loadConfig
@@ -113,6 +118,7 @@ func TestRunHealthCheckerFromEnv_Ephemeral(t *testing.T) {
 		"localhost", // redisHost
 		"6379",      // redisPort
 		"",          // redisPassword
+		false,       // redisUseTLS
 		true,        // standaloneHealthChecks
 	)
 
@@ -127,11 +133,13 @@ func TestRunHealthCheckerFromEnv_Disabled(t *testing.T) {
 	defer func() { testExitAfterSetup = false }()
 
 	// Patch newRedisClient
-	newRedisClient = func(addr string, password string) store.RedisClientIface {
+	newRedisClient = func(addr string, password string, redisUseTLS bool) store.RedisClientIface {
 		return store.NewMockRedisClient()
 	}
 	defer func() {
-		newRedisClient = func(addr string, password string) store.RedisClientIface { return store.NewRedisClient(addr, password) }
+		newRedisClient = func(addr string, password string, redisUseTLS bool) store.RedisClientIface {
+			return store.NewRedisClient(addr, password, redisUseTLS)
+		}
 	}()
 
 	// Patch loadConfig
@@ -161,6 +169,7 @@ func TestRunHealthCheckerFromEnv_Disabled(t *testing.T) {
 		"localhost", // redisHost
 		"6379",      // redisPort
 		"",          // redisPassword
+		false,       // redisUseTLS
 		false,       // standaloneHealthChecks (disabled)
 	)
 

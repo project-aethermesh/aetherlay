@@ -1,8 +1,10 @@
 package store
 
 import (
+	"aetherlay/internal/helpers"
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 )
@@ -282,4 +284,60 @@ func TestCombinedRequestCounts(t *testing.T) {
 	if rAll != 2 {
 		t.Errorf("Expected combined lifetime requests to be 2, got %d", rAll)
 	}
+}
+
+// TestNewRedisClientTLSConfig is an integration test that checks the TLS configuration.
+// It requires a running Redis server with TLS enabled on port 6380 and non-TLS on 6379.
+func TestNewRedisClientTLSConfig(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode.")
+	}
+
+	redisHost := helpers.GetStringFromEnv("REDIS_HOST", "localhost")
+	redisPassword := helpers.GetStringFromEnv("REDIS_PASS", "SOME_PASS")
+
+	redisAddrNonTLS := fmt.Sprintf("%s:6379", redisHost)
+	redisAddrTLS := fmt.Sprintf("%s:6380", redisHost)
+
+	ctx := context.Background()
+
+	t.Run("Non-TLS connection", func(t *testing.T) {
+		client := NewRedisClient(redisAddrNonTLS, redisPassword, false)
+		if err := client.Ping(ctx); err != nil {
+			t.Fatalf("Failed to connect to non-TLS Redis: %v", err)
+		}
+	})
+
+	t.Run("TLS connection with skip verify", func(t *testing.T) {
+		os.Setenv("REDIS_SKIP_TLS_CHECK", "true")
+		defer os.Unsetenv("REDIS_SKIP_TLS_CHECK")
+
+		client := NewRedisClient(redisAddrTLS, redisPassword, true)
+		if err := client.Ping(ctx); err != nil {
+			t.Fatalf("Failed to connect to TLS Redis with skip verify: %v", err)
+		}
+	})
+
+	t.Run("TLS connection without skip verify (should fail)", func(t *testing.T) {
+		os.Setenv("REDIS_SKIP_TLS_CHECK", "false")
+		defer os.Unsetenv("REDIS_SKIP_TLS_CHECK")
+
+		client := NewRedisClient(redisAddrTLS, redisPassword, true)
+		if err := client.Ping(ctx); err == nil {
+			t.Fatal("Expected TLS connection to fail without skip verify, but it succeeded.")
+		} else {
+			t.Logf("Received expected error: %v", err)
+		}
+	})
+
+	t.Run("TLS connection with env var unset (should fail)", func(t *testing.T) {
+		os.Unsetenv("REDIS_SKIP_TLS_CHECK")
+
+		client := NewRedisClient(redisAddrTLS, redisPassword, true)
+		if err := client.Ping(ctx); err == nil {
+			t.Fatal("Expected TLS connection to fail with env var unset, but it succeeded.")
+		} else {
+			t.Logf("Received expected error: %v", err)
+		}
+	})
 }

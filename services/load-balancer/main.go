@@ -54,6 +54,11 @@ func main() {
 		helpers.GetIntFromEnv("SERVER_PORT", 8080),
 		"Server port",
 	)
+	redisUseTLS := flag.Bool(
+		"redis-use-tls",
+		helpers.GetBoolFromEnv("REDIS_USE_TLS", false),
+		"Use TLS for Redis connection",
+	)
 	standaloneHealthChecks := flag.Bool(
 		"standalone-health-checks",
 		helpers.GetBoolFromEnv("STANDALONE_HEALTH_CHECKS", true),
@@ -118,7 +123,7 @@ func main() {
 
 	// Initialize Redis client
 	redisAddr := *redisHost + ":" + *redisPort
-	redisClient := store.NewRedisClient(redisAddr, redisPassword)
+	redisClient := store.NewRedisClient(redisAddr, redisPassword, *redisUseTLS)
 	if err := redisClient.Ping(context.Background()); err != nil {
 		log.Fatal().Err(err).Msg("Failed to connect to Redis")
 	}

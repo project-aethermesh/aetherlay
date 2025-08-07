@@ -36,6 +36,7 @@ go.work
 # Redis data
 .redis-data/
 .redis-insight/
+.tls/
 
 # Custom endpoints
 configs/endpoints.json

@@ -22,8 +22,8 @@ import (
 var onModeDetected func(string)
 
 // Allow patching in tests
-var newRedisClient func(addr string, password string) store.RedisClientIface = func(addr string, password string) store.RedisClientIface {
-	return store.NewRedisClient(addr, password)
+var newRedisClient func(addr string, password string, redisUseTLS bool) store.RedisClientIface = func(addr string, password string, redisUseTLS bool) store.RedisClientIface {
+	return store.NewRedisClient(addr, password, redisUseTLS)
 }
 var loadConfig = config.LoadConfig
 
@@ -42,6 +42,7 @@ func RunHealthChecker(
 	redisHost string,
 	redisPort string,
 	redisPassword string,
+	redisUseTLS bool,
 	standaloneHealthChecks bool,
 ) {
 
@@ -81,7 +82,7 @@ func RunHealthChecker(
 	}
 
 	redisAddr := redisHost + ":" + redisPort
-	redisClient := newRedisClient(redisAddr, redisPassword)
+	redisClient := newRedisClient(redisAddr, redisPassword, redisUseTLS)
 	if err := redisClient.Ping(context.Background()); err != nil {
 		log.Fatal().Err(err).Msg("Failed to connect to Redis")
 	}
@@ -170,6 +171,11 @@ func main() {
 		helpers.GetStringFromEnv("REDIS_PORT", "6379"),
 		"Redis server port",
 	)
+	redisUseTLS := flag.Bool(
+		"redis-use-tls",
+		helpers.GetBoolFromEnv("REDIS_USE_TLS", false),
+		"Use TLS for Redis connection",
+	)
 	standaloneHealthChecks := flag.Bool(
 		"standalone-health-checks",
 		helpers.GetBoolFromEnv("STANDALONE_HEALTH_CHECKS", true),
@@ -194,6 +200,7 @@ func main() {
 		*redisHost,
 		*redisPort,
 		redisPassword,
+		*redisUseTLS,
 		*standaloneHealthChecks,
 	)
 }
