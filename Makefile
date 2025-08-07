@@ -49,13 +49,26 @@ docker-clean:
 .PHONY: docker-run
 docker-run:
 	@echo "Running all containers with Docker compose..."
-	docker-compose -f docker/docker-compose.yml up --build --remove-orphans -d
+	docker compose -f docker/docker-compose.yml up --build --remove-orphans -d
 
 # Stop Docker compose
 .PHONY: docker-stop
 docker-stop:
 	@echo "Stopping all containers that were started with Docker compose..."
-	docker-compose -f docker/docker-compose.yml down
+	docker compose -f docker/docker-compose.yml down
+
+# Run the app using preprod images from GHCR
+.PHONY: docker-run-preprod
+docker-run-preprod:
+	@echo "Running the app using preprod images from GHCR..."
+	docker compose -f docker/docker-compose.preprod.yml pull
+	docker compose -f docker/docker-compose.preprod.yml up --remove-orphans -d
+
+# Stop the app that was started using preprod images from GHCR
+.PHONY: docker-stop-preprod
+docker-stop-preprod:
+	@echo "Stopping the app that was started using preprod images from GHCR..."
+	docker compose -f docker/docker-compose.preprod.yml down
 
 # Development helpers
 .PHONY: dev-setup
@@ -152,24 +165,28 @@ test-v:
 .PHONY: help
 help:
 	@echo "Available targets:"
-	@echo "  build            - Build both services"
-	@echo "  build-hc         - Build health checker only"
-	@echo "  build-lb         - Build load balancer only"
-	@echo "  clean            - Clean build artifacts"
-	@echo "  dev-setup        - Set up development environment"
-	@echo "  docker-build     - Build Docker images for both services"
-	@echo "  docker-build-hc  - Build Docker image for health checker"
-	@echo "  docker-build-lb  - Build Docker image for load balancer"
-	@echo "  docker-clean     - Clean Docker images"
-	@echo "  k8s-delete       - Delete Kubernetes deployments"
-	@echo "  k8s-deploy       - Deploy both services to Kubernetes"
-	@echo "  k8s-deploy-hc    - Deploy health checker to Kubernetes"
-	@echo "  k8s-deploy-lb    - Deploy load balancer to Kubernetes"
-	@echo "  run              - Run both services in the background"
-	@echo "  run-hc           - Run health checker"
-	@echo "  run-lb           - Run load balancer"
-	@echo "  stop             - Stop both services"
-	@echo "  stop-hc          - Stop health checker"
-	@echo "  stop-lb          - Stop load balancer"
-	@echo "  test             - Run tests"
-	@echo "  test-v           - Run tests with verbose output"
+	@echo "  build               - Build both services"
+	@echo "  build-hc            - Build health checker only"
+	@echo "  build-lb            - Build load balancer only"
+	@echo "  clean               - Clean build artifacts"
+	@echo "  dev-setup           - Set up development environment"
+	@echo "  docker-build        - Build Docker images for both services"
+	@echo "  docker-build-hc     - Build Docker image for health checker"
+	@echo "  docker-build-lb     - Build Docker image for load balancer"
+	@echo "  docker-clean        - Clean Docker images"
+	@echo "  docker-run          - Run local compose (builds images from local source code)"
+	@echo "  docker-run-preprod  - Test the preprod images from GHCR before marking them as prod-ready"
+	@echo "  docker-stop         - Stop local compose"
+	@echo "  docker-stop-preprod - Stop the app that was started using preprod images from GHCR"
+	@echo "  k8s-delete          - Delete Kubernetes deployments"
+	@echo "  k8s-deploy          - Deploy both services to Kubernetes"
+	@echo "  k8s-deploy-hc       - Deploy health checker to Kubernetes"
+	@echo "  k8s-deploy-lb       - Deploy load balancer to Kubernetes"
+	@echo "  run                 - Run both services in the background"
+	@echo "  run-hc              - Run health checker"
+	@echo "  run-lb              - Run load balancer"
+	@echo "  stop                - Stop both services"
+	@echo "  stop-hc             - Stop health checker"
+	@echo "  stop-lb             - Stop load balancer"
+	@echo "  test                - Run tests"
+	@echo "  test-v              - Run tests with verbose output"
