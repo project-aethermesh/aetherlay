@@ -20,18 +20,20 @@ services:
       - redis
 
   aetherlay-hc:
+    platform: linux/amd64
     image: ghcr.io/project-aethermesh/aetherlay/aetherlay-hc:preprod
     container_name: aetherlay-hc-preprod
     volumes:
       - ../configs:/configs:ro
     environment:
       - LOG_LEVEL=debug
-      - REDIS_HOST=redis
+      - REDIS_HOST=aetherlay-redis-preprod
       - REDIS_PASS=SOME_PASS
     depends_on:
       - redis
 
   aetherlay-lb:
+    platform: linux/amd64
     image: ghcr.io/project-aethermesh/aetherlay/aetherlay-lb:preprod
     container_name: aetherlay-lb-preprod
     ports:
@@ -40,7 +42,7 @@ services:
       - ../configs:/configs:ro
     environment:
       - LOG_LEVEL=debug
-      - REDIS_HOST=redis
+      - REDIS_HOST=aetherlay-redis-preprod
       - REDIS_PASS=SOME_PASS
     depends_on:
       - aetherlay-hc

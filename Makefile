@@ -58,15 +58,15 @@ docker-stop:
 	docker compose -f docker/docker-compose.yml down
 
 # Run the app using preprod images from GHCR
-.PHONY: docker-run-preprod
-docker-run-preprod:
+.PHONY: docker-preprod-run
+docker-preprod-run:
 	@echo "Running the app using preprod images from GHCR..."
 	docker compose -f docker/docker-compose.preprod.yml pull
 	docker compose -f docker/docker-compose.preprod.yml up --remove-orphans -d
 
 # Stop the app that was started using preprod images from GHCR
-.PHONY: docker-stop-preprod
-docker-stop-preprod:
+.PHONY: docker-preprod-stop
+docker-preprod-stop:
 	@echo "Stopping the app that was started using preprod images from GHCR..."
 	docker compose -f docker/docker-compose.preprod.yml down
 
@@ -175,9 +175,9 @@ help:
 	@echo "  docker-build-lb     - Build Docker image for load balancer"
 	@echo "  docker-clean        - Clean Docker images"
 	@echo "  docker-run          - Run local compose (builds images from local source code)"
-	@echo "  docker-run-preprod  - Test the preprod images from GHCR before marking them as prod-ready"
 	@echo "  docker-stop         - Stop local compose"
-	@echo "  docker-stop-preprod - Stop the app that was started using preprod images from GHCR"
+	@echo "  docker-preprod-run  - Test the preprod images from GHCR before marking them as prod-ready"
+	@echo "  docker-preprod-stop - Stop the app that was started using preprod images from GHCR"
 	@echo "  k8s-delete          - Delete Kubernetes deployments"
 	@echo "  k8s-deploy          - Deploy both services to Kubernetes"
 	@echo "  k8s-deploy-hc       - Deploy health checker to Kubernetes"
