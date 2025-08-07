@@ -24,9 +24,11 @@ func GetBoolFromEnv(key string, defaultValue bool) bool {
 			return false
 		default:
 			log.Warn().Msg(envVal + " is an invalid boolean value for " + key + ", defaulting to: " + strconv.FormatBool(defaultValue))
+			os.Setenv(key, strconv.FormatBool(defaultValue))
 		}
 	} else {
-		log.Warn().Msg("Missing " + key + " from env vars, defaulting it to: " + strconv.FormatBool(defaultValue))
+		log.Warn().Msg("Missing " + key + " from env vars, defaulting to: " + strconv.FormatBool(defaultValue))
+		os.Setenv(key, strconv.FormatBool(defaultValue))
 	}
 	return defaultValue
 }
@@ -41,9 +43,11 @@ func GetIntFromEnv(key string, defaultValue int) int {
 			return parsed
 		} else {
 			log.Warn().Msg(envVal + "is an invalid value for " + key + ", defaulting to: " + strconv.Itoa(defaultValue))
+			os.Setenv(key, strconv.Itoa(defaultValue))
 		}
 	} else {
-		log.Warn().Msg("Missing " + key + " from env vars, defaulting it to: " + strconv.Itoa(defaultValue))
+		log.Warn().Msg("Missing " + key + " from env vars, defaulting to: " + strconv.Itoa(defaultValue))
+		os.Setenv(key, strconv.Itoa(defaultValue))
 	}
 	return defaultValue
 }
@@ -57,9 +61,11 @@ func GetStringFromEnv(key string, defaultValue string) string {
 			return envVal
 		} else {
 			log.Warn().Msg("Empty value for " + key + ", defaulting to: " + defaultValue)
+			os.Setenv(key, defaultValue)
 		}
 	} else {
-		log.Warn().Msg("Missing " + key + " from env vars, defaulting it to: " + defaultValue)
+		log.Warn().Msg("Missing " + key + " from env vars, defaulting to: " + defaultValue)
+		os.Setenv(key, defaultValue)
 	}
 	return defaultValue
 }

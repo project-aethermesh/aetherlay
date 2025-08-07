@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"time"
+
+	"aetherlay/internal/helpers"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -70,10 +73,20 @@ type RedisClient struct {
 
 // NewRedisClient creates a new Redis client with optimized connection settings.
 // It configures connection pooling, timeouts, and retry logic for production use.
-func NewRedisClient(addr string, password string) *RedisClient {
+func NewRedisClient(addr string, password string, useTLS bool) *RedisClient {
+	var tlsConfig *tls.Config
+	if useTLS {
+		skipTLSVerify := helpers.GetBoolFromEnv("REDIS_SKIP_TLS_CHECK", false)
+		tlsConfig = &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: skipTLSVerify,
+		}
+	}
+
 	client := redis.NewClient(&redis.Options{
 		Addr:            addr,
 		Password:        password,
+		TLSConfig:       tlsConfig,
 		MinIdleConns:    10,
 		PoolSize:        100,
 		PoolTimeout:     4 * time.Second,

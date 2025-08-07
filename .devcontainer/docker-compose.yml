@@ -15,9 +15,13 @@ services:
     image: redis:8.0-alpine
     ports:
       - "6379:6379"
+      # If you want to enable TLS, uncomment the following line
+      #- "6380:6380"
     volumes:
       - ./.redis-data:/data
       - ./.redis.conf:/usr/local/etc/redis/redis.conf
+      # If you want to enable TLS, uncomment the following line
+      #- ./.tls:/etc/redis/tls
     command: redis-server /usr/local/etc/redis/redis.conf
 
   redisinsight:

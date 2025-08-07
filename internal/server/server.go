@@ -216,7 +216,7 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 			http.Error(w, "Failed to proxy WebSocket - all endpoints unavailable", http.StatusBadGateway)
 			return
 		}
-		http.Error(w, "Not a WebSocket upgrade request", http.StatusBadRequest)
+		http.Error(w, "GET requests to this endpoint are only supported for WebSocket upgrade requests. Otherwise, please use POST.", http.StatusBadRequest)
 	}
 }
 

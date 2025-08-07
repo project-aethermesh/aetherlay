@@ -1,0 +1,48 @@
+services:
+  redis:
+    image: redis:8.0-alpine
+    container_name: aetherlay-redis-preprod
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./.redis-data:/data
+      - ./.redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf --requirepass SOME_PASS
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: aetherlay-redisinsight-preprod
+    ports:
+      - "5540:5540"
+    volumes:
+      - ./.redis-insight:/data
+    depends_on:
+      - redis
+
+  aetherlay-hc:
+    platform: linux/amd64
+    image: ghcr.io/project-aethermesh/aetherlay/aetherlay-hc:preprod
+    container_name: aetherlay-hc-preprod
+    volumes:
+      - ../configs:/configs:ro
+    environment:
+      - LOG_LEVEL=debug
+      - REDIS_HOST=aetherlay-redis-preprod
+      - REDIS_PASS=SOME_PASS
+    depends_on:
+      - redis
+
+  aetherlay-lb:
+    platform: linux/amd64
+    image: ghcr.io/project-aethermesh/aetherlay/aetherlay-lb:preprod
+    container_name: aetherlay-lb-preprod
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../configs:/configs:ro
+    environment:
+      - LOG_LEVEL=debug
+      - REDIS_HOST=aetherlay-redis-preprod
+      - REDIS_PASS=SOME_PASS
+    depends_on:
+      - aetherlay-hc
