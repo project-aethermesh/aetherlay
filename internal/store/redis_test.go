@@ -4,6 +4,7 @@ import (
 	"aetherlay/internal/helpers"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"testing"
 	"time"
@@ -289,15 +290,18 @@ func TestCombinedRequestCounts(t *testing.T) {
 // TestNewRedisClientTLSConfig is an integration test that checks the TLS configuration.
 // It requires a running Redis server with TLS enabled on port 6380 and non-TLS on 6379.
 func TestNewRedisClientTLSConfig(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode.")
-	}
-
 	redisHost := helpers.GetStringFromEnv("REDIS_HOST", "localhost")
 	redisPassword := helpers.GetStringFromEnv("REDIS_PASS", "SOME_PASS")
 
 	redisAddrNonTLS := fmt.Sprintf("%s:6379", redisHost)
 	redisAddrTLS := fmt.Sprintf("%s:6380", redisHost)
+
+	// Pre-flight check to see if Redis is available. If not, skip the test.
+	conn, err := net.DialTimeout("tcp", redisAddrNonTLS, 1*time.Second)
+	if err != nil {
+		t.Skipf("Skipping integration test: Redis is not available at %s. Error: %v", redisAddrNonTLS, err)
+	}
+	conn.Close()
 
 	ctx := context.Background()
 
