@@ -9,9 +9,11 @@ import (
 
 	"aetherlay/internal/config"
 	"aetherlay/internal/helpers"
+	"aetherlay/internal/metrics"
 	"aetherlay/internal/store"
 
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 )
 
@@ -248,14 +250,21 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 
 // checkHTTPHealth performs HTTP health check and returns health status
 func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool {
-	log.Info().Str("chain", chain).Str("endpoint_id", endpointID).Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Running HTTP health check")
 	if endpoint.HTTPURL == "" {
-		return false
+		return false // No HTTP endpoint to check
 	}
+
+	// Start timer for metrics
+	timer := prometheus.NewTimer(metrics.HealthCheckDuration.WithLabelValues(chain, endpointID))
+	defer timer.ObserveDuration()
+
+	log.Info().Str("chain", chain).Str("endpoint_id", endpointID).Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Running HTTP health check")
 
 	payload := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint.HTTPURL, bytes.NewBuffer(payload))
 	if err != nil {
+		metrics.HealthCheckTotal.WithLabelValues(chain, endpointID, "failure").Inc()
+		metrics.EndpointHealthStatus.WithLabelValues(chain, endpointID).Set(0)
 		return false
 	}
 
@@ -263,6 +272,8 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		metrics.HealthCheckTotal.WithLabelValues(chain, endpointID, "failure").Inc()
+		metrics.EndpointHealthStatus.WithLabelValues(chain, endpointID).Set(0)
 		return false
 	}
 	defer resp.Body.Close()
@@ -273,7 +284,13 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 	}
 
 	healthy := resp.StatusCode >= 200 && resp.StatusCode < 300
-	if !healthy {
+	if healthy {
+		metrics.HealthCheckTotal.WithLabelValues(chain, endpointID, "success").Inc()
+		metrics.EndpointHealthStatus.WithLabelValues(chain, endpointID).Set(1)
+	} else {
+		metrics.HealthCheckTotal.WithLabelValues(chain, endpointID, "failure").Inc()
+		metrics.EndpointHealthStatus.WithLabelValues(chain, endpointID).Set(0)
+
 		// Read and log up to 512 bytes of the response body for debugging
 		bodyBytes := make([]byte, 512)
 		n, _ := io.ReadFull(resp.Body, bodyBytes)
@@ -308,10 +325,15 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 
 // checkWSHealth performs WebSocket health check and returns health status
 func (c *Checker) checkWSHealth(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool {
-	log.Info().Str("chain", chain).Str("endpoint_id", endpointID).Str("url", helpers.RedactAPIKey(endpoint.WSURL)).Msg("Running WS health check")
 	if endpoint.WSURL == "" {
-		return false
+		return false // No WS endpoint to check
 	}
+
+	// Start timer for metrics
+	timer := prometheus.NewTimer(metrics.HealthCheckDuration.WithLabelValues(chain, endpointID))
+	defer timer.ObserveDuration()
+
+	log.Info().Str("chain", chain).Str("endpoint_id", endpointID).Str("url", helpers.RedactAPIKey(endpoint.WSURL)).Msg("Running WS health check")
 
 	wsDialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
 	wsConn, _, err := wsDialer.Dial(endpoint.WSURL, nil)
@@ -322,15 +344,20 @@ func (c *Checker) checkWSHealth(ctx context.Context, chain, endpointID string, e
 			Str("chain", chain).
 			Str("endpoint_id", endpointID).
 			Msg("WebSocket health check failed: failed to establish connection")
+		metrics.HealthCheckTotal.WithLabelValues(chain, endpointID, "failure").Inc()
+		metrics.EndpointHealthStatus.WithLabelValues(chain, endpointID).Set(0)
 		return false
 	}
-
-	wsConn.Close()
+	defer wsConn.Close()
 
 	// Increment health request count for WS
 	if err := c.redisClient.IncrementRequestCount(ctx, chain, endpointID, "health_requests"); err != nil {
 		log.Error().Err(err).Msg("Failed to increment WS health request count")
 	}
+
+	// If we are here, the connection was successful
+	metrics.HealthCheckTotal.WithLabelValues(chain, endpointID, "success").Inc()
+	metrics.EndpointHealthStatus.WithLabelValues(chain, endpointID).Set(1)
 
 	// Fetch current status from Redis
 	status, err := c.redisClient.GetEndpointStatus(ctx, chain, endpointID)

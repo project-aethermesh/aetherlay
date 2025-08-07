@@ -11,6 +11,7 @@ import (
 	"aetherlay/internal/config"
 	"aetherlay/internal/health"
 	"aetherlay/internal/helpers"
+	"aetherlay/internal/metrics"
 	"aetherlay/internal/server"
 	"aetherlay/internal/store"
 
@@ -38,6 +39,16 @@ func main() {
 		"log-level",
 		helpers.GetStringFromEnv("LOG_LEVEL", "info"),
 		"Set the log level",
+	)
+	metricsEnabled := flag.Bool(
+		"metrics-enabled",
+		helpers.GetBoolFromEnv("METRICS_ENABLED", true),
+		"Enable the Prometheus metrics server",
+	)
+	metricsPort := flag.Int(
+		"metrics-port",
+		helpers.GetIntFromEnv("METRICS_PORT", 9091),
+		"Port for the Prometheus metrics server",
 	)
 	redisHost := flag.String(
 		"redis-host",
@@ -98,6 +109,12 @@ func main() {
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	}
 
+	// Start the metrics server if enabled
+	if *metricsEnabled {
+		log.Info().Int("port", *metricsPort).Msg("Prometheus metrics server enabled")
+		metrics.StartServer(*metricsPort)
+	}
+
 	// Load configuration
 	cfg, err := config.LoadConfig(*configFile)
 	if err != nil {
@@ -142,6 +159,9 @@ func main() {
 
 	// Initialize and start the server
 	srv := server.NewServer(cfg, redisClient)
+	if *metricsEnabled {
+		srv.AddMiddleware(metrics.Middleware)
+	}
 
 	// Handle graceful shutdown
 	stop := make(chan os.Signal, 1)
