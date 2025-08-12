@@ -76,6 +76,11 @@ func (s *Server) Shutdown() error {
 	return s.httpServer.Shutdown(ctx)
 }
 
+// AddMiddleware adds a middleware to the server's router
+func (s *Server) AddMiddleware(middleware func(http.Handler) http.Handler) {
+	s.router.Use(middleware)
+}
+
 // handleHealthCheck handles the /health endpoint for health checks
 func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)

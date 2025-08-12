@@ -102,6 +102,7 @@ The load balancer will listen for incoming requests on predefined endpoints that
 | `--ephemeral-checks-healthy-threshold` | `3` | Amount of consecutive successful responses required to consider endpoint healthy again |
 | `--health-check-interval` | `30` | Health check interval in seconds |
 | `--log-level` | `info` | Set the log level. Valid options are: `debug`, `info`, `warn`, `error`, `fatal`, `panic` |
+| `--metrics-enabled` | `true` | Whether to enable Prometheus metrics |
 | `--redis-host` | `localhost` | Redis server hostname |
 | `--redis-port` | `6379` | Redis server port |
 | `--redis-use-tls` | `false` | Whether to use TLS for connecting to Redis |
@@ -121,6 +122,7 @@ The load balancer will listen for incoming requests on predefined endpoints that
 | `EPHEMERAL_CHECKS_INTERVAL` | `30` | Interval in seconds for ephemeral health checks |
 | `HEALTH_CHECK_INTERVAL` | `30` | Health check interval in seconds |
 | `LOG_LEVEL` | `info` | Set the log level |
+| `METRICS_ENABLED` | `true` | Whether to enable Prometheus metrics |
 | `REDIS_HOST` | `localhost` | Redis server hostname |
 | `REDIS_PORT` | `6379` | Redis server port |
 | `REDIS_PASS` | - | Redis server password |
@@ -164,6 +166,27 @@ For production deployments with multiple load balancer pods, use the standalone 
 - **Multiple Load Balancer Pods**: Scale independently without health check overhead
 - **Resource Efficiency**: Reduces RPC endpoint usage
 - **Better Separation of Concerns**: Health monitoring isolated from request handling
+
+## Prometheus Metrics
+
+This service uses a **pull-based** model for metrics collection, which is standard for Prometheus. This means the application exposes a `/metrics` endpoint, and a separate Prometheus server is responsible for periodically "scraping" (or pulling) data from it.
+
+### How It Works
+
+1.  **Exporter**: The application acts as a Prometheus exporter. When enabled, it starts a dedicated server that holds all metric values (counters, gauges, and histograms) in memory.
+2.  **/metrics Endpoint**: This server exposes the metrics in a text-based format at `http://localhost:9090/metrics` (or the port specified by `METRICS_PORT`).
+3.  **Prometheus Server**: A separate Prometheus server must be configured to scrape this endpoint at regular intervals. The Prometheus server is responsible for all storage, querying, and alerting, ensuring that the application itself remains lightweight and stateless.
+
+Because the metrics are stored in memory, **they will be lost on every application restart**. Persistence is the responsibility of the Prometheus server.
+
+### Disabling Metrics
+
+Metrics are enabled by default. If you don't want them, use the `--metrics-enabled=false` flag or set the `METRICS_ENABLED` environment variable to `false`.
+
+### Port Configuration
+
+-   The metrics server runs on the port defined by `METRICS_PORT` (default: `9090`).
+-   **Important**: When running multiple services from this repository on the same machine (e.g., the load balancer and the standalone health checker), you must assign them different metrics ports to avoid conflicts. For example, you could run the health checker with `--metrics-port=9090` and the load balancer with `--metrics-port=9091` (which is the default if you don't set the `METRICS_PORT` env var.
 
 ## Architecture Options
 

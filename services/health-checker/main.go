@@ -11,6 +11,7 @@ import (
 	"aetherlay/internal/config"
 	"aetherlay/internal/health"
 	"aetherlay/internal/helpers"
+	"aetherlay/internal/metrics"
 	"aetherlay/internal/store"
 
 	"github.com/joho/godotenv"
@@ -39,6 +40,8 @@ func RunHealthChecker(
 	ephemeralChecksInterval int,
 	ephemeralChecksHealthyThreshold int,
 	healthCheckInterval int,
+	metricsEnabled bool,
+	metricsPort int,
 	redisHost string,
 	redisPort string,
 	redisPassword string,
@@ -58,6 +61,12 @@ func RunHealthChecker(
 		}
 		log.Warn().Msg("Standalone health checks disabled (STANDALONE_HEALTH_CHECKS=false). Exiting.")
 		return
+	}
+
+	// Start the metrics server if enabled
+	if metricsEnabled {
+		log.Info().Int("port", metricsPort).Msg("Prometheus metrics server enabled")
+		metrics.StartServer(metricsPort)
 	}
 
 	cfg, err := loadConfig(configFile)
@@ -161,6 +170,16 @@ func main() {
 		helpers.GetStringFromEnv("LOG_LEVEL", "info"),
 		"Set the log level",
 	)
+	metricsEnabled := flag.Bool(
+		"metrics-enabled",
+		helpers.GetBoolFromEnv("METRICS_ENABLED", true),
+		"Enable the Prometheus metrics server",
+	)
+	metricsPort := flag.Int(
+		"metrics-port",
+		helpers.GetIntFromEnv("METRICS_PORT", 9090),
+		"Port for the Prometheus metrics server",
+	)
 	redisHost := flag.String(
 		"redis-host",
 		helpers.GetStringFromEnv("REDIS_HOST", "localhost"),
@@ -197,6 +216,8 @@ func main() {
 		*ephemeralChecksInterval,
 		*ephemeralChecksHealthyThreshold,
 		*healthCheckInterval,
+		*metricsEnabled,
+		*metricsPort,
 		*redisHost,
 		*redisPort,
 		redisPassword,
