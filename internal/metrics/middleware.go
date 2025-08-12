@@ -60,37 +60,43 @@ func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if !ok {
 		return nil, nil, fmt.Errorf("http.Hijacker is not implemented by the underlying http.ResponseWriter")
 	}
-	rw.wRotten = true
-	return h.Hijack()
+	conn, buf, err := h.Hijack()
+	if err == nil {
+		rw.wRotten = true
+	}
+	return conn, buf, err
 }
 
 // instrumentHandler wraps the handler with Prometheus instrumentation.
 func instrumentHandler(handler http.Handler, w *responseWriter, route string) http.Handler {
 	// Increment the in-flight gauge
-	HTTPRequestsInFlight.Inc()
+	if HTTPRequestsInFlight != nil {
+		HTTPRequestsInFlight.Inc()
+	}
 
 	return http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		// Start the timer
-		timer := prometheus.NewTimer(HTTPRequestDuration.WithLabelValues(
-			"", // code is set after the request
-			strings.ToLower(r.Method),
-			route,
-		))
+		// Start timer for duration measurement
+		start := prometheus.NewTimer(prometheus.ObserverFunc(func(v float64) {}))
 
 		// Defer the decrementing of the in-flight gauge and recording of metrics
 		defer func() {
-			HTTPRequestsInFlight.Dec()
+			if HTTPRequestsInFlight != nil {
+				HTTPRequestsInFlight.Dec()
+			}
 			// Only record metrics if the connection was not hijacked
 			if !w.wRotten {
 				statusCode := fmt.Sprintf("%d", w.statusCode)
-				// Update the duration histogram with the correct status code
-				timer.ObserveDuration()
+				method := strings.ToLower(r.Method)
+
+				// Record duration with correct labels
+				if HTTPRequestDuration != nil {
+					HTTPRequestDuration.WithLabelValues(statusCode, method, route).Observe(start.ObserveDuration().Seconds())
+				}
+
 				// Increment the total requests counter
-				HTTPRequestsTotal.WithLabelValues(
-					statusCode,
-					strings.ToLower(r.Method),
-					route,
-				).Inc()
+				if HTTPRequestsTotal != nil {
+					HTTPRequestsTotal.WithLabelValues(statusCode, method, route).Inc()
+				}
 			}
 		}()
 
