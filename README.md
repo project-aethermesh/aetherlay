@@ -188,6 +188,22 @@ Metrics are enabled by default. If you don't want them, use the `--metrics-enabl
 -   The metrics server runs on the port defined by `METRICS_PORT` (default: `9090`).
 -   **Important**: When running multiple services from this repository on the same machine (e.g., the load balancer and the standalone health checker), you must assign them different metrics ports to avoid conflicts. For example, you could run the health checker with `--metrics-port=9090` and the load balancer with `--metrics-port=9091` (which is the default if you don't set the `METRICS_PORT` env var.
 
+## Grafana Dashboard
+
+An example Grafana dashboard is provided with the code to help you monitor your Ætherlay deployment. The dashboard includes comprehensive monitoring for:
+
+- **Service Health Overview**: Real-time health status of remote blockchain endpoints.
+- **Load Balancer Performance**: Request rates, error rates, response times, and in-flight requests.
+- **System Resources**: Memory usage, CPU usage, goroutines, and garbage collection metrics.
+- **Network & Infrastructure**: Network I/O, file descriptor usage, and Prometheus scrape rates.
+
+### Using the Dashboard
+
+1. **Replace variables**: Replace `${DATA_SOURCE}` with the name of your Prometheus data source and `${NAMESPACE}` with the Kubernetes namespace where you deployed the app.
+2. **Import the Dashboard**: Import the `aetherlay-dashboard.json` file into your Grafana instance.
+
+The dashboard is designed to work with the standard Prometheus metrics exposed by both the load balancer and health checker services. It automatically detects pods by matching with `.*hc.*` for the health checker and `.*lb.*` for the load balancer, so you'll need to update that if you use different names for your pods.
+
 ## Architecture Options
 
 ### Option 1: Integrated Health Checks

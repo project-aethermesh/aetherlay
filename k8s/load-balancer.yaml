@@ -1,23 +1,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: aetherlay-load-balancer
+  name: aetherlay-lb
   namespace: aetherlay
   labels:
-    app: aetherlay-load-balancer
+    app: aetherlay-lb
 spec:
   replicas: 3
   selector:
     matchLabels:
-      app: aetherlay-load-balancer
+      app: aetherlay-lb
   template:
     metadata:
       labels:
-        app: aetherlay-load-balancer
+        app: aetherlay-lb
     spec:
       containers:
-      - name: load-balancer
-        image: ghcr.io/project-aethermesh/aetherlay:load-balancer-latest
+      - name: aetherlay-lb
+        image: ghcr.io/project-aethermesh/aetherlay-lb:latest
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
@@ -36,6 +36,8 @@ spec:
           value: "true" # Enable standalone health checks
         - name: HEALTH_CHECK_INTERVAL
           value: "0" # Disable integrated health checks
+        - name: METRICS_PORT
+          value: 9090
         volumeMounts:
         - name: config-volume
           mountPath: /app/configs
@@ -69,7 +71,7 @@ metadata:
   name: aetherlay-service
   namespace: aetherlay
   labels:
-    app: aetherlay-load-balancer
+    app: aetherlay-lb
 spec:
   type: ClusterIP # Or LoadBalancer, depending on your setup
   ports:
@@ -78,7 +80,7 @@ spec:
     protocol: TCP
     name: http
   selector:
-    app: aetherlay-load-balancer
+    app: aetherlay-lb
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -89,7 +91,7 @@ spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: aetherlay-load-balancer
+    name: aetherlay-lb
   minReplicas: 2
   maxReplicas: 10
   metrics:

@@ -9,8 +9,13 @@ RUN apt update && apt upgrade -y && export DEBIAN_FRONTEND=noninteractive \
     curl \
     git \
     redis-tools \
+    nodejs \
+    npm \
     && apt clean -y \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code
+RUN npm install -g @anthropic-ai/claude-code
 
 # Install Go tools
 RUN go install golang.org/x/tools/gopls@latest \
