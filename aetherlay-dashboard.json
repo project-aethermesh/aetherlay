@@ -207,7 +207,7 @@
         "type": "prometheus",
         "uid": "${DATA_SOURCE}"
       },
-      "description": "You want this to be as close to 0 as possible. A high value might indicate that the pods are taking too log to process each request.",
+      "description": "You want this to be as close to 0 as possible. A high value might indicate that the pods are taking too long to process each request.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -914,7 +914,7 @@
         "type": "prometheus",
         "uid": "${DATA_SOURCE}"
       },
-      "description": "You want this to be as close to 0 as possible. A high value might indicate that the pods are taking too log to process each request.",
+      "description": "You want this to be as close to 0 as possible. A high value might indicate that the pods are taking too long to process each request.",
       "fieldConfig": {
         "defaults": {
           "color": {
