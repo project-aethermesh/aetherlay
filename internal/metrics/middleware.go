@@ -86,7 +86,7 @@ func instrumentHandler(handler http.Handler, w *responseWriter, route string) ht
 			// Only record metrics if the connection was not hijacked
 			if !w.wRotten {
 				statusCode := fmt.Sprintf("%d", w.statusCode)
-				method := strings.ToLower(r.Method)
+				method := strings.ToUpper(r.Method)
 
 				// Record duration with correct labels
 				if HTTPRequestDuration != nil {

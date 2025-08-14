@@ -1,24 +1,24 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: aetherlay-health-checker
+  name: aetherlay-hc
   namespace: aetherlay
   labels:
-    app: aetherlay-health-checker
+    app: aetherlay-hc
 spec:
-  serviceName: aetherlay-health-checker
+  serviceName: aetherlay-hc
   replicas: 1 # Single instance for health checking
   selector:
     matchLabels:
-      app: aetherlay-health-checker
+      app: aetherlay-hc
   template:
     metadata:
       labels:
-        app: aetherlay-health-checker
+        app: aetherlay-hc
     spec:
       containers:
-      - name: health-checker
-        image: ghcr.io/project-aethermesh/aetherlay:health-checker-latest
+      - name: aetherlay-hc
+        image: ghcr.io/project-aethermesh/aetherlay-hc:latest
         imagePullPolicy: IfNotPresent
         env:
         - name: REDIS_HOST
@@ -44,6 +44,8 @@ spec:
             secretKeyRef:
               name: rpc-api-keys
               key: infura-api-key
+        - name: METRICS_PORT
+          value: 9090
         volumeMounts:
         - name: config-volume
           mountPath: /root/configs

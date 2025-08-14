@@ -19,5 +19,8 @@
 		}
 	},
 	"forwardPorts": [8080],
-	"remoteUser": "root"
+	"remoteUser": "root",
+  "mounts": [
+    "source=~/.claude,target=/root/.claude,type=bind,consistency=cached"
+  ]
 }
