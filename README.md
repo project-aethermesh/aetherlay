@@ -224,4 +224,4 @@ This project is licensed under the GNU Affero General Public License v3.0 (AGPL-
 
 You may use, modify, and distribute this software under the terms of the AGPL-3.0. See the LICENSE file for details.
 
-**TL;DR:** The AGPL-3.0 ensures that all changes and derivative works must also be licensed under AGPL-3.0, and that **proper attribution is maintained**. No one may claim this code as their own proprietary work. The main goal of this project is to serve the Web3 community as a whole.
+**TL;DR:** The AGPL-3.0 ensures that all changes and derivative works must also be licensed under AGPL-3.0, and that **attribution is preserved**. If you run a modified version as a network service, you must make the source code available to users. The code is provided **as-is**, without warranties.
