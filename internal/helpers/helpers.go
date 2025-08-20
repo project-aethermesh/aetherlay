@@ -218,39 +218,3 @@ func RedactAPIKey(url string) string {
 		return prefix + "/" + key[:4] + "..." + key[len(key)-4:]
 	})
 }
-
-// Legacy functions for backwards compatibility
-
-// GetBoolFromFlagOrEnv gets a boolean value from a CLI flag or an environment variable.
-// If the flag is set, it takes precedence over the environment variable.
-// If neither is set, it returns a default value.
-// The environment variable is expected to be "true" or "false" (case-insensitive).
-// If an invalid value is provided, it logs a warning and returns the default value.
-func GetBoolFromFlagOrEnv(flagKey string, envKey string, defaultValue bool) bool {
-	log.Debug().Msg("Getting boolean value from flag " + flagKey + " or env var " + envKey)
-	if cliFlag := flag.Lookup(flagKey); cliFlag != nil {
-		if cliFlag.Value.String() != "" {
-			if parsed, err := strconv.ParseBool(cliFlag.Value.String()); err == nil {
-				log.Debug().Bool(flagKey, parsed).Msg("Parsed boolean value from flag")
-				return parsed
-			} else {
-				log.Warn().Msg(cliFlag.Value.String() + " is an invalid boolean value for " + flagKey + ", trying to get it from the " + envKey + "env var...")
-			}
-		}
-	}
-	return getBoolFromEnv(envKey, defaultValue)
-}
-
-// GetStringFromFlagOrEnv gets a string value from a CLI flag or an environment variable.
-// If the flag is set, it takes precedence over the environment variable.
-// If neither is set, it returns a default value.
-// Empty strings are treated as missing values and will trigger the default.
-func GetStringFromFlagOrEnv(flagKey string, envKey string, defaultValue string) string {
-	if cliFlag := flag.Lookup(flagKey); cliFlag != nil {
-		if flagValue := cliFlag.Value.String(); strings.TrimSpace(flagValue) != "" {
-			log.Debug().Str(flagKey, flagValue).Msg("Parsed string value from flag")
-			return flagValue
-		}
-	}
-	return getStringFromEnv(envKey, defaultValue)
-}
