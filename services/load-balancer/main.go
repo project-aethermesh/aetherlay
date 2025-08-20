@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"net/http"
 	"os"
 	"os/signal"
@@ -31,109 +30,27 @@ func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
 
-	// Parse command line flags
-	configFile := flag.String(
-		"config-file",
-		helpers.GetStringFromEnv("CONFIG_FILE", "configs/endpoints.json"),
-		"Path to the endpoints configuration file",
-	)
-	corsHeaders := flag.String(
-		"cors-headers",
-		helpers.GetStringFromEnv("CORS_HEADERS", "Accept, Authorization, Content-Type, Origin, X-Requested-With"),
-		"Allowed headers for CORS requests",
-	)
-	corsMethods := flag.String(
-		"cors-methods",
-		helpers.GetStringFromEnv("CORS_METHODS", "GET, POST, OPTIONS"),
-		"Allowed HTTP methods for CORS requests",
-	)
-	corsOrigin := flag.String(
-		"cors-origin",
-		helpers.GetStringFromEnv("CORS_ORIGIN", "*"),
-		"Allowed origin for CORS requests",
-	)
-	logLevel := flag.String(
-		"log-level",
-		helpers.GetStringFromEnv("LOG_LEVEL", "info"),
-		"Set the log level",
-	)
-	metricsEnabled := flag.Bool(
-		"metrics-enabled",
-		helpers.GetBoolFromEnv("METRICS_ENABLED", true),
-		"Enable the Prometheus metrics server",
-	)
-	metricsPort := flag.Int(
-		"metrics-port",
-		helpers.GetIntFromEnv("METRICS_PORT", 9091),
-		"Port for the Prometheus metrics server",
-	)
-	redisHost := flag.String(
-		"redis-host",
-		helpers.GetStringFromEnv("REDIS_HOST", "localhost"),
-		"Redis server hostname",
-	)
-	redisPort := flag.String(
-		"redis-port",
-		helpers.GetStringFromEnv("REDIS_PORT", "6379"),
-		"Redis server port",
-	)
-	serverPort := flag.Int(
-		"server-port",
-		helpers.GetIntFromEnv("SERVER_PORT", 8080),
-		"Server port",
-	)
-	redisUseTLS := flag.Bool(
-		"redis-use-tls",
-		helpers.GetBoolFromEnv("REDIS_USE_TLS", false),
-		"Use TLS for Redis connection",
-	)
-	standaloneHealthChecks := flag.Bool(
-		"standalone-health-checks",
-		helpers.GetBoolFromEnv("STANDALONE_HEALTH_CHECKS", true),
-		"Enable standalone health checks",
-	)
-
-	// These flags are only used if the standalone health checker is NOT enabled
-	var ephemeralChecksInterval, ephemeralChecksHealthyThreshold, healthCheckInterval *int
-	if !*standaloneHealthChecks {
-		ephemeralChecksInterval = flag.Int(
-			"ephemeral-checks-interval",
-			helpers.GetIntFromEnv("EPHEMERAL_CHECKS_INTERVAL", 30),
-			"Interval in seconds for ephemeral health checks",
-		)
-		ephemeralChecksHealthyThreshold = flag.Int(
-			"ephemeral-checks-healthy-threshold",
-			helpers.GetIntFromEnv("EPHEMERAL_CHECKS_HEALTHY_THRESHOLD", 3),
-			"Amount of consecutive successful responses required to consider endpoint healthy again",
-		)
-		healthCheckInterval = flag.Int(
-			"health-check-interval",
-			helpers.GetIntFromEnv("HEALTH_CHECK_INTERVAL", 30),
-			"Health check interval in seconds",
-		)
-	}
-
-	flag.Parse()
-
-	// Get Redis password from the env var
-	redisPassword := helpers.GetStringFromEnv("REDIS_PASS", "")
+	// Parse CLI flags and load configuration
+	flagConfig := helpers.ParseFlags()
+	appConfig := flagConfig.LoadConfiguration()
 
 	// Set the requested log level if it's valid, otherwise default to info
-	if level, err := zerolog.ParseLevel(*logLevel); err == nil {
+	if level, err := zerolog.ParseLevel(appConfig.LogLevel); err == nil {
 		zerolog.SetGlobalLevel(level)
 	} else {
-		log.Warn().Str("LOG_LEVEL", *logLevel).Msg("Invalid log level, defaulting to Info")
+		log.Warn().Str("LOG_LEVEL", appConfig.LogLevel).Msg("Invalid log level, defaulting to Info")
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	}
 
 	// Start the metrics server if enabled
-	if *metricsEnabled {
-		log.Info().Int("port", *metricsPort).Msg("Prometheus metrics server enabled")
-		metrics.StartServer(*metricsPort, *corsHeaders, *corsMethods, *corsOrigin)
+	if appConfig.MetricsEnabled {
+		metricsPort := appConfig.GetMetricsPortForService(true)
+		log.Info().Int("port", metricsPort).Msg("Prometheus metrics server enabled")
+		metrics.StartServer(metricsPort, appConfig.CorsHeaders, appConfig.CorsMethods, appConfig.CorsOrigin)
 	}
 
 	// Load configuration
-	cfg, err := config.LoadConfig(*configFile)
+	cfg, err := config.LoadConfig(appConfig.ConfigFile)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to load configuration")
 	}
@@ -156,30 +73,32 @@ func main() {
 	}
 
 	// Initialize Redis client
-	redisAddr := *redisHost + ":" + *redisPort
-	redisClient := store.NewRedisClient(redisAddr, redisPassword, *redisUseTLS)
+	redisAddr := appConfig.RedisHost + ":" + appConfig.RedisPort
+	redisClient := store.NewRedisClient(redisAddr, appConfig.RedisPass, appConfig.RedisSkipTLSCheck, appConfig.RedisUseTLS)
 	if err := redisClient.Ping(context.Background()); err != nil {
 		log.Fatal().Err(err).Msg("Failed to connect to Redis")
 	}
 
-	// Configure regular health checks based on the standalone flag
-	if !*standaloneHealthChecks && *healthCheckInterval > 0 {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		checker := health.NewChecker(cfg, redisClient, time.Duration(*healthCheckInterval)*time.Second, time.Duration(*ephemeralChecksInterval)*time.Second, *ephemeralChecksHealthyThreshold)
+	// Configure regular health checks based on the value of standaloneHealthChecks
+	if !appConfig.StandaloneHealthChecks {
+		if appConfig.HealthCheckInterval > 0 {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			checker := health.NewChecker(cfg, redisClient, time.Duration(appConfig.HealthCheckInterval)*time.Second, time.Duration(appConfig.EphemeralChecksInterval)*time.Second, appConfig.EphemeralChecksHealthyThreshold)
 
-		log.Info().Int("interval_seconds", *healthCheckInterval).Msg("Starting integrated health check service")
-		go checker.Start(ctx)
-	} else if *standaloneHealthChecks {
+			log.Info().Int("interval_seconds", appConfig.HealthCheckInterval).Msg("Starting integrated health check service")
+			go checker.Start(ctx)
+		}
+	} else if appConfig.StandaloneHealthChecks {
 		log.Info().Msg("Standalone health checks enabled (STANDALONE_HEALTH_CHECKS=true). Using external health checker service.")
 	}
 
 	// Initialize and start the server
 	srv := server.NewServer(cfg, redisClient)
 	srv.AddMiddleware(func(next http.Handler) http.Handler {
-		return cors.Middleware(next, *corsHeaders, *corsMethods, *corsOrigin)
+		return cors.Middleware(next, appConfig.CorsHeaders, appConfig.CorsMethods, appConfig.CorsOrigin)
 	})
-	if *metricsEnabled {
+	if appConfig.MetricsEnabled {
 		srv.AddMiddleware(metrics.Middleware)
 	}
 
@@ -188,7 +107,7 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		if err := srv.Start(*serverPort); err != nil {
+		if err := srv.Start(appConfig.ServerPort); err != nil {
 			log.Fatal().Err(err).Msg("Server failed to start")
 		}
 	}()

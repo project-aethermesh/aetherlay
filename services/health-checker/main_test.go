@@ -31,12 +31,12 @@ func TestRunHealthCheckerFromEnv_Standalone(t *testing.T) {
 	defer func() { testExitAfterSetup = false }()
 
 	// Patch newRedisClient
-	newRedisClient = func(addr string, password string, redisUseTLS bool) store.RedisClientIface {
+	newRedisClient = func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface {
 		return store.NewMockRedisClient()
 	}
 	defer func() {
-		newRedisClient = func(addr string, password string, redisUseTLS bool) store.RedisClientIface {
-			return store.NewRedisClient(addr, password, redisUseTLS)
+		newRedisClient = func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface {
+			return store.NewRedisClient(addr, password, skipTLSVerify, redisUseTLS)
 		}
 	}()
 
@@ -64,14 +64,15 @@ func TestRunHealthCheckerFromEnv_Standalone(t *testing.T) {
 		"Accept, Authorization, Content-Type, Origin, X-Requested-With", // corsHeaders
 		"GET, POST, OPTIONS", // corsMethods
 		"*",                  // corsOrigin
-		30,                   // ephemeralChecksInterval
 		3,                    // ephemeralChecksHealthyThreshold
+		30,                   // ephemeralChecksInterval
 		30,                   // healthCheckInterval
 		false,                // metricsEnabled
 		9090,                 // metricsPort
 		"localhost",          // redisHost
+		"",                   // redisPass
 		"6379",               // redisPort
-		"",                   // redisPassword
+		false,                // redisSkipTLSCheck
 		false,                // redisUseTLS
 		true,                 // standaloneHealthChecks
 	)
@@ -87,12 +88,12 @@ func TestRunHealthCheckerFromEnv_Ephemeral(t *testing.T) {
 	defer func() { testExitAfterSetup = false }()
 
 	// Patch newRedisClient
-	newRedisClient = func(addr string, password string, redisUseTLS bool) store.RedisClientIface {
+	newRedisClient = func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface {
 		return store.NewMockRedisClient()
 	}
 	defer func() {
-		newRedisClient = func(addr string, password string, redisUseTLS bool) store.RedisClientIface {
-			return store.NewRedisClient(addr, password, redisUseTLS)
+		newRedisClient = func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface {
+			return store.NewRedisClient(addr, password, skipTLSVerify, redisUseTLS)
 		}
 	}()
 
@@ -120,14 +121,15 @@ func TestRunHealthCheckerFromEnv_Ephemeral(t *testing.T) {
 		"Accept, Authorization, Content-Type, Origin, X-Requested-With", // corsHeaders
 		"GET, POST, OPTIONS", // corsMethods
 		"*",                  // corsOrigin
-		30,                   // ephemeralChecksInterval
 		3,                    // ephemeralChecksHealthyThreshold
+		30,                   // ephemeralChecksInterval
 		0,                    // healthCheckInterval (ephemeral mode)
 		false,                // metricsEnabled
 		9090,                 // metricsPort
 		"localhost",          // redisHost
+		"",                   // redisPass
 		"6379",               // redisPort
-		"",                   // redisPassword
+		false,                // redisSkipTLSCheck
 		false,                // redisUseTLS
 		true,                 // standaloneHealthChecks
 	)
@@ -143,12 +145,12 @@ func TestRunHealthCheckerFromEnv_Disabled(t *testing.T) {
 	defer func() { testExitAfterSetup = false }()
 
 	// Patch newRedisClient
-	newRedisClient = func(addr string, password string, redisUseTLS bool) store.RedisClientIface {
+	newRedisClient = func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface {
 		return store.NewMockRedisClient()
 	}
 	defer func() {
-		newRedisClient = func(addr string, password string, redisUseTLS bool) store.RedisClientIface {
-			return store.NewRedisClient(addr, password, redisUseTLS)
+		newRedisClient = func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface {
+			return store.NewRedisClient(addr, password, skipTLSVerify, redisUseTLS)
 		}
 	}()
 
@@ -176,14 +178,15 @@ func TestRunHealthCheckerFromEnv_Disabled(t *testing.T) {
 		"Accept, Authorization, Content-Type, Origin, X-Requested-With", // corsHeaders
 		"GET, POST, OPTIONS", // corsMethods
 		"*",                  // corsOrigin
-		30,                   // ephemeralChecksInterval
 		3,                    // ephemeralChecksHealthyThreshold
+		30,                   // ephemeralChecksInterval
 		0,                    // healthCheckInterval (doesn't matter)
 		false,                // metricsEnabled
 		9090,                 // metricsPort
 		"localhost",          // redisHost
+		"",                   // redisPass
 		"6379",               // redisPort
-		"",                   // redisPassword
+		false,                // redisSkipTLSCheck
 		false,                // redisUseTLS
 		false,                // standaloneHealthChecks (disabled)
 	)

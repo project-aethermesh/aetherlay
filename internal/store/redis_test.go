@@ -290,8 +290,8 @@ func TestCombinedRequestCounts(t *testing.T) {
 // TestNewRedisClientTLSConfig is an integration test that checks the TLS configuration.
 // It requires a running Redis server with TLS enabled on port 6380 and non-TLS on 6379.
 func TestNewRedisClientTLSConfig(t *testing.T) {
-	redisHost := helpers.GetStringFromEnv("REDIS_HOST", "localhost")
-	redisPassword := helpers.GetStringFromEnv("REDIS_PASS", "SOME_PASS")
+	redisHost := helpers.GetStringFromFlagOrEnv("redis-host", "REDIS_HOST", "localhost")
+	redisPass := helpers.GetStringFromFlagOrEnv("redis-pass", "REDIS_PASS", "SOME_PASS")
 
 	redisAddrNonTLS := fmt.Sprintf("%s:6379", redisHost)
 	redisAddrTLS := fmt.Sprintf("%s:6380", redisHost)
@@ -306,7 +306,7 @@ func TestNewRedisClientTLSConfig(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("Non-TLS connection", func(t *testing.T) {
-		client := NewRedisClient(redisAddrNonTLS, redisPassword, false)
+		client := NewRedisClient(redisAddrNonTLS, redisPass, false, false)
 		if err := client.Ping(ctx); err != nil {
 			t.Fatalf("Failed to connect to non-TLS Redis: %v", err)
 		}
@@ -316,7 +316,7 @@ func TestNewRedisClientTLSConfig(t *testing.T) {
 		os.Setenv("REDIS_SKIP_TLS_CHECK", "true")
 		defer os.Unsetenv("REDIS_SKIP_TLS_CHECK")
 
-		client := NewRedisClient(redisAddrTLS, redisPassword, true)
+		client := NewRedisClient(redisAddrTLS, redisPass, true, true)
 		if err := client.Ping(ctx); err != nil {
 			t.Fatalf("Failed to connect to TLS Redis with skip verify: %v", err)
 		}
@@ -326,7 +326,7 @@ func TestNewRedisClientTLSConfig(t *testing.T) {
 		os.Setenv("REDIS_SKIP_TLS_CHECK", "false")
 		defer os.Unsetenv("REDIS_SKIP_TLS_CHECK")
 
-		client := NewRedisClient(redisAddrTLS, redisPassword, true)
+		client := NewRedisClient(redisAddrTLS, redisPass, true, true)
 		if err := client.Ping(ctx); err == nil {
 			t.Fatal("Expected TLS connection to fail without skip verify, but it succeeded.")
 		} else {
@@ -337,7 +337,7 @@ func TestNewRedisClientTLSConfig(t *testing.T) {
 	t.Run("TLS connection with env var unset (should fail)", func(t *testing.T) {
 		os.Unsetenv("REDIS_SKIP_TLS_CHECK")
 
-		client := NewRedisClient(redisAddrTLS, redisPassword, true)
+		client := NewRedisClient(redisAddrTLS, redisPass, true, true)
 		if err := client.Ping(ctx); err == nil {
 			t.Fatal("Expected TLS connection to fail with env var unset, but it succeeded.")
 		} else {

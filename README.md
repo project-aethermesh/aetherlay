@@ -101,13 +101,15 @@ The load balancer will listen for incoming requests on predefined endpoints that
 | `--cors-headers` | `Accept, Authorization, Content-Type, Origin, X-Requested-With` | Allowed headers for CORS requests |
 | `--cors-methods` | `GET, POST, OPTIONS` | Allowed HTTP methods for CORS requests |
 | `--cors-origin` | `*` | Allowed origin for CORS requests |
-| `--ephemeral-checks-interval` | `30` | Interval in seconds for ephemeral health checks |
 | `--ephemeral-checks-healthy-threshold` | `3` | Amount of consecutive successful responses required to consider endpoint healthy again |
+| `--ephemeral-checks-interval` | `30` | Interval in seconds for ephemeral health checks |
 | `--health-check-interval` | `30` | Health check interval in seconds |
 | `--log-level` | `info` | Set the log level. Valid options are: `debug`, `info`, `warn`, `error`, `fatal`, `panic` |
 | `--metrics-enabled` | `true` | Whether to enable Prometheus metrics |
 | `--redis-host` | `localhost` | Redis server hostname |
+| `--redis-pass` | - | Redis server password |
 | `--redis-port` | `6379` | Redis server port |
+| `--redis-skip-tls-check` | `false` | Whether to skip TLS certificate validation when connecting to Redis |
 | `--redis-use-tls` | `false` | Whether to use TLS for connecting to Redis |
 | `--server-port` | `8080` | Port to use for the load balancer / proxy |
 | `--standalone-health-checks` | `true` | Enable standalone health checks |
@@ -130,10 +132,10 @@ The load balancer will listen for incoming requests on predefined endpoints that
 | `LOG_LEVEL` | `info` | Set the log level |
 | `METRICS_ENABLED` | `true` | Whether to enable Prometheus metrics |
 | `REDIS_HOST` | `localhost` | Redis server hostname |
-| `REDIS_PORT` | `6379` | Redis server port |
 | `REDIS_PASS` | - | Redis server password |
-| `REDIS_USE_TLS` | `false` | Whether to use TLS for connecting to Redis |
+| `REDIS_PORT` | `6379` | Redis server port |
 | `REDIS_SKIP_TLS_CHECK` | `false` | Whether to skip TLS certificate validation when connecting to Redis |
+| `REDIS_USE_TLS` | `false` | Whether to use TLS for connecting to Redis |
 | `SERVER_PORT` | `8080` | Port to use for the load balancer / proxy |
 | `STANDALONE_HEALTH_CHECKS` | `true` | Enable/disable the standalone mode of the health checker |
 
@@ -191,8 +193,8 @@ Metrics are enabled by default. If you don't want them, use the `--metrics-enabl
 
 ### Port Configuration
 
--   The metrics server runs on the port defined by `METRICS_PORT` (default: `9090`).
--   **Important**: When running multiple services from this repository on the same machine (e.g., the load balancer and the standalone health checker), you must assign them different metrics ports to avoid conflicts. For example, you could run the health checker with `--metrics-port=9090` and the load balancer with `--metrics-port=9091` (which is the default if you don't set the `METRICS_PORT` env var.
+- The metrics server runs on the port defined by `METRICS_PORT` (default: `9090`).
+- **Important**: When running multiple services from this repository on the same machine (e.g., the load balancer and the standalone health checker), you must assign them different metrics ports to avoid conflicts. For example, you could run the health checker with `--metrics-port=9090` and the load balancer with `--metrics-port=9091` (which is the default if you don't set the `METRICS_PORT` env var).
 
 ## Grafana Dashboard
 

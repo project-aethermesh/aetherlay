@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,8 +22,8 @@ import (
 var onModeDetected func(string)
 
 // Allow patching in tests
-var newRedisClient func(addr string, password string, redisUseTLS bool) store.RedisClientIface = func(addr string, password string, redisUseTLS bool) store.RedisClientIface {
-	return store.NewRedisClient(addr, password, redisUseTLS)
+var newRedisClient func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface = func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface {
+	return store.NewRedisClient(addr, password, skipTLSVerify, redisUseTLS)
 }
 var loadConfig = config.LoadConfig
 
@@ -40,14 +39,15 @@ func RunHealthChecker(
 	corsHeaders string,
 	corsMethods string,
 	corsOrigin string,
-	ephemeralChecksInterval int,
 	ephemeralChecksHealthyThreshold int,
+	ephemeralChecksInterval int,
 	healthCheckInterval int,
 	metricsEnabled bool,
 	metricsPort int,
 	redisHost string,
+	redisPass string,
 	redisPort string,
-	redisPassword string,
+	redisSkipTLSCheck bool,
 	redisUseTLS bool,
 	standaloneHealthChecks bool,
 ) {
@@ -94,7 +94,7 @@ func RunHealthChecker(
 	}
 
 	redisAddr := redisHost + ":" + redisPort
-	redisClient := newRedisClient(redisAddr, redisPassword, redisUseTLS)
+	redisClient := newRedisClient(redisAddr, redisPass, redisSkipTLSCheck, redisUseTLS)
 	if err := redisClient.Ping(context.Background()); err != nil {
 		log.Fatal().Err(err).Msg("Failed to connect to Redis")
 	}
@@ -147,102 +147,33 @@ func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
 
-	// Parse command line flags
-	configFile := flag.String(
-		"config-file",
-		helpers.GetStringFromEnv("CONFIG_FILE", "configs/endpoints.json"),
-		"Path to the endpoints configuration file",
-	)
-	corsHeaders := flag.String(
-		"cors-headers",
-		helpers.GetStringFromEnv("CORS_HEADERS", "Accept, Authorization, Content-Type, Origin, X-Requested-With"),
-		"Allowed headers for CORS requests",
-	)
-	corsMethods := flag.String(
-		"cors-methods",
-		helpers.GetStringFromEnv("CORS_METHODS", "GET, POST, OPTIONS"),
-		"Allowed HTTP methods for CORS requests",
-	)
-	corsOrigin := flag.String(
-		"cors-origin",
-		helpers.GetStringFromEnv("CORS_ORIGIN", "*"),
-		"Allowed origin for CORS requests",
-	)
-	ephemeralChecksInterval := flag.Int(
-		"ephemeral-checks-interval",
-		helpers.GetIntFromEnv("EPHEMERAL_CHECKS_INTERVAL", 30),
-		"Interval in seconds for ephemeral health checks",
-	)
-	ephemeralChecksHealthyThreshold := flag.Int(
-		"ephemeral-checks-healthy-threshold",
-		helpers.GetIntFromEnv("EPHEMERAL_CHECKS_HEALTHY_THRESHOLD", 3),
-		"Amount of consecutive successful responses required to consider endpoint healthy again",
-	)
-	healthCheckInterval := flag.Int(
-		"health-check-interval",
-		helpers.GetIntFromEnv("HEALTH_CHECK_INTERVAL", 30),
-		"Health check interval in seconds",
-	)
-	logLevel := flag.String(
-		"log-level",
-		helpers.GetStringFromEnv("LOG_LEVEL", "info"),
-		"Set the log level",
-	)
-	metricsEnabled := flag.Bool(
-		"metrics-enabled",
-		helpers.GetBoolFromEnv("METRICS_ENABLED", true),
-		"Enable the Prometheus metrics server",
-	)
-	metricsPort := flag.Int(
-		"metrics-port",
-		helpers.GetIntFromEnv("METRICS_PORT", 9090),
-		"Port for the Prometheus metrics server",
-	)
-	redisHost := flag.String(
-		"redis-host",
-		helpers.GetStringFromEnv("REDIS_HOST", "localhost"),
-		"Redis server hostname",
-	)
-	redisPort := flag.String(
-		"redis-port",
-		helpers.GetStringFromEnv("REDIS_PORT", "6379"),
-		"Redis server port",
-	)
-	redisUseTLS := flag.Bool(
-		"redis-use-tls",
-		helpers.GetBoolFromEnv("REDIS_USE_TLS", false),
-		"Use TLS for Redis connection",
-	)
-	standaloneHealthChecks := flag.Bool(
-		"standalone-health-checks",
-		helpers.GetBoolFromEnv("STANDALONE_HEALTH_CHECKS", true),
-		"Enable standalone health checks",
-	)
-	flag.Parse()
-	redisPassword := helpers.GetStringFromEnv("REDIS_PASS", "")
+	// Parse CLI flags and load configuration
+	flagConfig := helpers.ParseFlags()
+	config := flagConfig.LoadConfiguration()
 
 	// Set the requested log level if it's valid, otherwise default to info
-	if level, err := zerolog.ParseLevel(*logLevel); err == nil {
+	if level, err := zerolog.ParseLevel(config.LogLevel); err == nil {
 		zerolog.SetGlobalLevel(level)
 	} else {
-		log.Warn().Str("LOG_LEVEL", *logLevel).Msg("Invalid log level, defaulting to Info")
+		log.Warn().Str("LOG_LEVEL", config.LogLevel).Msg("Invalid log level, defaulting to Info")
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	}
 
 	RunHealthChecker(
-		*configFile,
-		*corsHeaders,
-		*corsMethods,
-		*corsOrigin,
-		*ephemeralChecksInterval,
-		*ephemeralChecksHealthyThreshold,
-		*healthCheckInterval,
-		*metricsEnabled,
-		*metricsPort,
-		*redisHost,
-		*redisPort,
-		redisPassword,
-		*redisUseTLS,
-		*standaloneHealthChecks,
+		config.ConfigFile,
+		config.CorsHeaders,
+		config.CorsMethods,
+		config.CorsOrigin,
+		config.EphemeralChecksHealthyThreshold,
+		config.EphemeralChecksInterval,
+		config.HealthCheckInterval,
+		config.MetricsEnabled,
+		config.MetricsPort,
+		config.RedisHost,
+		config.RedisPass,
+		config.RedisPort,
+		config.RedisSkipTLSCheck,
+		config.RedisUseTLS,
+		config.StandaloneHealthChecks,
 	)
 }
