@@ -98,6 +98,9 @@ The load balancer will listen for incoming requests on predefined endpoints that
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--config-file` | `configs/endpoints.json` | Path to endpoints configuration file |
+| `--cors-headers` | `Accept, Authorization, Content-Type, Origin, X-Requested-With` | Allowed headers for CORS requests |
+| `--cors-methods` | `GET, POST, OPTIONS` | Allowed HTTP methods for CORS requests |
+| `--cors-origin` | `*` | Allowed origin for CORS requests |
 | `--ephemeral-checks-interval` | `30` | Interval in seconds for ephemeral health checks |
 | `--ephemeral-checks-healthy-threshold` | `3` | Amount of consecutive successful responses required to consider endpoint healthy again |
 | `--health-check-interval` | `30` | Health check interval in seconds |
@@ -118,6 +121,9 @@ The load balancer will listen for incoming requests on predefined endpoints that
 | `ALCHEMY_API_KEY` | - | Example API key for Alchemy RPC endpoints. **Only needed for the example config.** The name must match the variable referenced in your `configs/endpoints.json`, if you need any. |
 | `INFURA_API_KEY` | - | Example API key for Infura RPC endpoints. **Only needed for the example config.** The name must match the variable referenced in your `configs/endpoints.json`, if you need any. |
 | `CONFIG_FILE` | `configs/endpoints.json` | Path to the endpoints configuration file |
+| `CORS_HEADERS` | `Accept, Authorization, Content-Type, Origin, X-Requested-With` | Allowed headers for CORS requests |
+| `CORS_METHODS` | `GET, POST, OPTIONS` | Allowed HTTP methods for CORS requests |
+| `CORS_ORIGIN` | `*` | Allowed origin for CORS requests |
 | `EPHEMERAL_CHECKS_HEALTHY_THRESHOLD` | `3` | Amount of consecutive successful responses from the endpoint required to consider it as being healthy again |
 | `EPHEMERAL_CHECKS_INTERVAL` | `30` | Interval in seconds for ephemeral health checks |
 | `HEALTH_CHECK_INTERVAL` | `30` | Health check interval in seconds |
