@@ -432,8 +432,12 @@ func (s *Server) defaultForwardRequest(w http.ResponseWriter, r *http.Request, t
 	}
 	defer resp.Body.Close()
 
-	// Copy response headers
+	// Copy response headers, but skip CORS headers since we set our own
 	for key, values := range resp.Header {
+		// Skip CORS headers to avoid duplication
+		if strings.HasPrefix(key, "Access-Control-") {
+			continue
+		}
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}
