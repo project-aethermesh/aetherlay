@@ -44,9 +44,8 @@ func main() {
 
 	// Start the metrics server if enabled
 	if appConfig.MetricsEnabled {
-		metricsPort := appConfig.GetMetricsPortForService(true)
-		log.Info().Int("port", metricsPort).Msg("Prometheus metrics server enabled")
-		metrics.StartServer(metricsPort, appConfig.CorsHeaders, appConfig.CorsMethods, appConfig.CorsOrigin)
+		log.Info().Int("port", appConfig.MetricsPort).Msg("Prometheus metrics server enabled")
+		metrics.StartServer(appConfig.MetricsPort, appConfig.CorsHeaders, appConfig.CorsMethods, appConfig.CorsOrigin)
 	}
 
 	// Load configuration
