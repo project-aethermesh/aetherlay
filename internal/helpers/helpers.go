@@ -1,6 +1,7 @@
 package helpers
 
 import (
+	"flag"
 	"os"
 	"regexp"
 	"strconv"
@@ -9,64 +10,198 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// GetBoolFromEnv gets a string value from an env var and returns it as a boolean.
-// If the env var is not found, a default value is returned.
-// Accepts "true", "1", "yes" and "on" as true values (case insensitive).
-// Accepts "false", "0", "no" and "off" as false values (case insensitive).
-// If an invalid value is provided, it logs a warning and returns the default value.
-func GetBoolFromEnv(key string, defaultValue bool) bool {
-	if envVal := os.Getenv(key); envVal != "" {
-		envVal = strings.ToLower(strings.TrimSpace(envVal))
-		switch envVal {
-		case "true", "1", "yes", "on":
-			return true
-		case "false", "0", "no", "off":
-			return false
-		default:
-			log.Warn().Msg(envVal + " is an invalid boolean value for " + key + ", defaulting to: " + strconv.FormatBool(defaultValue))
-			os.Setenv(key, strconv.FormatBool(defaultValue))
+// Config holds all CLI flags and their values
+type Config struct {
+	ConfigFile                      string
+	CorsHeaders                     string
+	CorsMethods                     string
+	CorsOrigin                      string
+	EphemeralChecksHealthyThreshold int
+	EphemeralChecksInterval         int
+	HealthCheckInterval             int
+	LogLevel                        string
+	MetricsEnabled                  bool
+	MetricsPort                     int
+	RedisHost                       string
+	RedisPass                       string
+	RedisPort                       string
+	RedisSkipTLSCheck               bool
+	RedisUseTLS                     bool
+	ServerPort                      int
+	StandaloneHealthChecks          bool
+}
+
+// ParseFlags defines and parses all CLI flags, returning a Config struct
+func ParseFlags() *Config {
+	config := &Config{}
+
+	// Define all flags with proper defaults
+	flag.StringVar(&config.ConfigFile, "config-file", "configs/endpoints.json", "Configuration file path")
+	flag.StringVar(&config.CorsHeaders, "cors-headers", "Accept, Authorization, Content-Type, Origin, X-Requested-With", "CORS allowed headers")
+	flag.StringVar(&config.CorsMethods, "cors-methods", "GET, POST, OPTIONS", "CORS allowed methods")
+	flag.StringVar(&config.CorsOrigin, "cors-origin", "*", "CORS allowed origin")
+	flag.IntVar(&config.EphemeralChecksHealthyThreshold, "ephemeral-checks-healthy-threshold", 3, "Ephemeral checks healthy threshold")
+	flag.IntVar(&config.EphemeralChecksInterval, "ephemeral-checks-interval", 30, "Ephemeral checks interval in seconds")
+	flag.IntVar(&config.HealthCheckInterval, "health-check-interval", 30, "Health check interval in seconds")
+	flag.StringVar(&config.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+	flag.BoolVar(&config.MetricsEnabled, "metrics-enabled", true, "Enable metrics server")
+	flag.IntVar(&config.MetricsPort, "metrics-port", 9090, "Metrics server port")
+	flag.StringVar(&config.RedisHost, "redis-host", "localhost", "Redis host")
+	flag.StringVar(&config.RedisPass, "redis-pass", "", "Redis password")
+	flag.StringVar(&config.RedisPort, "redis-port", "6379", "Redis port")
+	flag.BoolVar(&config.RedisSkipTLSCheck, "redis-skip-tls-check", false, "Skip TLS certificate validation for Redis")
+	flag.BoolVar(&config.RedisUseTLS, "redis-use-tls", false, "Use TLS for Redis connection")
+	flag.IntVar(&config.ServerPort, "server-port", 8080, "Server port")
+	flag.BoolVar(&config.StandaloneHealthChecks, "standalone-health-checks", true, "Enable standalone health checks")
+
+	// Parse the flags
+	flag.Parse()
+
+	log.Debug().Msg("CLI flags parsed successfully")
+	return config
+}
+
+// GetStringValue returns the flag value if explicitly set, otherwise the env var value, otherwise the default
+func (c *Config) GetStringValue(flagName string, flagValue string, envKey string, defaultValue string) string {
+	// Check if the flag was explicitly set by looking it up
+	if f := flag.Lookup(flagName); f != nil && f.Value.String() != f.DefValue {
+		logValue := flagValue
+		if flagName == "redis-pass" {
+			logValue = "REDACTED"
+		}
+		log.Debug().Str(flagName, logValue).Msg("Using value from flag")
+		return flagValue
+	}
+	return getStringFromEnv(envKey, defaultValue)
+}
+
+// GetIntValue returns the flag value if explicitly set, otherwise the env var value, otherwise the default
+func (c *Config) GetIntValue(flagName string, flagValue int, envKey string, defaultValue int) int {
+	// Check if the flag was explicitly set by looking it up
+	if f := flag.Lookup(flagName); f != nil && f.Value.String() != f.DefValue {
+		log.Debug().Int(flagName, flagValue).Msg("Using value from flag")
+		return flagValue
+	}
+	return getIntFromEnv(envKey, defaultValue)
+}
+
+// GetBoolValue returns the flag value if the flag was explicitly set, otherwise the env var value, otherwise the default
+func (c *Config) GetBoolValue(flagName string, flagValue bool, envKey string, defaultValue bool) bool {
+	// Check if the flag was explicitly set by looking it up
+	if f := flag.Lookup(flagName); f != nil && f.Value.String() != f.DefValue {
+		log.Debug().Bool(flagName, flagValue).Msg("Using value from flag")
+		return flagValue
+	}
+	return getBoolFromEnv(envKey, defaultValue)
+}
+
+// LoadConfiguration loads all configuration values with proper precedence
+func (c *Config) LoadConfiguration() *LoadedConfig {
+	return &LoadedConfig{
+		ConfigFile:                      c.GetStringValue("config-file", c.ConfigFile, "CONFIG_FILE", "configs/endpoints.json"),
+		CorsHeaders:                     c.GetStringValue("cors-headers", c.CorsHeaders, "CORS_HEADERS", "Accept, Authorization, Content-Type, Origin, X-Requested-With"),
+		CorsMethods:                     c.GetStringValue("cors-methods", c.CorsMethods, "CORS_METHODS", "GET, POST, OPTIONS"),
+		CorsOrigin:                      c.GetStringValue("cors-origin", c.CorsOrigin, "CORS_ORIGIN", "*"),
+		EphemeralChecksHealthyThreshold: c.GetIntValue("ephemeral-checks-healthy-threshold", c.EphemeralChecksHealthyThreshold, "EPHEMERAL_CHECKS_HEALTHY_THRESHOLD", 3),
+		EphemeralChecksInterval:         c.GetIntValue("ephemeral-checks-interval", c.EphemeralChecksInterval, "EPHEMERAL_CHECKS_INTERVAL", 30),
+		HealthCheckInterval:             c.GetIntValue("health-check-interval", c.HealthCheckInterval, "HEALTH_CHECK_INTERVAL", 30),
+		LogLevel:                        c.GetStringValue("log-level", c.LogLevel, "LOG_LEVEL", "info"),
+		MetricsEnabled:                  c.GetBoolValue("metrics-enabled", c.MetricsEnabled, "METRICS_ENABLED", true),
+		MetricsPort:                     c.GetIntValue("metrics-port", c.MetricsPort, "METRICS_PORT", 9090),
+		RedisHost:                       c.GetStringValue("redis-host", c.RedisHost, "REDIS_HOST", "localhost"),
+		RedisPass:                       c.GetStringValue("redis-pass", c.RedisPass, "REDIS_PASS", ""),
+		RedisPort:                       c.GetStringValue("redis-port", c.RedisPort, "REDIS_PORT", "6379"),
+		RedisSkipTLSCheck:               c.GetBoolValue("redis-skip-tls-check", c.RedisSkipTLSCheck, "REDIS_SKIP_TLS_CHECK", false),
+		RedisUseTLS:                     c.GetBoolValue("redis-use-tls", c.RedisUseTLS, "REDIS_USE_TLS", false),
+		ServerPort:                      c.GetIntValue("server-port", c.ServerPort, "SERVER_PORT", 8080),
+		StandaloneHealthChecks:          c.GetBoolValue("standalone-health-checks", c.StandaloneHealthChecks, "STANDALONE_HEALTH_CHECKS", true),
+	}
+}
+
+// LoadedConfig contains the final resolved configuration values
+type LoadedConfig struct {
+	ConfigFile                      string
+	CorsHeaders                     string
+	CorsMethods                     string
+	CorsOrigin                      string
+	EphemeralChecksHealthyThreshold int
+	EphemeralChecksInterval         int
+	HealthCheckInterval             int
+	LogLevel                        string
+	MetricsEnabled                  bool
+	MetricsPort                     int
+	RedisHost                       string
+	RedisPass                       string
+	RedisPort                       string
+	RedisSkipTLSCheck               bool
+	RedisUseTLS                     bool
+	ServerPort                      int
+	StandaloneHealthChecks          bool
+}
+
+// GetMetricsPortForService returns the appropriate metrics port for the service.
+// If the MetricsPort is set to its default value (9090) and the standalone health checks are enabled,
+// the load balancer defaults to using port 9091 for metrics.
+// This is to avoid conflicts when running the load balancer and the health checker on the same machine.
+func (c *LoadedConfig) GetMetricsPortForService(isLoadBalancer bool) int {
+	if isLoadBalancer && c.MetricsPort == 9090 && c.StandaloneHealthChecks {
+		return 9091
+	}
+	return c.MetricsPort
+}
+
+// Internal helper functions for environment variable processing
+
+// getStringFromEnv gets a string value from an environment variable or returns a default
+func getStringFromEnv(envKey, defaultValue string) string {
+	if envValue := os.Getenv(envKey); envValue != "" {
+		if strings.TrimSpace(envValue) != "" {
+			logValue := envKey
+			if envKey == "REDIS_PASS" {
+				logValue = "REDACTED"
+			}
+			log.Debug().Str(envKey, logValue).Msg("Parsed string value from env var")
+			return envValue
+		} else {
+			log.Info().Msg("Empty value for " + envKey + ", defaulting to: " + defaultValue)
 		}
 	} else {
-		log.Warn().Msg("Missing " + key + " from env vars, defaulting to: " + strconv.FormatBool(defaultValue))
-		os.Setenv(key, strconv.FormatBool(defaultValue))
+		log.Info().Msg("Missing " + envKey + " from env vars, defaulting to: " + defaultValue)
 	}
+	os.Setenv(envKey, defaultValue)
 	return defaultValue
 }
 
-// GetIntFromEnv gets a string value from an env var and returns it as an integer.
-// If the env var is not found, a default value is returned.
-// Integers are expected to be greater than or equal to zero.
-// If an invalid value is provided, it logs a warning and returns the default value.
-func GetIntFromEnv(key string, defaultValue int) int {
-	if envVal := os.Getenv(key); envVal != "" {
-		if parsed, err := strconv.Atoi(envVal); err == nil && parsed >= 0 {
+// getIntFromEnv gets an integer value from an environment variable or returns a default
+func getIntFromEnv(envKey string, defaultValue int) int {
+	if envValue := os.Getenv(envKey); envValue != "" {
+		if parsed, err := strconv.Atoi(envValue); err == nil && parsed >= 0 {
+			log.Debug().Int(envKey, parsed).Msg("Parsed integer value from env var")
 			return parsed
 		} else {
-			log.Warn().Msg(envVal + "is an invalid value for " + key + ", defaulting to: " + strconv.Itoa(defaultValue))
-			os.Setenv(key, strconv.Itoa(defaultValue))
+			log.Info().Msg(envValue + " is an invalid value for " + envKey + ", defaulting to: " + strconv.Itoa(defaultValue))
 		}
 	} else {
-		log.Warn().Msg("Missing " + key + " from env vars, defaulting to: " + strconv.Itoa(defaultValue))
-		os.Setenv(key, strconv.Itoa(defaultValue))
+		log.Info().Msg("Missing " + envKey + " from env vars, defaulting to: " + strconv.Itoa(defaultValue))
 	}
+	os.Setenv(envKey, strconv.Itoa(defaultValue))
 	return defaultValue
 }
 
-// GetStringFromEnv gets a string value from an env var and returns it as a string.
-// If the env var is not found, a default value is returned.
-// Empty strings are treated as missing values and will trigger the default.
-func GetStringFromEnv(key string, defaultValue string) string {
-	if envVal := os.Getenv(key); envVal != "" {
-		if strings.TrimSpace(envVal) != "" {
-			return envVal
+// getBoolFromEnv gets a boolean value from an environment variable or returns a default
+func getBoolFromEnv(envKey string, defaultValue bool) bool {
+	if envValue := os.Getenv(envKey); envValue != "" {
+		envValue = strings.TrimSpace(envValue)
+		if parsed, err := strconv.ParseBool(envValue); err == nil {
+			log.Debug().Bool(envKey, parsed).Msg("Parsed boolean value from env var")
+			return parsed
 		} else {
-			log.Warn().Msg("Empty value for " + key + ", defaulting to: " + defaultValue)
-			os.Setenv(key, defaultValue)
+			log.Info().Msg(envValue + " is an invalid boolean value for " + envKey + ", defaulting to: " + strconv.FormatBool(defaultValue))
 		}
 	} else {
-		log.Warn().Msg("Missing " + key + " from env vars, defaulting to: " + defaultValue)
-		os.Setenv(key, defaultValue)
+		log.Info().Msg("Missing " + envKey + " from env vars, defaulting to: " + strconv.FormatBool(defaultValue))
 	}
+	os.Setenv(envKey, strconv.FormatBool(defaultValue))
 	return defaultValue
 }
 
