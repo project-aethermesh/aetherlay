@@ -194,7 +194,7 @@ Metrics are enabled by default. If you don't want them, use the `--metrics-enabl
 ### Port Configuration
 
 - The metrics server runs on the port defined by `METRICS_PORT` (default: `9090`).
-- **Important**: When running multiple services from this repository on the same machine (e.g., the load balancer and the standalone health checker), you must assign them different metrics ports to avoid conflicts. For example, you could run the health checker with `--metrics-port=9090` and the load balancer with `--metrics-port=9091` (which is the default if you don't set the `METRICS_PORT` env var).
+- **Important**: When running multiple services from this repository on the same machine (e.g., the load balancer and the standalone health checker), you must assign them different metrics ports to avoid conflicts. For example, you could run the health checker with `--metrics-port=9090` and the load balancer with `--metrics-port=9091`.
 
 ## Grafana Dashboard
 

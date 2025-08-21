@@ -139,17 +139,6 @@ type LoadedConfig struct {
 	StandaloneHealthChecks          bool
 }
 
-// GetMetricsPortForService returns the appropriate metrics port for the service.
-// If the MetricsPort is set to its default value (9090) and the standalone health checks are enabled,
-// the load balancer defaults to using port 9091 for metrics.
-// This is to avoid conflicts when running the load balancer and the health checker on the same machine.
-func (c *LoadedConfig) GetMetricsPortForService(isLoadBalancer bool) int {
-	if isLoadBalancer && c.MetricsPort == 9090 && c.StandaloneHealthChecks {
-		return 9091
-	}
-	return c.MetricsPort
-}
-
 // Internal helper functions for environment variable processing
 
 // getStringFromEnv gets a string value from an environment variable or returns a default
