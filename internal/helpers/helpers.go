@@ -62,10 +62,14 @@ func ParseFlags() *Config {
 }
 
 // GetStringValue returns the flag value if explicitly set, otherwise the env var value, otherwise the default
-func (c *Config) GetStringValue(flagName, flagValue, envKey, defaultValue string) string {
+func (c *Config) GetStringValue(flagName string, flagValue string, envKey string, defaultValue string) string {
 	// Check if the flag was explicitly set by looking it up
 	if f := flag.Lookup(flagName); f != nil && f.Value.String() != f.DefValue {
-		log.Debug().Str(flagName, flagValue).Msg("Using value from flag")
+		logValue := flagValue
+		if flagName == "redis-pass" {
+			logValue = "REDACTED"
+		}
+		log.Debug().Str(flagName, logValue).Msg("Using value from flag")
 		return flagValue
 	}
 	return getStringFromEnv(envKey, defaultValue)
@@ -150,10 +154,14 @@ func (c *LoadedConfig) GetMetricsPortForService(isLoadBalancer bool) int {
 
 // getStringFromEnv gets a string value from an environment variable or returns a default
 func getStringFromEnv(envKey, defaultValue string) string {
-	if envVal := os.Getenv(envKey); envVal != "" {
-		if strings.TrimSpace(envVal) != "" {
-			log.Debug().Str(envKey, envVal).Msg("Parsed string value from env var")
-			return envVal
+	if envValue := os.Getenv(envKey); envValue != "" {
+		if strings.TrimSpace(envValue) != "" {
+			logValue := envKey
+			if envKey == "REDIS_PASS" {
+				logValue = "REDACTED"
+			}
+			log.Debug().Str(envKey, logValue).Msg("Parsed string value from env var")
+			return envValue
 		} else {
 			log.Info().Msg("Empty value for " + envKey + ", defaulting to: " + defaultValue)
 		}
@@ -166,12 +174,12 @@ func getStringFromEnv(envKey, defaultValue string) string {
 
 // getIntFromEnv gets an integer value from an environment variable or returns a default
 func getIntFromEnv(envKey string, defaultValue int) int {
-	if envVal := os.Getenv(envKey); envVal != "" {
-		if parsed, err := strconv.Atoi(envVal); err == nil && parsed >= 0 {
+	if envValue := os.Getenv(envKey); envValue != "" {
+		if parsed, err := strconv.Atoi(envValue); err == nil && parsed >= 0 {
 			log.Debug().Int(envKey, parsed).Msg("Parsed integer value from env var")
 			return parsed
 		} else {
-			log.Info().Msg(envVal + " is an invalid value for " + envKey + ", defaulting to: " + strconv.Itoa(defaultValue))
+			log.Info().Msg(envValue + " is an invalid value for " + envKey + ", defaulting to: " + strconv.Itoa(defaultValue))
 		}
 	} else {
 		log.Info().Msg("Missing " + envKey + " from env vars, defaulting to: " + strconv.Itoa(defaultValue))
@@ -182,13 +190,13 @@ func getIntFromEnv(envKey string, defaultValue int) int {
 
 // getBoolFromEnv gets a boolean value from an environment variable or returns a default
 func getBoolFromEnv(envKey string, defaultValue bool) bool {
-	if envVal := os.Getenv(envKey); envVal != "" {
-		envVal = strings.TrimSpace(envVal)
-		if parsed, err := strconv.ParseBool(envVal); err == nil {
+	if envValue := os.Getenv(envKey); envValue != "" {
+		envValue = strings.TrimSpace(envValue)
+		if parsed, err := strconv.ParseBool(envValue); err == nil {
 			log.Debug().Bool(envKey, parsed).Msg("Parsed boolean value from env var")
 			return parsed
 		} else {
-			log.Info().Msg(envVal + " is an invalid boolean value for " + envKey + ", defaulting to: " + strconv.FormatBool(defaultValue))
+			log.Info().Msg(envValue + " is an invalid boolean value for " + envKey + ", defaulting to: " + strconv.FormatBool(defaultValue))
 		}
 	} else {
 		log.Info().Msg("Missing " + envKey + " from env vars, defaulting to: " + strconv.FormatBool(defaultValue))
