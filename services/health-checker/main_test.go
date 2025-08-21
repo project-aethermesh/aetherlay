@@ -60,17 +60,20 @@ func TestRunHealthCheckerFromEnv_Standalone(t *testing.T) {
 
 	// Call RunHealthChecker directly
 	RunHealthChecker(
-		"mock",      // configFile
-		30,          // ephemeralChecksInterval
-		3,           // ephemeralChecksHealthyThreshold
-		30,          // healthCheckInterval
-		false,       // metricsEnabled
-		9090,        // metricsPort
-		"localhost", // redisHost
-		"6379",      // redisPort
-		"",          // redisPassword
-		false,       // redisUseTLS
-		true,        // standaloneHealthChecks
+		"mock", // configFile
+		"Accept, Authorization, Content-Type, Origin, X-Requested-With", // corsHeaders
+		"GET, POST, OPTIONS", // corsMethods
+		"*",                  // corsOrigin
+		30,                   // ephemeralChecksInterval
+		3,                    // ephemeralChecksHealthyThreshold
+		30,                   // healthCheckInterval
+		false,                // metricsEnabled
+		9090,                 // metricsPort
+		"localhost",          // redisHost
+		"6379",               // redisPort
+		"",                   // redisPassword
+		false,                // redisUseTLS
+		true,                 // standaloneHealthChecks
 	)
 
 	if detectedMode != "standalone" {
@@ -113,17 +116,20 @@ func TestRunHealthCheckerFromEnv_Ephemeral(t *testing.T) {
 
 	// Call RunHealthChecker directly
 	RunHealthChecker(
-		"mock",      // configFile
-		30,          // ephemeralChecksInterval
-		3,           // ephemeralChecksHealthyThreshold
-		0,           // healthCheckInterval (ephemeral mode)
-		false,       // metricsEnabled
-		9090,        // metricsPort
-		"localhost", // redisHost
-		"6379",      // redisPort
-		"",          // redisPassword
-		false,       // redisUseTLS
-		true,        // standaloneHealthChecks
+		"mock", // configFile
+		"Accept, Authorization, Content-Type, Origin, X-Requested-With", // corsHeaders
+		"GET, POST, OPTIONS", // corsMethods
+		"*",                  // corsOrigin
+		30,                   // ephemeralChecksInterval
+		3,                    // ephemeralChecksHealthyThreshold
+		0,                    // healthCheckInterval (ephemeral mode)
+		false,                // metricsEnabled
+		9090,                 // metricsPort
+		"localhost",          // redisHost
+		"6379",               // redisPort
+		"",                   // redisPassword
+		false,                // redisUseTLS
+		true,                 // standaloneHealthChecks
 	)
 
 	if detectedMode != "ephemeral" {
@@ -166,17 +172,20 @@ func TestRunHealthCheckerFromEnv_Disabled(t *testing.T) {
 
 	// Call RunHealthChecker directly
 	RunHealthChecker(
-		"mock",      // configFile
-		30,          // ephemeralChecksInterval
-		3,           // ephemeralChecksHealthyThreshold
-		0,           // healthCheckInterval (doesn't matter)
-		false,       // metricsEnabled
-		9090,        // metricsPort
-		"localhost", // redisHost
-		"6379",      // redisPort
-		"",          // redisPassword
-		false,       // redisUseTLS
-		false,       // standaloneHealthChecks (disabled)
+		"mock", // configFile
+		"Accept, Authorization, Content-Type, Origin, X-Requested-With", // corsHeaders
+		"GET, POST, OPTIONS", // corsMethods
+		"*",                  // corsOrigin
+		30,                   // ephemeralChecksInterval
+		3,                    // ephemeralChecksHealthyThreshold
+		0,                    // healthCheckInterval (doesn't matter)
+		false,                // metricsEnabled
+		9090,                 // metricsPort
+		"localhost",          // redisHost
+		"6379",               // redisPort
+		"",                   // redisPassword
+		false,                // redisUseTLS
+		false,                // standaloneHealthChecks (disabled)
 	)
 
 	if detectedMode != "disabled" {

@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"flag"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"aetherlay/internal/config"
+	"aetherlay/internal/cors"
 	"aetherlay/internal/health"
 	"aetherlay/internal/helpers"
 	"aetherlay/internal/metrics"
@@ -34,6 +36,21 @@ func main() {
 		"config-file",
 		helpers.GetStringFromEnv("CONFIG_FILE", "configs/endpoints.json"),
 		"Path to the endpoints configuration file",
+	)
+	corsHeaders := flag.String(
+		"cors-headers",
+		helpers.GetStringFromEnv("CORS_HEADERS", "Accept, Authorization, Content-Type, Origin, X-Requested-With"),
+		"Allowed headers for CORS requests",
+	)
+	corsMethods := flag.String(
+		"cors-methods",
+		helpers.GetStringFromEnv("CORS_METHODS", "GET, POST, OPTIONS"),
+		"Allowed HTTP methods for CORS requests",
+	)
+	corsOrigin := flag.String(
+		"cors-origin",
+		helpers.GetStringFromEnv("CORS_ORIGIN", "*"),
+		"Allowed origin for CORS requests",
 	)
 	logLevel := flag.String(
 		"log-level",
@@ -112,7 +129,7 @@ func main() {
 	// Start the metrics server if enabled
 	if *metricsEnabled {
 		log.Info().Int("port", *metricsPort).Msg("Prometheus metrics server enabled")
-		metrics.StartServer(*metricsPort)
+		metrics.StartServer(*metricsPort, *corsHeaders, *corsMethods, *corsOrigin)
 	}
 
 	// Load configuration
@@ -159,6 +176,9 @@ func main() {
 
 	// Initialize and start the server
 	srv := server.NewServer(cfg, redisClient)
+	srv.AddMiddleware(func(next http.Handler) http.Handler {
+		return cors.Middleware(next, *corsHeaders, *corsMethods, *corsOrigin)
+	})
 	if *metricsEnabled {
 		srv.AddMiddleware(metrics.Middleware)
 	}

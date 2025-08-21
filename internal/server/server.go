@@ -55,6 +55,8 @@ func (s *Server) setupRoutes() {
 		s.router.HandleFunc("/"+chain, s.handleRequestHTTP(chain)).Methods("POST")
 		// Add GET handler for WebSocket upgrade
 		s.router.HandleFunc("/"+chain, s.handleRequestWS(chain)).Methods("GET")
+		// Add OPTIONS handler for CORS preflight requests
+		s.router.HandleFunc("/"+chain, s.handleOptionsRequest).Methods("OPTIONS")
 	}
 }
 
@@ -87,6 +89,12 @@ func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "healthy",
 	})
+}
+
+// handleOptionsRequest handles CORS preflight OPTIONS requests
+func (s *Server) handleOptionsRequest(w http.ResponseWriter, r *http.Request) {
+	// CORS headers are already set by the CORS middleware
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleRequestHTTP creates a handler for HTTP requests for a specific chain
@@ -424,8 +432,12 @@ func (s *Server) defaultForwardRequest(w http.ResponseWriter, r *http.Request, t
 	}
 	defer resp.Body.Close()
 
-	// Copy response headers
+	// Copy response headers, but skip CORS headers since we set our own
 	for key, values := range resp.Header {
+		// Skip CORS headers to avoid duplication
+		if strings.HasPrefix(key, "Access-Control-") {
+			continue
+		}
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}

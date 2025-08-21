@@ -8,8 +8,8 @@
 *.dylib
 
 # Aetherlay's binaries
-aetherlay-hc
-aetherlay-lb
+bin/aetherlay-hc
+bin/aetherlay-lb
 
 # Test binary, built with `go test -c`
 *.test

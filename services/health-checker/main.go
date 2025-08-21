@@ -37,6 +37,9 @@ var testExitAfterSetup bool
 // RunHealthChecker runs the health checker service with the given configuration.
 func RunHealthChecker(
 	configFile string,
+	corsHeaders string,
+	corsMethods string,
+	corsOrigin string,
 	ephemeralChecksInterval int,
 	ephemeralChecksHealthyThreshold int,
 	healthCheckInterval int,
@@ -66,7 +69,7 @@ func RunHealthChecker(
 	// Start the metrics server if enabled
 	if metricsEnabled {
 		log.Info().Int("port", metricsPort).Msg("Prometheus metrics server enabled")
-		metrics.StartServer(metricsPort)
+		metrics.StartServer(metricsPort, corsHeaders, corsMethods, corsOrigin)
 	}
 
 	cfg, err := loadConfig(configFile)
@@ -150,6 +153,21 @@ func main() {
 		helpers.GetStringFromEnv("CONFIG_FILE", "configs/endpoints.json"),
 		"Path to the endpoints configuration file",
 	)
+	corsHeaders := flag.String(
+		"cors-headers",
+		helpers.GetStringFromEnv("CORS_HEADERS", "Accept, Authorization, Content-Type, Origin, X-Requested-With"),
+		"Allowed headers for CORS requests",
+	)
+	corsMethods := flag.String(
+		"cors-methods",
+		helpers.GetStringFromEnv("CORS_METHODS", "GET, POST, OPTIONS"),
+		"Allowed HTTP methods for CORS requests",
+	)
+	corsOrigin := flag.String(
+		"cors-origin",
+		helpers.GetStringFromEnv("CORS_ORIGIN", "*"),
+		"Allowed origin for CORS requests",
+	)
 	ephemeralChecksInterval := flag.Int(
 		"ephemeral-checks-interval",
 		helpers.GetIntFromEnv("EPHEMERAL_CHECKS_INTERVAL", 30),
@@ -213,6 +231,9 @@ func main() {
 
 	RunHealthChecker(
 		*configFile,
+		*corsHeaders,
+		*corsMethods,
+		*corsOrigin,
 		*ephemeralChecksInterval,
 		*ephemeralChecksHealthyThreshold,
 		*healthCheckInterval,
