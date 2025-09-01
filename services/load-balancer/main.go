@@ -93,7 +93,7 @@ func main() {
 	}
 
 	// Initialize and start the server
-	srv := server.NewServer(cfg, redisClient)
+	srv := server.NewServer(cfg, redisClient, appConfig)
 	srv.AddMiddleware(func(next http.Handler) http.Handler {
 		return cors.Middleware(next, appConfig.CorsHeaders, appConfig.CorsMethods, appConfig.CorsOrigin)
 	})

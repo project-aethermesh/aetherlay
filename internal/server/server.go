@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -21,21 +22,27 @@ import (
 
 // Server represents the RPC load balancer server
 type Server struct {
-	config      *config.Config
-	httpServer  *http.Server
-	redisClient store.RedisClientIface
-	router      *mux.Router
+	config               *config.Config
+	httpServer           *http.Server
+	maxRetries           int
+	redisClient          store.RedisClientIface
+	requestTimeout       time.Duration
+	requestTimeoutPerTry time.Duration
+	router               *mux.Router
 
 	forwardRequest func(w http.ResponseWriter, r *http.Request, targetURL string) error
 	proxyWebSocket func(w http.ResponseWriter, r *http.Request, backendURL string) error
 }
 
 // NewServer creates a new server instance
-func NewServer(cfg *config.Config, redisClient store.RedisClientIface) *Server {
+func NewServer(cfg *config.Config, redisClient store.RedisClientIface, appConfig *helpers.LoadedConfig) *Server {
 	s := &Server{
-		config:      cfg,
-		redisClient: redisClient,
-		router:      mux.NewRouter(),
+		config:               cfg,
+		maxRetries:           appConfig.ProxyMaxRetries,
+		redisClient:          redisClient,
+		requestTimeout:       time.Duration(appConfig.ProxyTimeout) * time.Second,
+		requestTimeoutPerTry: time.Duration(appConfig.ProxyTimeoutPerTry) * time.Second,
+		router:               mux.NewRouter(),
 	}
 
 	s.forwardRequest = s.defaultForwardRequest
@@ -100,59 +107,82 @@ func (s *Server) handleOptionsRequest(w http.ResponseWriter, r *http.Request) {
 // handleRequestHTTP creates a handler for HTTP requests for a specific chain
 func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
+		defer cancel()
+
 		// Check if archive node is requested
 		archive := r.URL.Query().Get("archive") == "true"
 
-		// Get available endpoints
-		endpoints := s.getAvailableEndpoints(chain, archive, false)
-		if len(endpoints) == 0 {
-			http.Error(w, "No available archive endpoints", http.StatusServiceUnavailable)
+		// Get all available endpoints (sorted by priority by default)
+		allEndpoints := s.getAvailableEndpoints(chain, archive, false)
+
+		if len(allEndpoints) == 0 {
+			http.Error(w, "No available endpoints", http.StatusServiceUnavailable)
 			return
 		}
 
-		// Try endpoints until one succeeds or we run out of endpoints
 		var triedEndpoints []string
-		for len(endpoints) > 0 {
-			// Select the best endpoint based on request counts
-			endpoint := s.selectBestEndpoint(chain, endpoints)
-			if endpoint == nil {
-				http.Error(w, "No suitable endpoint found", http.StatusServiceUnavailable)
+		retryCount := 0
+
+		for retryCount < s.maxRetries && len(allEndpoints) > 0 {
+			select {
+			case <-ctx.Done():
+				log.Error().Str("chain", chain).Msg("Request timeout reached")
+				http.Error(w, "Request timeout", http.StatusGatewayTimeout)
 				return
+			default:
 			}
 
-			log.Debug().Str("chain", chain).Str("endpoint", endpoint.ID).Msg("Selected endpoint for HTTP request")
+			// Select the best endpoint based on request counts
+			endpoint := s.selectBestEndpoint(chain, allEndpoints)
+			if endpoint == nil {
+				break
+			}
 
-			// Forward the request
-			if err := s.forwardRequest(w, r, endpoint.Endpoint.HTTPURL); err != nil {
-				log.Error().Err(err).Str("endpoint", endpoint.Endpoint.HTTPURL).Msg("Failed to forward request")
+			log.Debug().Str("chain", chain).Str("endpoint", endpoint.ID).Int("retry", retryCount).Msg("Attempting HTTP request")
+
+			// Create per-try timeout context that respects the overall timeout
+			tryCtx, tryCancel := context.WithTimeout(ctx, s.requestTimeoutPerTry)
+			reqWithCtx := r.WithContext(tryCtx)
+
+			err := s.forwardRequest(w, reqWithCtx, endpoint.Endpoint.HTTPURL)
+			tryCancel() // Always cancel the per-try context
+
+			if err != nil {
+				log.Error().Err(err).Str("endpoint", endpoint.Endpoint.HTTPURL).Int("retry", retryCount).Msg("Failed to forward request")
 				triedEndpoints = append(triedEndpoints, endpoint.ID)
 
-				// Remove the failed endpoint from the list and try again
+				// Remove the failed endpoint from the list
 				var remainingEndpoints []EndpointWithID
-				for _, ep := range endpoints {
+				for _, ep := range allEndpoints {
 					if ep.ID != endpoint.ID {
 						remainingEndpoints = append(remainingEndpoints, ep)
 					}
 				}
-				endpoints = remainingEndpoints
+				allEndpoints = remainingEndpoints
+				retryCount++
 
-				// If we still have endpoints to try, continue the loop
-				if len(endpoints) > 0 {
-					log.Info().Str("chain", chain).Str("failed_endpoint", endpoint.ID).Int("remaining_endpoints", len(endpoints)).Msg("Retrying with different endpoint")
+				if len(allEndpoints) > 0 && retryCount < s.maxRetries {
+					log.Info().Str("chain", chain).Str("failed_endpoint", endpoint.ID).Int("remaining_endpoints", len(allEndpoints)).Int("retry", retryCount).Msg("Retrying with different endpoint")
 					continue
 				}
 			} else {
-				// We were able to send the request. Increment the request count and return.
-				if err := s.redisClient.IncrementRequestCount(r.Context(), chain, endpoint.ID, "proxy_requests"); err != nil {
+				// Success. Increment the request count and return.
+				if err := s.redisClient.IncrementRequestCount(ctx, chain, endpoint.ID, "proxy_requests"); err != nil {
 					log.Error().Err(err).Msg("Failed to increment request count")
 				}
 				return
 			}
 		}
 
-		// If we get here, all endpoints failed
-		log.Error().Str("chain", chain).Strs("tried_endpoints", triedEndpoints).Msg("All endpoints failed")
-		http.Error(w, "Failed to forward request - all endpoints unavailable", http.StatusBadGateway)
+		// If we get here, all retries failed
+		if retryCount >= s.maxRetries {
+			log.Error().Str("chain", chain).Strs("tried_endpoints", triedEndpoints).Int("max_retries", s.maxRetries).Msg("Max retries reached")
+			http.Error(w, "Max retries reached, all endpoints unavailable", http.StatusBadGateway)
+		} else {
+			log.Error().Str("chain", chain).Strs("tried_endpoints", triedEndpoints).Msg("All endpoints failed")
+			http.Error(w, "Failed to forward request, all endpoints unavailable", http.StatusBadGateway)
+		}
 	}
 }
 
@@ -165,25 +195,46 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 		}
 		// Only handle WebSocket upgrade requests (case-insensitive, robust)
 		if isWebSocketUpgrade(r) {
+			ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
+			defer cancel()
+
 			archive := r.URL.Query().Get("archive") == "true"
-			endpoints := s.getAvailableEndpoints(chain, archive, true)
-			if len(endpoints) == 0 {
-				http.Error(w, "No available archive endpoints", http.StatusServiceUnavailable)
+
+			// Get all available endpoints (sorted by priority by default)
+			allEndpoints := s.getAvailableEndpoints(chain, archive, true)
+
+			if len(allEndpoints) == 0 {
+				http.Error(w, "No available WebSocket endpoints", http.StatusServiceUnavailable)
 				return
 			}
 
-			// Try endpoints until one succeeds or we run out of endpoints
 			var triedEndpoints []string
-			for len(endpoints) > 0 {
-				endpoint := s.selectBestEndpoint(chain, endpoints)
-				if endpoint == nil || endpoint.Endpoint.WSURL == "" {
-					http.Error(w, "No suitable WebSocket endpoint found", http.StatusServiceUnavailable)
+			retryCount := 0
+
+			for retryCount < s.maxRetries && len(allEndpoints) > 0 {
+				select {
+				case <-ctx.Done():
+					log.Error().Str("chain", chain).Msg("WebSocket request timeout reached")
+					http.Error(w, "WebSocket request timeout", http.StatusGatewayTimeout)
 					return
+				default:
 				}
 
-				log.Debug().Str("chain", chain).Str("endpoint", endpoint.ID).Msg("Selected endpoint for WS request")
+				endpoint := s.selectBestEndpoint(chain, allEndpoints)
+				if endpoint == nil || endpoint.Endpoint.WSURL == "" {
+					break
+				}
 
-				if err := s.proxyWebSocket(w, r, endpoint.Endpoint.WSURL); err != nil {
+				log.Debug().Str("chain", chain).Str("endpoint", endpoint.ID).Int("retry", retryCount).Msg("Attempting WebSocket request")
+
+				// Create per-try timeout context that respects the overall timeout
+				tryCtx, tryCancel := context.WithTimeout(ctx, s.requestTimeoutPerTry)
+				reqWithCtx := r.WithContext(tryCtx)
+
+				err := s.proxyWebSocket(w, reqWithCtx, endpoint.Endpoint.WSURL)
+				tryCancel() // Always cancel the per-try context
+
+				if err != nil {
 					// Check if this is a normal WebSocket closure
 					if closeErr, ok := err.(*websocket.CloseError); ok {
 						if closeErr.Code == websocket.CloseNormalClosure || closeErr.Code == websocket.CloseGoingAway {
@@ -198,35 +249,41 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 						}
 					}
 
-					log.Error().Err(err).Str("endpoint", endpoint.Endpoint.WSURL).Msg("Failed to proxy WebSocket")
+					log.Error().Err(err).Str("endpoint", endpoint.Endpoint.WSURL).Int("retry", retryCount).Msg("Failed to proxy WebSocket")
 					triedEndpoints = append(triedEndpoints, endpoint.ID)
 
-					// Remove the failed endpoint from the list and try again
+					// Remove the failed endpoint from the list
 					var remainingEndpoints []EndpointWithID
-					for _, ep := range endpoints {
+					for _, ep := range allEndpoints {
 						if ep.ID != endpoint.ID {
 							remainingEndpoints = append(remainingEndpoints, ep)
 						}
 					}
-					endpoints = remainingEndpoints
+					allEndpoints = remainingEndpoints
+					retryCount++
 
 					// If we still have endpoints to try, continue the loop
-					if len(endpoints) > 0 {
-						log.Info().Str("chain", chain).Str("failed_endpoint", endpoint.ID).Int("remaining_endpoints", len(endpoints)).Msg("Retrying WebSocket with different endpoint")
+					if len(allEndpoints) > 0 && retryCount < s.maxRetries {
+						log.Info().Str("chain", chain).Str("failed_endpoint", endpoint.ID).Int("remaining_endpoints", len(allEndpoints)).Int("retry", retryCount).Msg("Retrying WebSocket with different endpoint")
 						continue
 					}
 				} else {
-					// We were able to send the request. Increment the request count and return.
-					if err := s.redisClient.IncrementRequestCount(r.Context(), chain, endpoint.ID, "proxy_requests"); err != nil {
+					// Success. Increment the request count and return.
+					if err := s.redisClient.IncrementRequestCount(ctx, chain, endpoint.ID, "proxy_requests"); err != nil {
 						log.Error().Err(err).Msg("Failed to increment WebSocket request count")
 					}
 					return
 				}
 			}
 
-			// If we get here, all endpoints failed
-			log.Error().Str("chain", chain).Strs("tried_endpoints", triedEndpoints).Msg("All WebSocket endpoints failed")
-			http.Error(w, "Failed to proxy WebSocket - all endpoints unavailable", http.StatusBadGateway)
+			// If we get here, all retries failed
+			if retryCount >= s.maxRetries {
+				log.Error().Str("chain", chain).Strs("tried_endpoints", triedEndpoints).Int("max_retries", s.maxRetries).Msg("WebSocket max retries reached")
+				http.Error(w, "WebSocket max retries reached, all endpoints unavailable", http.StatusBadGateway)
+			} else {
+				log.Error().Str("chain", chain).Strs("tried_endpoints", triedEndpoints).Msg("All WebSocket endpoints failed")
+				http.Error(w, "Failed to proxy WebSocket, all endpoints unavailable", http.StatusBadGateway)
+			}
 			return
 		}
 		http.Error(w, "GET requests to this endpoint are only supported for WebSocket upgrade requests. Otherwise, please use POST.", http.StatusBadRequest)
@@ -406,8 +463,8 @@ func (s *Server) findChainAndEndpointByURL(url string) (chain string, endpointID
 
 // defaultForwardRequest forwards the request to the target endpoint
 func (s *Server) defaultForwardRequest(w http.ResponseWriter, r *http.Request, targetURL string) error {
-	// Create a new request
-	req, err := http.NewRequest(r.Method, targetURL, r.Body)
+	// Create a new request with the same context
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
 	if err != nil {
 		return err
 	}
@@ -419,8 +476,8 @@ func (s *Server) defaultForwardRequest(w http.ResponseWriter, r *http.Request, t
 		}
 	}
 
-	// Forward the request
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Forward the request. Use the context timeout instead of a fixed timeout.
+	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		if chain, endpointID, found := s.findChainAndEndpointByURL(targetURL); found {
@@ -431,6 +488,23 @@ func (s *Server) defaultForwardRequest(w http.ResponseWriter, r *http.Request, t
 		return err
 	}
 	defer resp.Body.Close()
+
+	// Check for HTTP status codes that should trigger retries
+	if s.shouldRetry(resp.StatusCode) {
+		if chain, endpointID, found := s.findChainAndEndpointByURL(targetURL); found {
+			if resp.StatusCode == 429 {
+				// For 429 (Too Many Requests), mark as unhealthy but don't run health checks
+				// TODO: Implement special handling to avoid making rate limiting worse with health checks
+				s.markEndpointUnhealthyProtocol(chain, endpointID, "http")
+				log.Warn().Str("url", targetURL).Int("status_code", resp.StatusCode).Msg("Endpoint returned 429 (Too Many Requests), marked unhealthy")
+			} else {
+				// For 5xx errors, mark as unhealthy
+				s.markEndpointUnhealthyProtocol(chain, endpointID, "http")
+				log.Warn().Str("url", targetURL).Int("status_code", resp.StatusCode).Msg("Endpoint returned server error, marked unhealthy")
+			}
+		}
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
+	}
 
 	// Copy response headers, but skip CORS headers since we set our own
 	for key, values := range resp.Header {
@@ -449,6 +523,12 @@ func (s *Server) defaultForwardRequest(w http.ResponseWriter, r *http.Request, t
 	// Copy response body
 	_, err = io.Copy(w, resp.Body)
 	return err
+}
+
+// shouldRetry returns true if the HTTP status code should trigger a retry
+func (s *Server) shouldRetry(statusCode int) bool {
+	// Retry on 5xx server errors and 429 Too Many Requests
+	return (statusCode >= 500 && statusCode < 600) || statusCode == 429
 }
 
 // proxyWebSocketCopy copies messages from src to dst

@@ -22,6 +22,9 @@ type Config struct {
 	LogLevel                        string
 	MetricsEnabled                  bool
 	MetricsPort                     int
+	ProxyMaxRetries                 int
+	ProxyTimeout                    int
+	ProxyTimeoutPerTry              int
 	RedisHost                       string
 	RedisPass                       string
 	RedisPort                       string
@@ -46,6 +49,9 @@ func ParseFlags() *Config {
 	flag.StringVar(&config.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	flag.BoolVar(&config.MetricsEnabled, "metrics-enabled", true, "Enable metrics server")
 	flag.IntVar(&config.MetricsPort, "metrics-port", 9090, "Metrics server port")
+	flag.IntVar(&config.ProxyMaxRetries, "proxy-retries", 3, "Maximum number of retries for proxy requests")
+	flag.IntVar(&config.ProxyTimeout, "proxy-timeout", 15, "Timeout for proxy requests in seconds")
+	flag.IntVar(&config.ProxyTimeoutPerTry, "proxy-timeout-per-try", 5, "Timeout per individual retry attempt in seconds")
 	flag.StringVar(&config.RedisHost, "redis-host", "localhost", "Redis host")
 	flag.StringVar(&config.RedisPass, "redis-pass", "", "Redis password")
 	flag.StringVar(&config.RedisPort, "redis-port", "6379", "Redis port")
@@ -108,6 +114,9 @@ func (c *Config) LoadConfiguration() *LoadedConfig {
 		LogLevel:                        c.GetStringValue("log-level", c.LogLevel, "LOG_LEVEL", "info"),
 		MetricsEnabled:                  c.GetBoolValue("metrics-enabled", c.MetricsEnabled, "METRICS_ENABLED", true),
 		MetricsPort:                     c.GetIntValue("metrics-port", c.MetricsPort, "METRICS_PORT", 9090),
+		ProxyMaxRetries:                 c.GetIntValue("proxy-retries", c.ProxyMaxRetries, "PROXY_MAX_RETRIES", 3),
+		ProxyTimeout:                    c.GetIntValue("proxy-timeout", c.ProxyTimeout, "PROXY_TIMEOUT", 15),
+		ProxyTimeoutPerTry:              c.GetIntValue("proxy-timeout-per-try", c.ProxyTimeoutPerTry, "PROXY_TIMEOUT_PER_TRY", 5),
 		RedisHost:                       c.GetStringValue("redis-host", c.RedisHost, "REDIS_HOST", "localhost"),
 		RedisPass:                       c.GetStringValue("redis-pass", c.RedisPass, "REDIS_PASS", ""),
 		RedisPort:                       c.GetStringValue("redis-port", c.RedisPort, "REDIS_PORT", "6379"),
@@ -130,6 +139,9 @@ type LoadedConfig struct {
 	LogLevel                        string
 	MetricsEnabled                  bool
 	MetricsPort                     int
+	ProxyMaxRetries                 int
+	ProxyTimeout                    int
+	ProxyTimeoutPerTry              int
 	RedisHost                       string
 	RedisPass                       string
 	RedisPort                       string
@@ -145,7 +157,7 @@ type LoadedConfig struct {
 func getStringFromEnv(envKey, defaultValue string) string {
 	if envValue := os.Getenv(envKey); envValue != "" {
 		if strings.TrimSpace(envValue) != "" {
-			logValue := envKey
+			logValue := envValue
 			if envKey == "REDIS_PASS" {
 				logValue = "REDACTED"
 			}
