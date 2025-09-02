@@ -12,7 +12,7 @@ type RateLimitRecovery struct {
 	MaxBackoff        int     `json:"max_backoff"`        // Maximum backoff time in seconds
 	MaxRetries        int     `json:"max_retries"`        // Maximum number of recovery attempts
 	RequiredSuccesses int     `json:"required_successes"` // Number of consecutive successes needed to mark as recovered
-	ResetAfter        int     `json:"reset_after"`        // Time in seconds after which to reset backoff and retry from scratch
+	ResetAfter        int     `json:"reset_after"`        // Time in seconds after which to reset backoff and start from scratch
 }
 
 // Endpoint represents a single RPC endpoint configuration.
