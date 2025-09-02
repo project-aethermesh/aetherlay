@@ -7,23 +7,23 @@ import (
 
 // RateLimitRecovery represents the configuration for rate limit recovery
 type RateLimitRecovery struct {
-	BackoffMultiplier float64 `json:"backoff_multiplier"`   // Multiplier for exponential backoff (e.g., 2.0)
-	InitialBackoff    int     `json:"initial_backoff"`      // Initial backoff time in seconds
-	MaxBackoff        int     `json:"max_backoff"`          // Maximum backoff time in seconds
-	MaxRetries        int     `json:"max_retries"`          // Maximum number of recovery attempts
-	RequiredSuccesses int     `json:"required_successes"`   // Number of consecutive successes needed to mark as recovered
-	ResetAfter        int     `json:"reset_after"`          // Time in seconds after which to reset backoff and retry from scratch
+	BackoffMultiplier float64 `json:"backoff_multiplier"` // Multiplier for exponential backoff (e.g., 2.0)
+	InitialBackoff    int     `json:"initial_backoff"`    // Initial backoff time in seconds
+	MaxBackoff        int     `json:"max_backoff"`        // Maximum backoff time in seconds
+	MaxRetries        int     `json:"max_retries"`        // Maximum number of recovery attempts
+	RequiredSuccesses int     `json:"required_successes"` // Number of consecutive successes needed to mark as recovered
+	ResetAfter        int     `json:"reset_after"`        // Time in seconds after which to reset backoff and retry from scratch
 }
 
 // Endpoint represents a single RPC endpoint configuration.
 // It contains all the necessary information to connect to and use an RPC provider.
 type Endpoint struct {
-	Provider           string             `json:"provider"`             // Name of the RPC provider (e.g., "alchemy", "infura")
-	RateLimitRecovery  *RateLimitRecovery `json:"rate_limit_recovery"`  // Rate limit recovery configuration (optional)
-	Role               string             `json:"role"`                 // Role of the endpoint: "primary" or "fallback"
-	Type               string             `json:"type"`                 // Type of node: "full" or "archive"
-	HTTPURL            string             `json:"http_url"`             // HTTP/HTTPS URL for RPC requests
-	WSURL              string             `json:"ws_url"`               // WebSocket URL for real-time connections
+	Provider          string             `json:"provider"`            // Name of the RPC provider (e.g., "alchemy", "infura")
+	RateLimitRecovery *RateLimitRecovery `json:"rate_limit_recovery"` // Rate limit recovery configuration (optional)
+	Role              string             `json:"role"`                // Role of the endpoint: "primary" or "fallback"
+	Type              string             `json:"type"`                // Type of node: "full" or "archive"
+	HTTPURL           string             `json:"http_url"`            // HTTP/HTTPS URL for RPC requests
+	WSURL             string             `json:"ws_url"`              // WebSocket URL for real-time connections
 }
 
 // ChainEndpoints represents all endpoints for a specific blockchain.
@@ -123,10 +123,10 @@ func (c *Config) GetFallbackEndpoints(chain string) []Endpoint {
 func DefaultRateLimitRecovery() RateLimitRecovery {
 	return RateLimitRecovery{
 		BackoffMultiplier: 2.0,   // Double the backoff each time
-		InitialBackoff:    60,    // Start with 60 seconds
+		InitialBackoff:    300,   // Start with 300 seconds
 		MaxBackoff:        7200,  // Cap at 2 hours
 		MaxRetries:        10,    // Up to 10 recovery attempts
-		RequiredSuccesses: 3,     // Need 3 consecutive successes
+		RequiredSuccesses: 2,     // Need 2 consecutive successes to mark the endpoint as recovered
 		ResetAfter:        86400, // Reset backoff after 1 day
 	}
 }
