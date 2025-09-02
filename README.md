@@ -7,6 +7,7 @@ A lightweight, low-latency RPC load balancer written in Go. It is designed to ma
 - **Round-Robin Load Balancing**: Distributes requests to available endpoints in a round-robin manner, prioritizing those with fewer requests in the last 24 hours.
 - **Intelligent Retry Logic**: Configurable retry attempts with priority-based endpoint selection (first primary endpoints, then fallbacks).
 - **Flexible Timeout Control**: Separate timeouts for overall requests and individual retry attempts.
+- **Rate Limit Recovery**: Safe rate limit detection and recovery with exponential backoff strategies per endpoint, to avoid making things worse when a provider is rate-limiting you.
 - **Health Checks**: Regularly checks the health of upstream endpoints and updates their status in Redis.
 - **Standalone Health Checker**: Optional standalone health checker service for efficient multi-pod deployments.
 - **Static Configuration**: Loads RPC endpoint configurations from a static JSON file.
@@ -136,6 +137,7 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 | `--health-check-interval`              | `30`                                                            | Health check interval in seconds                                                         |
 | `--log-level`                          | `info`                                                          | Set the log level. Valid options are: `debug`, `info`, `warn`, `error`, `fatal`, `panic` |
 | `--metrics-enabled`                    | `true`                                                          | Whether to enable Prometheus metrics                                                     |
+| `--metrics-port`                       | `9090`                                                          | Port for the Prometheus metrics server                                                   |
 | `--proxy-retries`                      | `3`                                                             | Maximum number of retries for proxy requests                                             |
 | `--proxy-timeout`                      | `15`                                                            | Total timeout for proxy requests in seconds                                              |
 | `--proxy-timeout-per-try`              | `5`                                                             | Timeout per individual retry attempt in seconds                                          |
@@ -164,6 +166,7 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 | `HEALTH_CHECK_INTERVAL`              | `30`                                                            | Health check interval in seconds                                                                                                                                                  |
 | `LOG_LEVEL`                          | `info`                                                          | Set the log level                                                                                                                                                                 |
 | `METRICS_ENABLED`                    | `true`                                                          | Whether to enable Prometheus metrics                                                                                                                                              |
+| `METRICS_PORT`                       | `9090`                                                          | Port for the Prometheus metrics server                                                                            |
 | `PROXY_MAX_RETRIES`                  | `3`                                                             | Maximum number of retries for proxy requests                                                                                                                                      |
 | `PROXY_TIMEOUT`                      | `15`                                                            | Total timeout for proxy requests in seconds                                                                                                                                       |
 | `PROXY_TIMEOUT_PER_TRY`              | `5`                                                             | Timeout per individual retry attempt in seconds                                                                                                                                   |
@@ -211,6 +214,77 @@ For production deployments with multiple load balancer pods, use the standalone 
 - **Multiple Load Balancer Pods**: Scale independently without health check overhead
 - **Resource Efficiency**: Reduces RPC endpoint usage
 - **Better Separation of Concerns**: Health monitoring isolated from request handling
+
+## Rate Limit Recovery
+
+Ætherlay includes intelligent rate limit detection and recovery mechanisms to handle upstream provider rate limits gracefully. This system automatically detects when endpoints are rate-limited and implements recovery strategies to restore service.
+
+### How Rate Limit Recovery Works
+
+1. **Detection**: When a request returns a rate limit error (HTTP 429), the endpoint is automatically marked as rate-limited.
+2. **Retries with "backoff"**: The system tries to reach the endpoint only after waiting for a specific amount of time, defined as a backoff, which is configurable by the user.  This wait period increases each time, relative to another user-defined parameter (the backoff multiplier).
+3. **Automatic recovery**: The system will reintroduce the endpoint back into the load balancing pool after a certain amount of successful consecutive requests. Users can specify how many consecutive requests are required for endpoints to be marked again as healthy.
+4. **Per-endpoint configuration**: Each endpoint can have its own rate limit recovery strategy tailored to the provider's limits. You can also simply rely on the system's defaults, which have been carefully set.
+
+### Configuration Parameters
+
+Rate limit recovery is configured per endpoint in your `endpoints.json` file:
+
+```json
+{
+  "mainnet": {
+    "provider-1": {
+      "provider": "example",
+      "role": "primary",
+      "type": "archive",
+      "http_url": "https://api.example.com",
+      "rate_limit_recovery": {
+        "backoff_multiplier": 2.0,
+        "initial_backoff": 300,
+        "max_backoff": 3600,
+        "max_retries": 10,
+        "required_successes": 3,
+        "reset_after": 86400
+      }
+    }
+  }
+}
+```
+
+#### Parameters:
+
+- **`backoff_multiplier`** (`float`): Exponential multiplier for backoff time (e.g., 2.0 doubles the wait time each attempt).
+- **`initial_backoff`** (`int`): Initial backoff time in seconds before the first recovery attempt.
+- **`max_backoff`** (`int`): Maximum backoff time in seconds (limits exponential growth).
+- **`max_retries`** (`int`): Maximum number of recovery attempts before giving up until `reset_after`.
+- **`required_successes`** (`int`): Number of consecutive successes needed to mark the endpoint as healthy.
+- **`reset_after`** (`int`): Time in seconds after which to reset the backoff state and start fresh.
+
+### Recovery Strategy Examples
+
+**Conservative**:
+```json
+"rate_limit_recovery": {
+  "backoff_multiplier": 4.0,
+  "initial_backoff": 300,
+  "max_backoff": 3600,
+  "max_retries": 5,
+  "required_successes": 3,
+  "reset_after": 86400
+}
+```
+
+**Aggressive**:
+```json
+"rate_limit_recovery": {
+  "backoff_multiplier": 1.5,
+  "initial_backoff": 60,
+  "max_retries": 20,
+  "max_backoff": 600,
+  "required_successes": 1,
+  "reset_after": 86400
+}
+```
 
 ## Prometheus Metrics
 
@@ -269,4 +343,4 @@ This project is licensed under the GNU Affero General Public License v3.0 (AGPL-
 
 You may use, modify, and distribute this software under the terms of the AGPL-3.0. See the LICENSE file for details.
 
-**TL;DR:** The AGPL-3.0 ensures that all changes and derivative works must also be licensed under AGPL-3.0, and that **attribution is preserved**. If you run a modified version as a network service, you must make the source code available to users. The code is provided **as-is**, without warranties.
+**TL;DR:** The AGPL-3.0 ensures that all changes and derivative works must also be licensed under AGPL-3.0, and that **attribution is preserved**. If you run a modified version as a network service, you must make the source code available to users. This code is provided **as-is**, without warranties.
