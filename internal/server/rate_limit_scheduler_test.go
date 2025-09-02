@@ -29,7 +29,7 @@ func TestNewRateLimitScheduler(t *testing.T) {
 	scheduler := NewRateLimitScheduler(cfg, mockRedis)
 
 	if scheduler == nil {
-		t.Error("Expected scheduler to be created")
+		t.Fatal("Expected scheduler to be created")
 	}
 
 	if scheduler.config != cfg {
