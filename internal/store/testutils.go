@@ -10,18 +10,20 @@ import (
 // MockRedisClient is a mock implementation of RedisClientIface for testing.
 // It supports in-memory endpoint status storage and is safe for concurrent use.
 type MockRedisClient struct {
-	statuses      map[string]*EndpointStatus
-	values        map[string]string
-	requestCounts map[string]map[string]map[string][3]int64 // [0]=24h, [1]=1m, [2]=all
-	mu            sync.RWMutex
+	rateLimitStates map[string]*RateLimitState
+	requestCounts   map[string]map[string]map[string][3]int64 // [0]=24h, [1]=1m, [2]=all
+	statuses        map[string]*EndpointStatus
+	values          map[string]string
+	mu              sync.RWMutex
 }
 
 // NewMockRedisClient creates a new MockRedisClient with empty state.
 func NewMockRedisClient() *MockRedisClient {
 	return &MockRedisClient{
-		statuses:      make(map[string]*EndpointStatus),
-		values:        make(map[string]string),
-		requestCounts: make(map[string]map[string]map[string][3]int64),
+		rateLimitStates: make(map[string]*RateLimitState),
+		requestCounts:   make(map[string]map[string]map[string][3]int64),
+		statuses:        make(map[string]*EndpointStatus),
+		values:          make(map[string]string),
 	}
 }
 
@@ -139,6 +141,32 @@ func (m *MockRedisClient) GetRequestCounts(ctx context.Context, chain, endpoint,
 		return c[0], c[1], c[2], nil
 	}
 	return 0, 0, 0, nil
+}
+
+// GetRateLimitState returns the rate limit state for a given chain and endpoint
+func (m *MockRedisClient) GetRateLimitState(_ context.Context, chain, endpoint string) (*RateLimitState, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	key := chain + ":" + endpoint
+	state, ok := m.rateLimitStates[key]
+	if !ok {
+		return &RateLimitState{
+			RateLimited:        false,
+			RecoveryAttempts:   0,
+			LastRecoveryCheck:  time.Time{},
+			ConsecutiveSuccess: 0,
+		}, nil
+	}
+	return state, nil
+}
+
+// SetRateLimitState sets the rate limit state for a given chain and endpoint
+func (m *MockRedisClient) SetRateLimitState(_ context.Context, chain, endpoint string, state RateLimitState) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := chain + ":" + endpoint
+	m.rateLimitStates[key] = &state
+	return nil
 }
 
 // PopulateStatuses allows tests to pre-populate endpoint statuses in the mock.

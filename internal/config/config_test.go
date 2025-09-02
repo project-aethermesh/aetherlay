@@ -150,3 +150,72 @@ func TestLoadConfigInvalidJSON(t *testing.T) {
 		t.Fatal("Should return error for invalid JSON")
 	}
 }
+
+func TestDefaultRateLimitRecovery(t *testing.T) {
+	config := DefaultRateLimitRecovery()
+
+	if config.CheckInterval != 60 {
+		t.Errorf("Expected CheckInterval to be 60, got %d", config.CheckInterval)
+	}
+
+	if config.MaxRetries != 10 {
+		t.Errorf("Expected MaxRetries to be 10, got %d", config.MaxRetries)
+	}
+
+	if config.RequiredSuccesses != 3 {
+		t.Errorf("Expected RequiredSuccesses to be 3, got %d", config.RequiredSuccesses)
+	}
+}
+
+func TestRateLimitRecoveryStructFields(t *testing.T) {
+	recovery := RateLimitRecovery{
+		CheckInterval:     120,
+		MaxRetries:        5,
+		RequiredSuccesses: 2,
+	}
+
+	if recovery.CheckInterval != 120 {
+		t.Errorf("Expected CheckInterval to be 120, got %d", recovery.CheckInterval)
+	}
+
+	if recovery.MaxRetries != 5 {
+		t.Errorf("Expected MaxRetries to be 5, got %d", recovery.MaxRetries)
+	}
+
+	if recovery.RequiredSuccesses != 2 {
+		t.Errorf("Expected RequiredSuccesses to be 2, got %d", recovery.RequiredSuccesses)
+	}
+}
+
+func TestEndpointWithRateLimitRecovery(t *testing.T) {
+	recovery := &RateLimitRecovery{
+		CheckInterval:     30,
+		MaxRetries:        3,
+		RequiredSuccesses: 1,
+	}
+
+	endpoint := Endpoint{
+		Provider:          "test-provider",
+		RateLimitRecovery: recovery,
+		Role:              "primary",
+		Type:              "full",
+		HTTPURL:           "http://test.com",
+		WSURL:             "ws://test.com",
+	}
+
+	if endpoint.RateLimitRecovery == nil {
+		t.Fatal("Expected rate limit recovery configuration to be set")
+	}
+
+	if endpoint.RateLimitRecovery.CheckInterval != 30 {
+		t.Errorf("Expected CheckInterval to be 30, got %d", endpoint.RateLimitRecovery.CheckInterval)
+	}
+
+	if endpoint.RateLimitRecovery.MaxRetries != 3 {
+		t.Errorf("Expected MaxRetries to be 3, got %d", endpoint.RateLimitRecovery.MaxRetries)
+	}
+
+	if endpoint.RateLimitRecovery.RequiredSuccesses != 1 {
+		t.Errorf("Expected RequiredSuccesses to be 1, got %d", endpoint.RateLimitRecovery.RequiredSuccesses)
+	}
+}

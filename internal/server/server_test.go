@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"aetherlay/internal/config"
 	"aetherlay/internal/helpers"
@@ -589,5 +590,193 @@ func TestShouldRetry(t *testing.T) {
 				t.Errorf("shouldRetry(%d) = %v, expected %v", test.statusCode, result, test.shouldRetry)
 			}
 		})
+	}
+}
+
+func TestHandleRateLimit(t *testing.T) {
+	// Create a test config
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"ethereum": {
+				"test-endpoint": config.Endpoint{
+					Provider:          "test-provider",
+					Role:              "primary", 
+					Type:              "full",
+					HTTPURL:           "http://test-url.com",
+					RateLimitRecovery: &config.RateLimitRecovery{
+						CheckInterval:     60,
+						MaxRetries:        5,
+						RequiredSuccesses: 2,
+					},
+				},
+			},
+		},
+	}
+
+	// Create test app config
+	appConfig := &helpers.LoadedConfig{
+		ProxyMaxRetries:    3,
+		ProxyTimeout:       15,
+		ProxyTimeoutPerTry: 5,
+	}
+
+	// Create mock Redis client
+	mockRedis := store.NewMockRedisClient()
+	
+	// Create server
+	server := NewServer(cfg, mockRedis, appConfig)
+
+	// Test handling rate limit
+	server.handleRateLimit("ethereum", "test-endpoint", "http")
+
+	// Verify rate limit state was set
+	state, err := mockRedis.GetRateLimitState(context.Background(), "ethereum", "test-endpoint")
+	if err != nil {
+		t.Fatalf("Failed to get rate limit state: %v", err)
+	}
+
+	if !state.RateLimited {
+		t.Error("Expected endpoint to be marked as rate limited")
+	}
+
+	if state.RecoveryAttempts != 0 {
+		t.Errorf("Expected recovery attempts to be 0, got %d", state.RecoveryAttempts)
+	}
+
+	if state.ConsecutiveSuccess != 0 {
+		t.Errorf("Expected consecutive success to be 0, got %d", state.ConsecutiveSuccess)
+	}
+}
+
+func TestGetAvailableEndpointsSkipsRateLimited(t *testing.T) {
+	// Create a test config
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"ethereum": {
+				"healthy-endpoint": config.Endpoint{
+					Provider: "test-provider-1",
+					Role:     "primary",
+					Type:     "full",
+					HTTPURL:  "http://healthy-endpoint.com",
+				},
+				"rate-limited-endpoint": config.Endpoint{
+					Provider: "test-provider-2", 
+					Role:     "primary",
+					Type:     "full",
+					HTTPURL:  "http://rate-limited-endpoint.com",
+				},
+			},
+		},
+	}
+
+	// Create test app config
+	appConfig := &helpers.LoadedConfig{
+		ProxyMaxRetries:    3,
+		ProxyTimeout:       15,
+		ProxyTimeoutPerTry: 5,
+	}
+
+	// Create mock Redis client
+	mockRedis := store.NewMockRedisClient()
+
+	// Set up endpoint statuses
+	healthyStatus := store.EndpointStatus{
+		HasHTTP:     true,
+		HealthyHTTP: true,
+	}
+	rateLimitedStatus := store.EndpointStatus{
+		HasHTTP:     true,
+		HealthyHTTP: true, // Still healthy but rate limited
+	}
+
+	mockRedis.UpdateEndpointStatus(context.Background(), "ethereum", "healthy-endpoint", healthyStatus)
+	mockRedis.UpdateEndpointStatus(context.Background(), "ethereum", "rate-limited-endpoint", rateLimitedStatus)
+
+	// Set rate limit state for one endpoint
+	rateLimitState := store.RateLimitState{
+		RateLimited:        true,
+		RecoveryAttempts:   1,
+		LastRecoveryCheck:  time.Now(),
+		ConsecutiveSuccess: 0,
+	}
+	mockRedis.SetRateLimitState(context.Background(), "ethereum", "rate-limited-endpoint", rateLimitState)
+
+	// Create server
+	server := NewServer(cfg, mockRedis, appConfig)
+
+	// Get available endpoints
+	endpoints := server.getAvailableEndpoints("ethereum", false, false)
+
+	// Should only have the healthy endpoint, not the rate-limited one
+	if len(endpoints) != 1 {
+		t.Errorf("Expected 1 available endpoint, got %d", len(endpoints))
+	}
+
+	if len(endpoints) > 0 && endpoints[0].ID != "healthy-endpoint" {
+		t.Errorf("Expected healthy-endpoint, got %s", endpoints[0].ID)
+	}
+}
+
+func TestRateLimitError(t *testing.T) {
+	err := &RateLimitError{
+		StatusCode: 429,
+		Message:    "Too Many Requests",
+	}
+
+	if err.Error() != "Too Many Requests" {
+		t.Errorf("Expected 'Too Many Requests', got '%s'", err.Error())
+	}
+
+	if err.StatusCode != 429 {
+		t.Errorf("Expected status code 429, got %d", err.StatusCode)
+	}
+}
+
+func TestServerGetRateLimitHandler(t *testing.T) {
+	// Create a test config
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"ethereum": {
+				"test-endpoint": config.Endpoint{
+					Provider: "test-provider",
+					Role:     "primary",
+					Type:     "full", 
+					HTTPURL:  "http://test-url.com",
+				},
+			},
+		},
+	}
+
+	// Create test app config
+	appConfig := &helpers.LoadedConfig{
+		ProxyMaxRetries:    3,
+		ProxyTimeout:       15,
+		ProxyTimeoutPerTry: 5,
+	}
+
+	// Create mock Redis client
+	mockRedis := store.NewMockRedisClient()
+
+	// Create server
+	server := NewServer(cfg, mockRedis, appConfig)
+
+	// Get rate limit handler
+	handler := server.GetRateLimitHandler()
+
+	if handler == nil {
+		t.Error("Expected rate limit handler to be returned")
+	}
+
+	// Test that handler works
+	handler("ethereum", "test-endpoint", "http")
+
+	// Verify rate limit state was set
+	state, err := mockRedis.GetRateLimitState(context.Background(), "ethereum", "test-endpoint")
+	if err != nil {
+		t.Fatalf("Failed to get rate limit state: %v", err)
+	}
+
+	if !state.RateLimited {
+		t.Error("Expected endpoint to be marked as rate limited")
 	}
 }

@@ -27,6 +27,9 @@ type Checker struct {
 	ephemeralChecksInterval  time.Duration
 	ephemeralChecksThreshold int
 
+	// Rate limit handler function provided by server
+	HandleRateLimitFunc func(chain, endpointID, protocol string)
+
 	// For testability: allow patching health check methods
 	CheckHTTPHealthFunc func(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool
 	CheckWSHealthFunc   func(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool
@@ -108,6 +111,13 @@ func (c *Checker) StartEphemeralChecks(ctx context.Context) {
 						log.Error().Err(err).Str("chain", chain).Str("endpoint_id", endpointID).Msg("Failed to get endpoint status for ephemeral check")
 						continue
 					}
+					// Check if endpoint is rate limited
+					rateLimitState, err := c.redisClient.GetRateLimitState(ctx, chain, endpointID)
+					if err == nil && rateLimitState.RateLimited {
+						log.Debug().Str("chain", chain).Str("endpoint_id", endpointID).Msg("Skipping ephemeral checks for rate-limited endpoint")
+						continue
+					}
+
 					// HTTP
 					httpKey := chain + "|" + endpointID + "|http"
 					if endpoint.HTTPURL != "" && !status.HealthyHTTP {
@@ -291,11 +301,24 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 		metrics.HealthCheckTotal.WithLabelValues(chain, endpointID, "failure").Inc()
 		metrics.EndpointHealthStatus.WithLabelValues(chain, endpointID).Set(0)
 
+		// Handle 429 (Too Many Requests) specially
+		if resp.StatusCode == 429 && c.HandleRateLimitFunc != nil {
+			log.Debug().
+				Str("endpoint", helpers.RedactAPIKey(endpoint.HTTPURL)).
+				Str("chain", chain).
+				Str("endpoint_id", endpointID).
+				Int("status_code", resp.StatusCode).
+				Msg("Health check detected 429, handing over to rate limit handler")
+			
+			c.HandleRateLimitFunc(chain, endpointID, "http")
+			return healthy // Return early, rate limit handler takes over
+		}
+
 		// Read and log up to 512 bytes of the response body for debugging
 		bodyBytes := make([]byte, 512)
 		n, _ := io.ReadFull(resp.Body, bodyBytes)
 		log.Error().
-			Str("endpoint", endpoint.HTTPURL).
+			Str("endpoint", helpers.RedactAPIKey(endpoint.HTTPURL)).
 			Str("chain", chain).
 			Str("endpoint_id", endpointID).
 			Int("status_code", resp.StatusCode).

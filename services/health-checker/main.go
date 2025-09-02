@@ -115,7 +115,7 @@ func RunHealthChecker(
 		if testExitAfterSetup {
 			return
 		}
-		log.Info().Msg("HEALTH_CHECK_INTERVAL=0: Only ephemeral checks will run when needed.")
+		log.Info().Msg("HEALTH_CHECK_INTERVAL=0, only ephemeral checks will run when needed.")
 		go checker.StartEphemeralChecks(ctx)
 		stop := make(chan os.Signal, 1)
 		signal.Notify(stop, os.Interrupt, syscall.SIGTERM)

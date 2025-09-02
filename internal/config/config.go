@@ -5,14 +5,22 @@ import (
 	"os"
 )
 
+// RateLimitRecovery represents the configuration for rate limit recovery
+type RateLimitRecovery struct {
+	CheckInterval     int `json:"check_interval"`      // Interval between recovery attempts in seconds  
+	MaxRetries        int `json:"max_retries"`         // Maximum number of recovery attempts
+	RequiredSuccesses int `json:"required_successes"`  // Number of consecutive successes needed to mark as recovered
+}
+
 // Endpoint represents a single RPC endpoint configuration.
 // It contains all the necessary information to connect to and use an RPC provider.
 type Endpoint struct {
-	Provider string `json:"provider"` // Name of the RPC provider (e.g., "alchemy", "infura")
-	Role     string `json:"role"`     // Role of the endpoint: "primary" or "fallback"
-	Type     string `json:"type"`     // Type of node: "full" or "archive"
-	HTTPURL  string `json:"http_url"` // HTTP/HTTPS URL for RPC requests
-	WSURL    string `json:"ws_url"`   // WebSocket URL for real-time connections
+	Provider           string             `json:"provider"`             // Name of the RPC provider (e.g., "alchemy", "infura")
+	RateLimitRecovery  *RateLimitRecovery `json:"rate_limit_recovery"`  // Rate limit recovery configuration (optional)
+	Role               string             `json:"role"`                 // Role of the endpoint: "primary" or "fallback"
+	Type               string             `json:"type"`                 // Type of node: "full" or "archive"
+	HTTPURL            string             `json:"http_url"`             // HTTP/HTTPS URL for RPC requests
+	WSURL              string             `json:"ws_url"`               // WebSocket URL for real-time connections
 }
 
 // ChainEndpoints represents all endpoints for a specific blockchain.
@@ -106,4 +114,13 @@ func (c *Config) GetFallbackEndpoints(chain string) []Endpoint {
 		}
 	}
 	return fallbackEndpoints
+}
+
+// DefaultRateLimitRecovery returns the default rate limit recovery configuration
+func DefaultRateLimitRecovery() RateLimitRecovery {
+	return RateLimitRecovery{
+		CheckInterval:     60,  // Check every minute
+		MaxRetries:        10,  // Up to 10 recovery attempts
+		RequiredSuccesses: 3,   // Need 3 consecutive successes
+	}
 }
