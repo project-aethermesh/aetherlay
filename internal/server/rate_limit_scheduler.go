@@ -174,6 +174,10 @@ func (rls *RateLimitScheduler) performRecoveryCheck(chain, endpointID string, en
 
 	if success {
 		state.ConsecutiveSuccess++
+		if state.ConsecutiveSuccess == 1 {
+			// Reset backoff to initial value after the first successful check
+			state.CurrentBackoff = rateLimitConfig.InitialBackoff
+		}
 		log.Debug().
 			Str("chain", chain).
 			Str("endpoint", endpointID).
