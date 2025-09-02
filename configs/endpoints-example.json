@@ -7,10 +7,11 @@
       "http_url": "https://eth.llamarpc.com",
       "rate_limit_recovery": {
         "backoff_multiplier": 2.0,
-        "initial_backoff": 300,
-        "max_attempts": 10,
-        "max_backoff": 3600,
-        "reset_after": 86400
+        "initial_backoff": 30,
+        "max_backoff": 300,
+        "max_retries": 10,
+        "required_successes": 3,
+        "reset_after": 3600
       }
     },
     "drpc-1": {
@@ -52,10 +53,11 @@
       "ws_url": "wss://base-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}",
       "rate_limit_recovery": {
         "backoff_multiplier": 2.0,
-        "initial_backoff": 300,
-        "max_attempts": 10,
-        "max_backoff": 3600,
-        "reset_after": 86400
+        "initial_backoff": 30,
+        "max_backoff": 300,
+        "max_retries": 10,
+        "required_successes": 3,
+        "reset_after": 3600
       }
     },
     "infura-staging": {
@@ -66,10 +68,11 @@
       "ws_url": "wss://base-mainnet.infura.io/ws/v3/${INFURA_API_KEY}",
       "rate_limit_recovery": {
         "backoff_multiplier": 2.0,
-        "initial_backoff": 300,
-        "max_attempts": 10,
-        "max_backoff": 3600,
-        "reset_after": 86400
+        "initial_backoff": 30,
+        "max_backoff": 300,
+        "max_retries": 10,
+        "required_successes": 3,
+        "reset_after": 3600
       }
     }
   }

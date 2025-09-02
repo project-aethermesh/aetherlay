@@ -24,6 +24,3 @@ RUN go install golang.org/x/tools/gopls@latest \
 
 # Set up the workspace
 WORKDIR /workspace
-
-# Enable bash completion
-RUN . /etc/bash_completion

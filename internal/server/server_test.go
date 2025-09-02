@@ -604,9 +604,12 @@ func TestHandleRateLimit(t *testing.T) {
 					Type:              "full",
 					HTTPURL:           "http://test-url.com",
 					RateLimitRecovery: &config.RateLimitRecovery{
-						CheckInterval:     60,
+						BackoffMultiplier: 2.0,
+						InitialBackoff:    60,
+						MaxBackoff:        300,
 						MaxRetries:        5,
 						RequiredSuccesses: 2,
+						ResetAfter:        3600,
 					},
 				},
 			},
@@ -694,10 +697,12 @@ func TestGetAvailableEndpointsSkipsRateLimited(t *testing.T) {
 
 	// Set rate limit state for one endpoint
 	rateLimitState := store.RateLimitState{
+		ConsecutiveSuccess: 0,
+		CurrentBackoff:     30,
+		FirstRateLimited:   time.Now().Add(-5 * time.Minute),
+		LastRecoveryCheck:  time.Now(),
 		RateLimited:        true,
 		RecoveryAttempts:   1,
-		LastRecoveryCheck:  time.Now(),
-		ConsecutiveSuccess: 0,
 	}
 	mockRedis.SetRateLimitState(context.Background(), "ethereum", "rate-limited-endpoint", rateLimitState)
 

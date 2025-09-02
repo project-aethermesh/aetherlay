@@ -83,22 +83,49 @@ func (rls *RateLimitScheduler) monitorEndpoint(chain, endpointID string) {
 		rateLimitConfig = *endpoint.RateLimitRecovery
 	}
 
-	checkInterval := time.Duration(rateLimitConfig.CheckInterval) * time.Second
-	ticker := time.NewTicker(checkInterval)
-	defer ticker.Stop()
-
+	// Use dynamic backoff instead of fixed ticker
 	for {
-		select {
-		case <-ticker.C:
-			// Check if we should continue monitoring
-			shouldContinue, err := rls.performRecoveryCheck(chain, endpointID, endpoint, rateLimitConfig)
-			if err != nil {
-				log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Error during recovery check")
-				continue
+		// Get current state to determine next check time
+		state, err := rls.redisClient.GetRateLimitState(context.Background(), chain, endpointID)
+		if err != nil {
+			log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get rate limit state for scheduling")
+			return
+		}
+
+		// Check if we should reset the backoff cycle
+		if rls.shouldResetBackoff(state, rateLimitConfig) {
+			log.Info().Str("chain", chain).Str("endpoint", endpointID).Msg("Resetting rate limit backoff cycle")
+			state.RecoveryAttempts = 0
+			state.CurrentBackoff = 0
+			state.ConsecutiveSuccess = 0
+			state.FirstRateLimited = time.Now()
+			if err := rls.redisClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
+				log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to reset rate limit state")
+				return
 			}
-			if !shouldContinue {
-				return // Stop monitoring
-			}
+		}
+
+		// Calculate next backoff time
+		nextBackoff := rls.calculateNextBackoff(state, rateLimitConfig)
+
+		log.Debug().
+			Str("chain", chain).
+			Str("endpoint", endpointID).
+			Int("next_backoff", nextBackoff).
+			Int("attempt", state.RecoveryAttempts).
+			Msg("Scheduling next rate limit recovery check")
+
+		// Wait for the calculated backoff time
+		time.Sleep(time.Duration(nextBackoff) * time.Second)
+
+		// Check if we should continue monitoring
+		shouldContinue, err := rls.performRecoveryCheck(chain, endpointID, endpoint, rateLimitConfig)
+		if err != nil {
+			log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Error during recovery check")
+			continue
+		}
+		if !shouldContinue {
+			return // Stop monitoring
 		}
 	}
 }
@@ -130,9 +157,17 @@ func (rls *RateLimitScheduler) performRecoveryCheck(chain, endpointID string, en
 
 	log.Debug().Str("chain", chain).Str("endpoint", endpointID).Int("attempt", state.RecoveryAttempts+1).Msg("Performing rate limit recovery check")
 
-	// Increment recovery attempts
+	// Increment recovery attempts and update backoff
 	state.RecoveryAttempts++
 	state.LastRecoveryCheck = time.Now()
+
+	// Update current backoff for next iteration
+	if state.CurrentBackoff == 0 {
+		state.CurrentBackoff = rateLimitConfig.InitialBackoff
+	} else {
+		newBackoff := int(float64(state.CurrentBackoff) * rateLimitConfig.BackoffMultiplier)
+		state.CurrentBackoff = min(newBackoff, rateLimitConfig.MaxBackoff)
+	}
 
 	// Perform the health check
 	success := rls.checkEndpointHealth(endpoint)
@@ -152,6 +187,8 @@ func (rls *RateLimitScheduler) performRecoveryCheck(chain, endpointID string, en
 			state.RateLimited = false
 			state.RecoveryAttempts = 0
 			state.ConsecutiveSuccess = 0
+			state.CurrentBackoff = 0
+			state.FirstRateLimited = time.Time{} // Clear the first rate limited time
 
 			// Update endpoint status to healthy
 			endpointStatus, err := rls.redisClient.GetEndpointStatus(context.Background(), chain, endpointID)
@@ -238,4 +275,24 @@ func (rls *RateLimitScheduler) checkEndpointHealth(endpoint config.Endpoint) boo
 	}
 
 	return false
+}
+
+// shouldResetBackoff determines if the backoff cycle should be reset
+func (rls *RateLimitScheduler) shouldResetBackoff(state *store.RateLimitState, config config.RateLimitRecovery) bool {
+	if state.FirstRateLimited.IsZero() {
+		return false
+	}
+
+	timeSinceFirst := time.Since(state.FirstRateLimited)
+	resetDuration := time.Duration(config.ResetAfter) * time.Second
+
+	return timeSinceFirst >= resetDuration
+}
+
+// calculateNextBackoff calculates the next backoff time based on current state
+func (rls *RateLimitScheduler) calculateNextBackoff(state *store.RateLimitState, config config.RateLimitRecovery) int {
+	if state.CurrentBackoff == 0 {
+		return config.InitialBackoff
+	}
+	return state.CurrentBackoff
 }

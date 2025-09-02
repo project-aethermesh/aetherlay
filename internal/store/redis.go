@@ -151,6 +151,8 @@ func (r *RedisClient) GetEndpointStatus(ctx context.Context, chain, endpoint str
 // RateLimitState represents the rate limit recovery state for an endpoint
 type RateLimitState struct {
 	ConsecutiveSuccess int       `json:"consecutive_success"` // Number of consecutive successful recovery checks
+	CurrentBackoff     int       `json:"current_backoff"`     // Current backoff time in seconds
+	FirstRateLimited   time.Time `json:"first_rate_limited"`  // When the endpoint was first rate limited (for reset_after)
 	LastRecoveryCheck  time.Time `json:"last_recovery_check"` // When the last recovery check was performed
 	RateLimited        bool      `json:"rate_limited"`        // Whether the endpoint is currently rate limited
 	RecoveryAttempts   int       `json:"recovery_attempts"`   // Number of recovery attempts made
@@ -234,6 +236,8 @@ func (r *RedisClient) GetRateLimitState(ctx context.Context, chain, endpoint str
 		// Return default state if not found
 		return &RateLimitState{
 			ConsecutiveSuccess: 0,
+			CurrentBackoff:     0,
+			FirstRateLimited:   time.Time{},
 			LastRecoveryCheck:  time.Time{},
 			RateLimited:        false,
 			RecoveryAttempts:   0,

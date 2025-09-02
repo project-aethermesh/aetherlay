@@ -695,11 +695,18 @@ func (s *Server) handleRateLimit(chain, endpointID, protocol string) {
 		return
 	}
 
-	// Mark as rate limited and reset recovery tracking
+	// Mark as rate limited and initialize backoff state
+	now := time.Now()
 	state.RateLimited = true
 	state.RecoveryAttempts = 0
-	state.LastRecoveryCheck = time.Now()
+	state.LastRecoveryCheck = now
 	state.ConsecutiveSuccess = 0
+	state.CurrentBackoff = 0 // Will be set to initial backoff on first attempt
+	
+	// Set first rate limited time if this is the first time
+	if state.FirstRateLimited.IsZero() {
+		state.FirstRateLimited = now
+	}
 
 	if err := s.redisClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
 		log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to set rate limit state")

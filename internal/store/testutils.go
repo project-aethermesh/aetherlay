@@ -151,10 +151,12 @@ func (m *MockRedisClient) GetRateLimitState(_ context.Context, chain, endpoint s
 	state, ok := m.rateLimitStates[key]
 	if !ok {
 		return &RateLimitState{
+			ConsecutiveSuccess: 0,
+			CurrentBackoff:     0,
+			FirstRateLimited:   time.Time{},
+			LastRecoveryCheck:  time.Time{},
 			RateLimited:        false,
 			RecoveryAttempts:   0,
-			LastRecoveryCheck:  time.Time{},
-			ConsecutiveSuccess: 0,
 		}, nil
 	}
 	return state, nil

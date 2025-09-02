@@ -163,7 +163,7 @@ func TestPerformRecoveryCheckStopsWhenNotRateLimited(t *testing.T) {
 	}
 
 	mockRedis := store.NewMockRedisClient()
-	
+
 	// Set up endpoint as not rate limited
 	state := store.RateLimitState{
 		RateLimited:        false,
@@ -204,13 +204,15 @@ func TestPerformRecoveryCheckStopsAfterMaxRetries(t *testing.T) {
 	}
 
 	mockRedis := store.NewMockRedisClient()
-	
+
 	// Set up endpoint as rate limited with max retries reached
 	state := store.RateLimitState{
+		ConsecutiveSuccess: 0,
+		CurrentBackoff:     120,
+		FirstRateLimited:   time.Now().Add(-10 * time.Minute),
+		LastRecoveryCheck:  time.Now(),
 		RateLimited:        true,
 		RecoveryAttempts:   5, // At max retries
-		LastRecoveryCheck:  time.Now(),
-		ConsecutiveSuccess: 0,
 	}
 	mockRedis.SetRateLimitState(context.Background(), "ethereum", "test-endpoint", state)
 
@@ -218,9 +220,12 @@ func TestPerformRecoveryCheckStopsAfterMaxRetries(t *testing.T) {
 
 	endpoint := cfg.Endpoints["ethereum"]["test-endpoint"]
 	rateLimitConfig := config.RateLimitRecovery{
-		CheckInterval:     60,
+		BackoffMultiplier: 2.0,
+		InitialBackoff:    30,
+		MaxBackoff:        300,
 		MaxRetries:        5, // Same as recovery attempts
 		RequiredSuccesses: 3,
+		ResetAfter:        3600,
 	}
 
 	shouldContinue, err := scheduler.performRecoveryCheck("ethereum", "test-endpoint", endpoint, rateLimitConfig)
@@ -255,7 +260,7 @@ func TestPerformRecoveryCheckRecovery(t *testing.T) {
 	}
 
 	mockRedis := store.NewMockRedisClient()
-	
+
 	// Set up initial endpoint status
 	endpointStatus := store.EndpointStatus{
 		HasHTTP:     true,
@@ -265,10 +270,12 @@ func TestPerformRecoveryCheckRecovery(t *testing.T) {
 
 	// Set up endpoint as rate limited with enough consecutive successes to recover
 	state := store.RateLimitState{
+		ConsecutiveSuccess: 2, // One away from recovery
+		CurrentBackoff:     60,
+		FirstRateLimited:   time.Now().Add(-5 * time.Minute),
+		LastRecoveryCheck:  time.Now(),
 		RateLimited:        true,
 		RecoveryAttempts:   2,
-		LastRecoveryCheck:  time.Now(),
-		ConsecutiveSuccess: 2, // One away from recovery
 	}
 	mockRedis.SetRateLimitState(context.Background(), "ethereum", "test-endpoint", state)
 
@@ -276,9 +283,12 @@ func TestPerformRecoveryCheckRecovery(t *testing.T) {
 
 	endpoint := cfg.Endpoints["ethereum"]["test-endpoint"]
 	rateLimitConfig := config.RateLimitRecovery{
-		CheckInterval:     60,
+		BackoffMultiplier: 2.0,
+		InitialBackoff:    30,
+		MaxBackoff:        300,
 		MaxRetries:        10,
 		RequiredSuccesses: 3, // Need 3 successes, we have 2
+		ResetAfter:        3600,
 	}
 
 	shouldContinue, err := scheduler.performRecoveryCheck("ethereum", "test-endpoint", endpoint, rateLimitConfig)
@@ -309,5 +319,63 @@ func TestPerformRecoveryCheckRecovery(t *testing.T) {
 
 	if !finalStatus.HealthyHTTP {
 		t.Error("Expected endpoint to be marked as healthy after recovery")
+	}
+}
+
+func TestCalculateNextBackoff(t *testing.T) {
+	cfg := &config.Config{}
+	mockRedis := store.NewMockRedisClient()
+	scheduler := NewRateLimitScheduler(cfg, mockRedis)
+
+	config := config.RateLimitRecovery{
+		InitialBackoff: 30,
+		MaxBackoff:     300,
+	}
+
+	// Test initial backoff
+	state := &store.RateLimitState{CurrentBackoff: 0}
+	backoff := scheduler.calculateNextBackoff(state, config)
+	if backoff != 30 {
+		t.Errorf("Expected initial backoff to be 30, got %d", backoff)
+	}
+
+	// Test current backoff
+	state.CurrentBackoff = 60
+	backoff = scheduler.calculateNextBackoff(state, config)
+	if backoff != 60 {
+		t.Errorf("Expected current backoff to be 60, got %d", backoff)
+	}
+}
+
+func TestShouldResetBackoff(t *testing.T) {
+	cfg := &config.Config{}
+	mockRedis := store.NewMockRedisClient()
+	scheduler := NewRateLimitScheduler(cfg, mockRedis)
+
+	config := config.RateLimitRecovery{
+		ResetAfter: 3600, // 1 hour
+	}
+
+	// Test no reset needed (recent)
+	state := &store.RateLimitState{
+		FirstRateLimited: time.Now().Add(-30 * time.Minute), // 30 minutes ago
+	}
+	shouldReset := scheduler.shouldResetBackoff(state, config)
+	if shouldReset {
+		t.Error("Expected no reset for recent rate limit")
+	}
+
+	// Test reset needed (old)
+	state.FirstRateLimited = time.Now().Add(-2 * time.Hour) // 2 hours ago
+	shouldReset = scheduler.shouldResetBackoff(state, config)
+	if !shouldReset {
+		t.Error("Expected reset for old rate limit")
+	}
+
+	// Test with zero time (no reset)
+	state.FirstRateLimited = time.Time{}
+	shouldReset = scheduler.shouldResetBackoff(state, config)
+	if shouldReset {
+		t.Error("Expected no reset for zero time")
 	}
 }
