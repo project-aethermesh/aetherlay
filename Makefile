@@ -126,7 +126,7 @@ run-hc: build-hc
 .PHONY: run-lb
 run-lb: build-lb
 	@echo "Running RPC Load Balancer..."
-	./bin/aetherlay-lb
+	./bin/aetherlay-lb --metrics-port=9091
 
 # Stop services
 .PHONY: stop
