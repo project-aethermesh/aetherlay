@@ -94,7 +94,7 @@ func (c *Checker) StartEphemeralChecks(ctx context.Context) {
 		}
 	}
 
-	ticker := time.NewTicker(5 * time.Second) // How often to scan for unhealthy endpoints
+	ticker := time.NewTicker(c.ephemeralChecksInterval) // How often to scan for unhealthy endpoints
 	defer ticker.Stop()
 
 	for {
@@ -309,7 +309,7 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 				Str("endpoint_id", endpointID).
 				Int("status_code", resp.StatusCode).
 				Msg("Health check detected 429, handing over to rate limit handler")
-			
+
 			c.HandleRateLimitFunc(chain, endpointID, "http")
 			return healthy // Return early, rate limit handler takes over
 		}
@@ -363,7 +363,7 @@ func (c *Checker) checkWSHealth(ctx context.Context, chain, endpointID string, e
 	if err != nil {
 		log.Error().
 			Err(err).
-			Str("endpoint", endpoint.WSURL).
+			Str("endpoint", helpers.RedactAPIKey(endpoint.WSURL)).
 			Str("chain", chain).
 			Str("endpoint_id", endpointID).
 			Msg("WebSocket health check failed: failed to establish connection")
