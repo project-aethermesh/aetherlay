@@ -158,8 +158,8 @@ func TestDefaultRateLimitRecovery(t *testing.T) {
 		t.Errorf("Expected BackoffMultiplier to be 2.0, got %f", config.BackoffMultiplier)
 	}
 
-	if config.InitialBackoff != 60 {
-		t.Errorf("Expected InitialBackoff to be 60, got %d", config.InitialBackoff)
+	if config.InitialBackoff != 300 {
+		t.Errorf("Expected InitialBackoff to be 300, got %d", config.InitialBackoff)
 	}
 
 	if config.MaxBackoff != 7200 {
@@ -170,8 +170,8 @@ func TestDefaultRateLimitRecovery(t *testing.T) {
 		t.Errorf("Expected MaxRetries to be 10, got %d", config.MaxRetries)
 	}
 
-	if config.RequiredSuccesses != 3 {
-		t.Errorf("Expected RequiredSuccesses to be 3, got %d", config.RequiredSuccesses)
+	if config.RequiredSuccesses != 2 {
+		t.Errorf("Expected RequiredSuccesses to be 2, got %d", config.RequiredSuccesses)
 	}
 
 	if config.ResetAfter != 86400 {
