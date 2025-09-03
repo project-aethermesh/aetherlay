@@ -210,20 +210,28 @@ func getBoolFromEnv(envKey string, defaultValue bool) bool {
 // It matches common API key patterns in URLs and replaces them with a redacted version.
 // For keys longer than 8 characters, it shows the first 4 and last 4 characters.
 // For shorter keys, it completely redacts them.
-// The regex can be greatly improved but, for now, it's enough for redacting keys from Alchemy and Infura.
 func RedactAPIKey(url string) string {
-	// Match common API key patterns in URLs
-	// The regex can be greatly improved but, for now, it's enough for redacting keys from Alchemy and Infura
-	re := regexp.MustCompile(`(v2/|v3/)([A-Za-z0-9]+)`)
-	return re.ReplaceAllStringFunc(url, func(match string) string {
-		parts := strings.Split(match, "/")
-		if len(parts) != 2 {
-			return match
-		}
-		prefix, key := parts[0], parts[1]
-		if len(key) <= 8 {
-			return prefix + "/..." // the key is too short to be redacted in this specific way, so we completely redact it
-		}
-		return prefix + "/" + key[:4] + "..." + key[len(key)-4:]
-	})
+	// Define patterns for different providers
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(ankr\.com/(?:premium-http/)?[a-z0-9_-]+/)([A-Za-z0-9_-]+)`),
+		regexp.MustCompile(`([a-z0-9-]+\.quiknode\.pro/)([A-Za-z0-9_-]+)`),
+		regexp.MustCompile(`(infura\.io/(?:ws/)?v3/)([A-Za-z0-9_-]+)`),
+		regexp.MustCompile(`(alchemy\.com/v2/)([A-Za-z0-9_-]+)`),
+	}
+
+	result := url
+	for _, re := range patterns {
+		result = re.ReplaceAllStringFunc(result, func(match string) string {
+			parts := re.FindStringSubmatch(match)
+			if len(parts) != 3 {
+				return match
+			}
+			prefix, key := parts[1], parts[2]
+			if len(key) <= 8 {
+				return prefix + "..."
+			}
+			return prefix + key[:4] + "..." + key[len(key)-4:]
+		})
+	}
+	return result
 }
