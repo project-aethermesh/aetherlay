@@ -113,7 +113,7 @@ k8s-delete:
 run: build
 	@echo "Starting both services..."
 	./bin/aetherlay-hc &
-	./bin/aetherlay-lb &
+	./bin/aetherlay-lb --metrics-port=9091 &
 	@echo "Both services started in the background. Use 'ps' to see them."
 
 # Run health checker
@@ -126,7 +126,7 @@ run-hc: build-hc
 .PHONY: run-lb
 run-lb: build-lb
 	@echo "Running RPC Load Balancer..."
-	./bin/aetherlay-lb
+	./bin/aetherlay-lb --metrics-port=9091
 
 # Stop services
 .PHONY: stop

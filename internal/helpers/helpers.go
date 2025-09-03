@@ -22,6 +22,9 @@ type Config struct {
 	LogLevel                        string
 	MetricsEnabled                  bool
 	MetricsPort                     int
+	ProxyMaxRetries                 int
+	ProxyTimeout                    int
+	ProxyTimeoutPerTry              int
 	RedisHost                       string
 	RedisPass                       string
 	RedisPort                       string
@@ -46,6 +49,9 @@ func ParseFlags() *Config {
 	flag.StringVar(&config.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	flag.BoolVar(&config.MetricsEnabled, "metrics-enabled", true, "Enable metrics server")
 	flag.IntVar(&config.MetricsPort, "metrics-port", 9090, "Metrics server port")
+	flag.IntVar(&config.ProxyMaxRetries, "proxy-retries", 3, "Maximum number of retries for proxy requests")
+	flag.IntVar(&config.ProxyTimeout, "proxy-timeout", 15, "Timeout for proxy requests in seconds")
+	flag.IntVar(&config.ProxyTimeoutPerTry, "proxy-timeout-per-try", 5, "Timeout per individual retry attempt in seconds")
 	flag.StringVar(&config.RedisHost, "redis-host", "localhost", "Redis host")
 	flag.StringVar(&config.RedisPass, "redis-pass", "", "Redis password")
 	flag.StringVar(&config.RedisPort, "redis-port", "6379", "Redis port")
@@ -108,6 +114,9 @@ func (c *Config) LoadConfiguration() *LoadedConfig {
 		LogLevel:                        c.GetStringValue("log-level", c.LogLevel, "LOG_LEVEL", "info"),
 		MetricsEnabled:                  c.GetBoolValue("metrics-enabled", c.MetricsEnabled, "METRICS_ENABLED", true),
 		MetricsPort:                     c.GetIntValue("metrics-port", c.MetricsPort, "METRICS_PORT", 9090),
+		ProxyMaxRetries:                 c.GetIntValue("proxy-retries", c.ProxyMaxRetries, "PROXY_MAX_RETRIES", 3),
+		ProxyTimeout:                    c.GetIntValue("proxy-timeout", c.ProxyTimeout, "PROXY_TIMEOUT", 15),
+		ProxyTimeoutPerTry:              c.GetIntValue("proxy-timeout-per-try", c.ProxyTimeoutPerTry, "PROXY_TIMEOUT_PER_TRY", 5),
 		RedisHost:                       c.GetStringValue("redis-host", c.RedisHost, "REDIS_HOST", "localhost"),
 		RedisPass:                       c.GetStringValue("redis-pass", c.RedisPass, "REDIS_PASS", ""),
 		RedisPort:                       c.GetStringValue("redis-port", c.RedisPort, "REDIS_PORT", "6379"),
@@ -130,6 +139,9 @@ type LoadedConfig struct {
 	LogLevel                        string
 	MetricsEnabled                  bool
 	MetricsPort                     int
+	ProxyMaxRetries                 int
+	ProxyTimeout                    int
+	ProxyTimeoutPerTry              int
 	RedisHost                       string
 	RedisPass                       string
 	RedisPort                       string
@@ -145,7 +157,7 @@ type LoadedConfig struct {
 func getStringFromEnv(envKey, defaultValue string) string {
 	if envValue := os.Getenv(envKey); envValue != "" {
 		if strings.TrimSpace(envValue) != "" {
-			logValue := envKey
+			logValue := envValue
 			if envKey == "REDIS_PASS" {
 				logValue = "REDACTED"
 			}
@@ -198,20 +210,28 @@ func getBoolFromEnv(envKey string, defaultValue bool) bool {
 // It matches common API key patterns in URLs and replaces them with a redacted version.
 // For keys longer than 8 characters, it shows the first 4 and last 4 characters.
 // For shorter keys, it completely redacts them.
-// The regex can be greatly improved but, for now, it's enough for redacting keys from Alchemy and Infura.
 func RedactAPIKey(url string) string {
-	// Match common API key patterns in URLs
-	// The regex can be greatly improved but, for now, it's enough for redacting keys from Alchemy and Infura
-	re := regexp.MustCompile(`(v2/|v3/)([A-Za-z0-9]+)`)
-	return re.ReplaceAllStringFunc(url, func(match string) string {
-		parts := strings.Split(match, "/")
-		if len(parts) != 2 {
-			return match
-		}
-		prefix, key := parts[0], parts[1]
-		if len(key) <= 8 {
-			return prefix + "/..." // the key is too short to be redacted in this specific way, so we completely redact it
-		}
-		return prefix + "/" + key[:4] + "..." + key[len(key)-4:]
-	})
+	// Define patterns for different providers
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(ankr\.com/(?:premium-http/)?[a-z0-9_-]+/)([A-Za-z0-9_-]+)`),
+		regexp.MustCompile(`([a-z0-9-]+\.quiknode\.pro/)([A-Za-z0-9_-]+)`),
+		regexp.MustCompile(`(infura\.io/(?:ws/)?v3/)([A-Za-z0-9_-]+)`),
+		regexp.MustCompile(`(alchemy\.com/v2/)([A-Za-z0-9_-]+)`),
+	}
+
+	result := url
+	for _, re := range patterns {
+		result = re.ReplaceAllStringFunc(result, func(match string) string {
+			parts := re.FindStringSubmatch(match)
+			if len(parts) != 3 {
+				return match
+			}
+			prefix, key := parts[1], parts[2]
+			if len(key) <= 8 {
+				return prefix + "..."
+			}
+			return prefix + key[:4] + "..." + key[len(key)-4:]
+		})
+	}
+	return result
 }

@@ -78,6 +78,9 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to connect to Redis")
 	}
 
+	// Initialize and start the server
+	srv := server.NewServer(cfg, redisClient, appConfig)
+
 	// Configure regular health checks based on the value of standaloneHealthChecks
 	if !appConfig.StandaloneHealthChecks {
 		if appConfig.HealthCheckInterval > 0 {
@@ -85,15 +88,15 @@ func main() {
 			defer cancel()
 			checker := health.NewChecker(cfg, redisClient, time.Duration(appConfig.HealthCheckInterval)*time.Second, time.Duration(appConfig.EphemeralChecksInterval)*time.Second, appConfig.EphemeralChecksHealthyThreshold)
 
+			// Connect health checker to server's rate limit handler
+			checker.HandleRateLimitFunc = srv.GetRateLimitHandler()
+
 			log.Info().Int("interval_seconds", appConfig.HealthCheckInterval).Msg("Starting integrated health check service")
 			go checker.Start(ctx)
 		}
 	} else if appConfig.StandaloneHealthChecks {
 		log.Info().Msg("Standalone health checks enabled (STANDALONE_HEALTH_CHECKS=true). Using external health checker service.")
 	}
-
-	// Initialize and start the server
-	srv := server.NewServer(cfg, redisClient)
 	srv.AddMiddleware(func(next http.Handler) http.Handler {
 		return cors.Middleware(next, appConfig.CorsHeaders, appConfig.CorsMethods, appConfig.CorsOrigin)
 	})

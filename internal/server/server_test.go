@@ -6,15 +6,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"aetherlay/internal/config"
+	"aetherlay/internal/helpers"
 	"aetherlay/internal/store"
 
 	"github.com/gorilla/websocket"
 )
 
-// stubForwardRequest is a stub for HTTP forwarding in tests.
-func stubForwardRequest(w http.ResponseWriter, r *http.Request, targetURL string) error {
+// stubForwardRequestWithBody is a stub for HTTP forwarding with body in tests.
+func stubForwardRequestWithBody(w http.ResponseWriter, ctx context.Context, method, targetURL string, bodyBytes []byte, headers http.Header) error {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("stubbed"))
 	return nil
@@ -26,16 +28,25 @@ func stubProxyWebSocket(w http.ResponseWriter, r *http.Request, backendURL strin
 	return nil
 }
 
-// failingForwardRequest simulates a failing endpoint for testing retry logic.
-func failingForwardRequest(w http.ResponseWriter, r *http.Request, targetURL string) error {
+// failingForwardRequestWithBody simulates a failing endpoint for testing retry logic with body.
+func failingForwardRequestWithBody(w http.ResponseWriter, ctx context.Context, method, targetURL string, bodyBytes []byte, headers http.Header) error {
 	return fmt.Errorf("endpoint failed: %s", targetURL)
+}
+
+// createTestConfig creates a default LoadedConfig for testing.
+func createTestConfig() *helpers.LoadedConfig {
+	return &helpers.LoadedConfig{
+		ProxyMaxRetries:    3,
+		ProxyTimeout:       15,
+		ProxyTimeoutPerTry: 5,
+	}
 }
 
 // TestServerHealthCheck tests the /health endpoint handler.
 func TestServerHealthCheck(t *testing.T) {
 	cfg := &config.Config{}
 	redisClient := store.NewMockRedisClient()
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, createTestConfig())
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
@@ -62,8 +73,8 @@ func TestHTTPSelection_HealthyOnly(t *testing.T) {
 		"chainA:ep1": {HasHTTP: true, HealthyHTTP: true},
 		"chainA:ep2": {HasHTTP: true, HealthyHTTP: false},
 	})
-	server := NewServer(cfg, redisClient)
-	server.forwardRequest = stubForwardRequest
+	server := NewServer(cfg, redisClient, createTestConfig())
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("POST", "/chainA", nil)
@@ -88,8 +99,8 @@ func TestHTTPSelection_NoneHealthy(t *testing.T) {
 	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainA:ep1": {HasHTTP: true, HealthyHTTP: false},
 	})
-	server := NewServer(cfg, redisClient)
-	server.forwardRequest = stubForwardRequest
+	server := NewServer(cfg, redisClient, createTestConfig())
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("POST", "/chainA", nil)
@@ -116,8 +127,8 @@ func TestWSSelection_HealthyOnly(t *testing.T) {
 		"chainB:ep1": {HasWS: true, HealthyWS: true},
 		"chainB:ep2": {HasWS: true, HealthyWS: false},
 	})
-	server := NewServer(cfg, redisClient)
-	server.forwardRequest = stubForwardRequest
+	server := NewServer(cfg, redisClient, createTestConfig())
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("GET", "/chainB", nil)
@@ -144,8 +155,8 @@ func TestWSSelection_NoneHealthy(t *testing.T) {
 	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainB:ep1": {HasWS: true, HealthyWS: false},
 	})
-	server := NewServer(cfg, redisClient)
-	server.forwardRequest = stubForwardRequest
+	server := NewServer(cfg, redisClient, createTestConfig())
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("GET", "/chainB", nil)
@@ -178,8 +189,8 @@ func TestHTTPSelection_FallbackWhenPrimaryUnhealthy(t *testing.T) {
 		"chainA:fallback1": {HasHTTP: true, HealthyHTTP: true},
 		"chainA:fallback2": {HasHTTP: true, HealthyHTTP: true},
 	})
-	server := NewServer(cfg, redisClient)
-	server.forwardRequest = stubForwardRequest
+	server := NewServer(cfg, redisClient, createTestConfig())
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("POST", "/chainA", nil)
@@ -210,8 +221,8 @@ func TestWSSelection_FallbackWhenPrimaryUnhealthy(t *testing.T) {
 		"chainB:fallback1": {HasWS: true, HealthyWS: true},
 		"chainB:fallback2": {HasWS: true, HealthyWS: true},
 	})
-	server := NewServer(cfg, redisClient)
-	server.forwardRequest = stubForwardRequest
+	server := NewServer(cfg, redisClient, createTestConfig())
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("GET", "/chainB", nil)
@@ -240,8 +251,8 @@ func TestHTTPSelection_NoFallbackAvailable(t *testing.T) {
 		"chainA:primary1":  {HasHTTP: true, HealthyHTTP: false},
 		"chainA:fallback1": {HasHTTP: true, HealthyHTTP: false},
 	})
-	server := NewServer(cfg, redisClient)
-	server.forwardRequest = stubForwardRequest
+	server := NewServer(cfg, redisClient, createTestConfig())
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("POST", "/chainA", nil)
@@ -268,8 +279,8 @@ func TestWSSelection_NoFallbackAvailable(t *testing.T) {
 		"chainB:primary1":  {HasWS: true, HealthyWS: false},
 		"chainB:fallback1": {HasWS: true, HealthyWS: false},
 	})
-	server := NewServer(cfg, redisClient)
-	server.forwardRequest = stubForwardRequest
+	server := NewServer(cfg, redisClient, createTestConfig())
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("GET", "/chainB", nil)
@@ -300,8 +311,8 @@ func TestHTTPSelection_PrimaryHealthyNoFallback(t *testing.T) {
 		"chainA:primary1":  {HasHTTP: true, HealthyHTTP: true},
 		"chainA:fallback1": {HasHTTP: true, HealthyHTTP: false},
 	})
-	server := NewServer(cfg, redisClient)
-	server.forwardRequest = stubForwardRequest
+	server := NewServer(cfg, redisClient, createTestConfig())
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("POST", "/chainA", nil)
@@ -330,10 +341,10 @@ func TestHTTPRetryLoop(t *testing.T) {
 		"chainA:ep2": {HasHTTP: true, HealthyHTTP: false},
 		"chainA:ep3": {HasHTTP: true, HealthyHTTP: true},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, createTestConfig())
 
 	// Create a custom forward function that fails for specific URLs
-	server.forwardRequest = func(w http.ResponseWriter, r *http.Request, targetURL string) error {
+	server.forwardRequestWithBody = func(w http.ResponseWriter, ctx context.Context, method, targetURL string, bodyBytes []byte, headers http.Header) error {
 		if targetURL == "http://success" {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("success"))
@@ -371,8 +382,8 @@ func TestHTTPRetryLoop_AllFail(t *testing.T) {
 		"chainA:ep1": {HasHTTP: true, HealthyHTTP: false},
 		"chainA:ep2": {HasHTTP: true, HealthyHTTP: false},
 	})
-	server := NewServer(cfg, redisClient)
-	server.forwardRequest = failingForwardRequest
+	server := NewServer(cfg, redisClient, createTestConfig())
+	server.forwardRequestWithBody = failingForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("POST", "/chainA", nil)
@@ -402,8 +413,8 @@ func TestWSRetryLoop(t *testing.T) {
 		"chainB:ep2": {HasWS: true, HealthyWS: false},
 		"chainB:ep3": {HasWS: true, HealthyWS: true},
 	})
-	server := NewServer(cfg, redisClient)
-	server.forwardRequest = stubForwardRequest
+	server := NewServer(cfg, redisClient, createTestConfig())
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 
 	// Create a custom proxy function that fails for specific URLs
 	server.proxyWebSocket = func(w http.ResponseWriter, r *http.Request, backendURL string) error {
@@ -441,8 +452,8 @@ func TestWSRetryLoop_AllFail(t *testing.T) {
 		"chainB:ep1": {HasWS: true, HealthyWS: false},
 		"chainB:ep2": {HasWS: true, HealthyWS: false},
 	})
-	server := NewServer(cfg, redisClient)
-	server.forwardRequest = stubForwardRequest
+	server := NewServer(cfg, redisClient, createTestConfig())
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = func(w http.ResponseWriter, r *http.Request, backendURL string) error {
 		return fmt.Errorf("websocket endpoint failed: %s", backendURL)
 	}
@@ -510,10 +521,10 @@ func TestMarkEndpointUnhealthy_HTTP(t *testing.T) {
 	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainA:ep1": {HasHTTP: true, HealthyHTTP: true},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, createTestConfig())
 
 	// Simulate a failed HTTP request
-	err := server.defaultForwardRequest(httptest.NewRecorder(), httptest.NewRequest("POST", "/chainA", nil), "http://fail")
+	err := server.defaultForwardRequestWithBodyFunc(httptest.NewRecorder(), context.Background(), "POST", "http://fail", nil, http.Header{})
 	if err == nil {
 		t.Error("Expected error from failed HTTP request")
 	}
@@ -539,7 +550,7 @@ func TestMarkEndpointUnhealthy_WS(t *testing.T) {
 	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainB:ep1": {HasWS: true, HealthyWS: true},
 	})
-	server := NewServer(cfg, redisClient)
+	server := NewServer(cfg, redisClient, createTestConfig())
 
 	// Directly call the marking logic
 	server.markEndpointUnhealthyProtocol("chainB", "ep1", "ws")
@@ -547,5 +558,230 @@ func TestMarkEndpointUnhealthy_WS(t *testing.T) {
 	status, _ := redisClient.GetEndpointStatus(context.Background(), "chainB", "ep1")
 	if status.HealthyWS {
 		t.Error("Expected HealthyWS to be false after marking unhealthy for WS")
+	}
+}
+
+// TestShouldRetry tests the HTTP status code retry logic.
+func TestShouldRetry(t *testing.T) {
+	cfg := &config.Config{}
+	redisClient := store.NewMockRedisClient()
+	server := NewServer(cfg, redisClient, createTestConfig())
+
+	tests := []struct {
+		statusCode  int
+		shouldRetry bool
+		description string
+	}{
+		{200, false, "2xx success should NOT retry"},
+		{201, false, "2xx success should NOT retry"},
+		{400, false, "4xx client error should NOT retry"},
+		{404, false, "4xx client error should NOT retry"},
+		{429, true, "429 Too Many Requests should retry"},
+		{500, true, "5xx server error should retry"},
+		{504, true, "5xx server error should retry"},
+		{599, true, "5xx server error should retry"},
+		{600, false, "6xx should NOT retry"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.description, func(t *testing.T) {
+			result := server.shouldRetry(test.statusCode)
+			if result != test.shouldRetry {
+				t.Errorf("shouldRetry(%d) = %v, expected %v", test.statusCode, result, test.shouldRetry)
+			}
+		})
+	}
+}
+
+func TestHandleRateLimit(t *testing.T) {
+	// Create a test config
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"ethereum": {
+				"test-endpoint": config.Endpoint{
+					Provider:          "test-provider",
+					Role:              "primary", 
+					Type:              "full",
+					HTTPURL:           "http://test-url.com",
+					RateLimitRecovery: &config.RateLimitRecovery{
+						BackoffMultiplier: 2.0,
+						InitialBackoff:    60,
+						MaxBackoff:        300,
+						MaxRetries:        5,
+						RequiredSuccesses: 2,
+						ResetAfter:        3600,
+					},
+				},
+			},
+		},
+	}
+
+	// Create test app config
+	appConfig := &helpers.LoadedConfig{
+		ProxyMaxRetries:    3,
+		ProxyTimeout:       15,
+		ProxyTimeoutPerTry: 5,
+	}
+
+	// Create mock Redis client
+	mockRedis := store.NewMockRedisClient()
+	
+	// Create server
+	server := NewServer(cfg, mockRedis, appConfig)
+
+	// Test handling rate limit
+	server.handleRateLimit("ethereum", "test-endpoint", "http")
+
+	// Verify rate limit state was set
+	state, err := mockRedis.GetRateLimitState(context.Background(), "ethereum", "test-endpoint")
+	if err != nil {
+		t.Fatalf("Failed to get rate limit state: %v", err)
+	}
+
+	if !state.RateLimited {
+		t.Error("Expected endpoint to be marked as rate limited")
+	}
+
+	if state.RecoveryAttempts != 0 {
+		t.Errorf("Expected recovery attempts to be 0, got %d", state.RecoveryAttempts)
+	}
+
+	if state.ConsecutiveSuccess != 0 {
+		t.Errorf("Expected consecutive success to be 0, got %d", state.ConsecutiveSuccess)
+	}
+}
+
+func TestGetAvailableEndpointsSkipsRateLimited(t *testing.T) {
+	// Create a test config
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"ethereum": {
+				"healthy-endpoint": config.Endpoint{
+					Provider: "test-provider-1",
+					Role:     "primary",
+					Type:     "full",
+					HTTPURL:  "http://healthy-endpoint.com",
+				},
+				"rate-limited-endpoint": config.Endpoint{
+					Provider: "test-provider-2", 
+					Role:     "primary",
+					Type:     "full",
+					HTTPURL:  "http://rate-limited-endpoint.com",
+				},
+			},
+		},
+	}
+
+	// Create test app config
+	appConfig := &helpers.LoadedConfig{
+		ProxyMaxRetries:    3,
+		ProxyTimeout:       15,
+		ProxyTimeoutPerTry: 5,
+	}
+
+	// Create mock Redis client
+	mockRedis := store.NewMockRedisClient()
+
+	// Set up endpoint statuses
+	healthyStatus := store.EndpointStatus{
+		HasHTTP:     true,
+		HealthyHTTP: true,
+	}
+	rateLimitedStatus := store.EndpointStatus{
+		HasHTTP:     true,
+		HealthyHTTP: true, // Still healthy but rate limited
+	}
+
+	mockRedis.UpdateEndpointStatus(context.Background(), "ethereum", "healthy-endpoint", healthyStatus)
+	mockRedis.UpdateEndpointStatus(context.Background(), "ethereum", "rate-limited-endpoint", rateLimitedStatus)
+
+	// Set rate limit state for one endpoint
+	rateLimitState := store.RateLimitState{
+		ConsecutiveSuccess: 0,
+		CurrentBackoff:     30,
+		FirstRateLimited:   time.Now().Add(-5 * time.Minute),
+		LastRecoveryCheck:  time.Now(),
+		RateLimited:        true,
+		RecoveryAttempts:   1,
+	}
+	mockRedis.SetRateLimitState(context.Background(), "ethereum", "rate-limited-endpoint", rateLimitState)
+
+	// Create server
+	server := NewServer(cfg, mockRedis, appConfig)
+
+	// Get available endpoints
+	endpoints := server.getAvailableEndpoints("ethereum", false, false)
+
+	// Should only have the healthy endpoint, not the rate-limited one
+	if len(endpoints) != 1 {
+		t.Errorf("Expected 1 available endpoint, got %d", len(endpoints))
+	}
+
+	if len(endpoints) > 0 && endpoints[0].ID != "healthy-endpoint" {
+		t.Errorf("Expected healthy-endpoint, got %s", endpoints[0].ID)
+	}
+}
+
+func TestRateLimitError(t *testing.T) {
+	err := &RateLimitError{
+		StatusCode: 429,
+		Message:    "Too Many Requests",
+	}
+
+	if err.Error() != "Too Many Requests" {
+		t.Errorf("Expected 'Too Many Requests', got '%s'", err.Error())
+	}
+
+	if err.StatusCode != 429 {
+		t.Errorf("Expected status code 429, got %d", err.StatusCode)
+	}
+}
+
+func TestServerGetRateLimitHandler(t *testing.T) {
+	// Create a test config
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"ethereum": {
+				"test-endpoint": config.Endpoint{
+					Provider: "test-provider",
+					Role:     "primary",
+					Type:     "full", 
+					HTTPURL:  "http://test-url.com",
+				},
+			},
+		},
+	}
+
+	// Create test app config
+	appConfig := &helpers.LoadedConfig{
+		ProxyMaxRetries:    3,
+		ProxyTimeout:       15,
+		ProxyTimeoutPerTry: 5,
+	}
+
+	// Create mock Redis client
+	mockRedis := store.NewMockRedisClient()
+
+	// Create server
+	server := NewServer(cfg, mockRedis, appConfig)
+
+	// Get rate limit handler
+	handler := server.GetRateLimitHandler()
+
+	if handler == nil {
+		t.Error("Expected rate limit handler to be returned")
+	}
+
+	// Test that handler works
+	handler("ethereum", "test-endpoint", "http")
+
+	// Verify rate limit state was set
+	state, err := mockRedis.GetRateLimitState(context.Background(), "ethereum", "test-endpoint")
+	if err != nil {
+		t.Fatalf("Failed to get rate limit state: %v", err)
+	}
+
+	if !state.RateLimited {
+		t.Error("Expected endpoint to be marked as rate limited")
 	}
 }

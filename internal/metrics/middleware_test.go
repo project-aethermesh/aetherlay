@@ -12,6 +12,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Helper function to test counter metrics
+func testCounterMetric(t *testing.T, counter *prometheus.CounterVec, code, method, route string, expectedValue float64) {
+	metric := &dto.Metric{}
+	err := counter.WithLabelValues(code, method, route).Write(metric)
+	require.NoError(t, err)
+	assert.Equal(t, expectedValue, metric.GetCounter().GetValue())
+}
+
+// Helper function to test histogram metrics
+func testHistogramMetric(t *testing.T, histogram *prometheus.HistogramVec, code, method, route string) {
+	metric := &dto.Metric{}
+	err := histogram.WithLabelValues(code, method, route).(prometheus.Metric).Write(metric)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), metric.GetHistogram().GetSampleCount())
+	assert.True(t, metric.GetHistogram().GetSampleSum() > 0)
+}
+
+// Helper function to test gauge metrics
+func testGaugeMetric(t *testing.T, gauge prometheus.Gauge, expectedValue float64) {
+	metric := &dto.Metric{}
+	err := gauge.Write(metric)
+	require.NoError(t, err)
+	assert.Equal(t, expectedValue, metric.GetGauge().GetValue())
+}
+
 func TestMiddleware(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -22,7 +47,6 @@ func TestMiddleware(t *testing.T) {
 		expectedCode   string
 		expectedMethod string
 		expectedRoute  string
-		skipMetrics    bool
 	}{
 		{
 			name:           "successful GET request",
@@ -31,7 +55,7 @@ func TestMiddleware(t *testing.T) {
 			route:          "/v1/chain/{chain}/status",
 			statusCode:     200,
 			expectedCode:   "200",
-			expectedMethod: "get",
+			expectedMethod: "GET",
 			expectedRoute:  "/v1/chain/{chain}/status",
 		},
 		{
@@ -41,7 +65,7 @@ func TestMiddleware(t *testing.T) {
 			route:          "/v1/chain/{chain}/send",
 			statusCode:     500,
 			expectedCode:   "500",
-			expectedMethod: "post",
+			expectedMethod: "POST",
 			expectedRoute:  "/v1/chain/{chain}/send",
 		},
 		{
@@ -51,7 +75,7 @@ func TestMiddleware(t *testing.T) {
 			route:          "/",
 			statusCode:     404,
 			expectedCode:   "404",
-			expectedMethod: "get",
+			expectedMethod: "GET",
 			expectedRoute:  "/",
 		},
 	}
@@ -83,9 +107,13 @@ func TestMiddleware(t *testing.T) {
 			// Assert response
 			assert.Equal(t, tt.statusCode, w.Code)
 
-			// For this simple test, just verify the middleware ran without checking exact metrics
-			// since metrics are global and can interfere between tests
-			assert.True(t, true, "Middleware executed successfully")
+			// Verify metrics were recorded correctly
+			if HTTPRequestsTotal != nil {
+				testCounterMetric(t, HTTPRequestsTotal, tt.expectedCode, tt.expectedMethod, tt.expectedRoute, 1.0)
+			}
+			if HTTPRequestDuration != nil {
+				testHistogramMetric(t, HTTPRequestDuration, tt.expectedCode, tt.expectedMethod, tt.expectedRoute)
+			}
 		})
 	}
 }
@@ -134,32 +162,52 @@ func TestResponseWriterHijack(t *testing.T) {
 	_, _, err := rw.Hijack()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "http.Hijacker is not implemented")
-	
+
 	// After failed hijack attempt, it should NOT be marked as rotten (only on success)
 	assert.False(t, rw.wRotten)
 }
 
-// Helper function to check counter metrics
-func checkCounterMetric(t *testing.T, counter *prometheus.CounterVec, code, method, route string, expectedValue float64) {
-	metric := &dto.Metric{}
-	err := counter.WithLabelValues(code, method, route).Write(metric)
-	require.NoError(t, err)
-	assert.Equal(t, expectedValue, metric.GetCounter().GetValue())
-}
+func TestInFlightRequestsGauge(t *testing.T) {
+	// Test that the in-flight requests gauge starts at 0
+	if HTTPRequestsInFlight != nil {
+		testGaugeMetric(t, HTTPRequestsInFlight, 0.0)
+	}
 
-// Helper function to check histogram metrics
-func checkHistogramMetric(t *testing.T, histogram *prometheus.HistogramVec, code, method, route string) {
-	metric := &dto.Metric{}
-	err := histogram.WithLabelValues(code, method, route).(prometheus.Metric).Write(metric)
-	require.NoError(t, err)
-	assert.Equal(t, uint64(1), metric.GetHistogram().GetSampleCount())
-	assert.True(t, metric.GetHistogram().GetSampleSum() > 0)
-}
+	// Create a test handler that we can control
+	handlerCalled := make(chan bool)
+	continueHandler := make(chan bool)
 
-// Helper function to check gauge metrics
-func checkGaugeMetric(t *testing.T, gauge prometheus.Gauge, expectedValue float64) {
-	metric := &dto.Metric{}
-	err := gauge.Write(metric)
-	require.NoError(t, err)
-	assert.Equal(t, expectedValue, metric.GetGauge().GetValue())
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled <- true
+		<-continueHandler // Wait for signal to continue
+		w.WriteHeader(200)
+	})
+
+	// Create router with middleware
+	router := mux.NewRouter()
+	router.Use(Middleware)
+	router.HandleFunc("/test", testHandler).Methods("GET")
+
+	// Start request in background
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	go func() {
+		router.ServeHTTP(w, req)
+	}()
+
+	// Wait for handler to be called (meaning request is in-flight)
+	<-handlerCalled
+
+	// Now the gauge should be 1 (request is in-flight)
+	if HTTPRequestsInFlight != nil {
+		testGaugeMetric(t, HTTPRequestsInFlight, 1.0)
+	}
+
+	// Allow handler to complete
+	continueHandler <- true
+
+	// Give a moment for the request to complete and gauge to be decremented
+	// Note: In a real test environment, we might need a small sleep or retry logic
+	// but for this simple case, the gauge should be decremented by now
 }

@@ -33,6 +33,37 @@ var testCheckerPatch func(*health.Checker)
 // testExitAfterSetup is a test hook to exit main after setup in tests
 var testExitAfterSetup bool
 
+// createStandaloneRateLimitHandler creates a simple rate limit handler for the standalone health checker
+func createStandaloneRateLimitHandler(redisClient store.RedisClientIface) func(chain, endpointID, protocol string) {
+	return func(chain, endpointID, protocol string) {
+		log.Debug().Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Standalone health checker detected rate limit")
+
+		// Get current rate limit state
+		state, err := redisClient.GetRateLimitState(context.Background(), chain, endpointID)
+		if err != nil {
+			log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get rate limit state in standalone health checker")
+			return
+		}
+
+		// Mark as rate limited but don't start recovery scheduling (that's for the main load balancer)
+		now := time.Now()
+		state.RateLimited = true
+		state.LastRecoveryCheck = now
+		
+		// Set first rate limited time if this is the first time
+		if state.FirstRateLimited.IsZero() {
+			state.FirstRateLimited = now
+		}
+
+		if err := redisClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
+			log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to set rate limit state in standalone health checker")
+			return
+		}
+
+		log.Info().Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Standalone health checker marked endpoint as rate limited")
+	}
+}
+
 // RunHealthChecker runs the health checker service with the given configuration.
 func RunHealthChecker(
 	configFile string,
@@ -103,6 +134,10 @@ func RunHealthChecker(
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	checker := health.NewChecker(cfg, redisClient, time.Duration(healthCheckInterval)*time.Second, time.Duration(ephemeralChecksInterval)*time.Second, ephemeralChecksHealthyThreshold)
+	
+	// Set up simple rate limit handler for standalone health checker
+	checker.HandleRateLimitFunc = createStandaloneRateLimitHandler(redisClient)
+	
 	if testCheckerPatch != nil {
 		testCheckerPatch(checker)
 	}
@@ -115,7 +150,7 @@ func RunHealthChecker(
 		if testExitAfterSetup {
 			return
 		}
-		log.Info().Msg("HEALTH_CHECK_INTERVAL=0: Only ephemeral checks will run when needed.")
+		log.Info().Msg("HEALTH_CHECK_INTERVAL=0, only ephemeral checks will run when needed.")
 		go checker.StartEphemeralChecks(ctx)
 		stop := make(chan os.Signal, 1)
 		signal.Notify(stop, os.Interrupt, syscall.SIGTERM)

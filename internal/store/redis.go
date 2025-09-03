@@ -11,13 +11,14 @@ import (
 
 const (
 	// Key prefixes for Redis storage
-	healthPrefix   = "health:"
-	metricsPrefix  = "metrics:"
-	proxyRequests  = "proxy_requests"
-	healthRequests = "health_requests"
-	requests24hKey = "requests_24h"
-	requests1mKey  = "requests_1m"
-	requestsAllKey = "requests_all"
+	healthPrefix    = "health:"
+	metricsPrefix   = "metrics:"
+	rateLimitPrefix = "rate_limit:"
+	proxyRequests   = "proxy_requests"
+	healthRequests  = "health_requests"
+	requests24hKey  = "requests_24h"
+	requests1mKey   = "requests_1m"
+	requestsAllKey  = "requests_all"
 )
 
 // EndpointStatus represents the health status and metrics of an endpoint.
@@ -58,6 +59,8 @@ type RedisClientIface interface {
 	UpdateEndpointStatus(ctx context.Context, chain, endpoint string, status EndpointStatus) error
 	IncrementRequestCount(ctx context.Context, chain, endpoint string, requestType string) error
 	GetCombinedRequestCounts(ctx context.Context, chain, endpoint string) (int64, int64, int64, error)
+	GetRateLimitState(ctx context.Context, chain, endpoint string) (*RateLimitState, error)
+	SetRateLimitState(ctx context.Context, chain, endpoint string, state RateLimitState) error
 	Ping(ctx context.Context) error
 	Close() error
 }
@@ -145,6 +148,16 @@ func (r *RedisClient) GetEndpointStatus(ctx context.Context, chain, endpoint str
 	return &status, nil
 }
 
+// RateLimitState represents the rate limit recovery state for an endpoint
+type RateLimitState struct {
+	ConsecutiveSuccess int       `json:"consecutive_success"` // Number of consecutive successful recovery checks
+	CurrentBackoff     int       `json:"current_backoff"`     // Current backoff time in seconds
+	FirstRateLimited   time.Time `json:"first_rate_limited"`  // When the endpoint was first rate limited (for reset_after)
+	LastRecoveryCheck  time.Time `json:"last_recovery_check"` // When the last recovery check was performed
+	RateLimited        bool      `json:"rate_limited"`        // Whether the endpoint is currently rate limited
+	RecoveryAttempts   int       `json:"recovery_attempts"`   // Number of recovery attempts made
+}
+
 // IncrementRequestCount increments the request count for an endpoint in Redis.
 // It maintains separate counters for 24-hour, 1-month, and lifetime requests.
 // The 24-hour and 1-month counters have automatic expiration set.
@@ -213,4 +226,41 @@ func (r *RedisClient) GetCombinedRequestCounts(ctx context.Context, chain, endpo
 
 	// Return combined counts
 	return p24h + h24h, p1m + h1m, pAll + hAll, nil
+}
+
+// GetRateLimitState retrieves the rate limit state for an endpoint from Redis
+func (r *RedisClient) GetRateLimitState(ctx context.Context, chain, endpoint string) (*RateLimitState, error) {
+	key := rateLimitPrefix + chain + ":" + endpoint
+	data, err := r.client.Get(ctx, key).Bytes()
+	if err == redis.Nil {
+		// Return default state if not found
+		return &RateLimitState{
+			ConsecutiveSuccess: 0,
+			CurrentBackoff:     0,
+			FirstRateLimited:   time.Time{},
+			LastRecoveryCheck:  time.Time{},
+			RateLimited:        false,
+			RecoveryAttempts:   0,
+		}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var state RateLimitState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	return &state, nil
+}
+
+// SetRateLimitState updates the rate limit state for an endpoint in Redis
+func (r *RedisClient) SetRateLimitState(ctx context.Context, chain, endpoint string, state RateLimitState) error {
+	key := rateLimitPrefix + chain + ":" + endpoint
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	// Set with 24-hour expiration to prevent indefinite storage of old rate limit states
+	return r.client.Set(ctx, key, data, 24*time.Hour).Err()
 }

@@ -150,3 +150,114 @@ func TestLoadConfigInvalidJSON(t *testing.T) {
 		t.Fatal("Should return error for invalid JSON")
 	}
 }
+
+func TestDefaultRateLimitRecovery(t *testing.T) {
+	config := DefaultRateLimitRecovery()
+
+	if config.BackoffMultiplier != 2.0 {
+		t.Errorf("Expected BackoffMultiplier to be 2.0, got %f", config.BackoffMultiplier)
+	}
+
+	if config.InitialBackoff != 300 {
+		t.Errorf("Expected InitialBackoff to be 300, got %d", config.InitialBackoff)
+	}
+
+	if config.MaxBackoff != 7200 {
+		t.Errorf("Expected MaxBackoff to be 7200, got %d", config.MaxBackoff)
+	}
+
+	if config.MaxRetries != 10 {
+		t.Errorf("Expected MaxRetries to be 10, got %d", config.MaxRetries)
+	}
+
+	if config.RequiredSuccesses != 2 {
+		t.Errorf("Expected RequiredSuccesses to be 2, got %d", config.RequiredSuccesses)
+	}
+
+	if config.ResetAfter != 86400 {
+		t.Errorf("Expected ResetAfter to be 86400, got %d", config.ResetAfter)
+	}
+}
+
+func TestRateLimitRecoveryStructFields(t *testing.T) {
+	recovery := RateLimitRecovery{
+		BackoffMultiplier: 1.5,
+		InitialBackoff:    30,
+		MaxBackoff:        600,
+		MaxRetries:        5,
+		RequiredSuccesses: 2,
+		ResetAfter:        3600,
+	}
+
+	if recovery.BackoffMultiplier != 1.5 {
+		t.Errorf("Expected BackoffMultiplier to be 1.5, got %f", recovery.BackoffMultiplier)
+	}
+
+	if recovery.InitialBackoff != 30 {
+		t.Errorf("Expected InitialBackoff to be 30, got %d", recovery.InitialBackoff)
+	}
+
+	if recovery.MaxBackoff != 600 {
+		t.Errorf("Expected MaxBackoff to be 600, got %d", recovery.MaxBackoff)
+	}
+
+	if recovery.MaxRetries != 5 {
+		t.Errorf("Expected MaxRetries to be 5, got %d", recovery.MaxRetries)
+	}
+
+	if recovery.RequiredSuccesses != 2 {
+		t.Errorf("Expected RequiredSuccesses to be 2, got %d", recovery.RequiredSuccesses)
+	}
+
+	if recovery.ResetAfter != 3600 {
+		t.Errorf("Expected ResetAfter to be 3600, got %d", recovery.ResetAfter)
+	}
+}
+
+func TestEndpointWithRateLimitRecovery(t *testing.T) {
+	recovery := &RateLimitRecovery{
+		BackoffMultiplier: 1.8,
+		InitialBackoff:    45,
+		MaxBackoff:        900,
+		MaxRetries:        3,
+		RequiredSuccesses: 1,
+		ResetAfter:        7200,
+	}
+
+	endpoint := Endpoint{
+		Provider:          "test-provider",
+		RateLimitRecovery: recovery,
+		Role:              "primary",
+		Type:              "full",
+		HTTPURL:           "http://test.com",
+		WSURL:             "ws://test.com",
+	}
+
+	if endpoint.RateLimitRecovery == nil {
+		t.Fatal("Expected rate limit recovery configuration to be set")
+	}
+
+	if endpoint.RateLimitRecovery.BackoffMultiplier != 1.8 {
+		t.Errorf("Expected BackoffMultiplier to be 1.8, got %f", endpoint.RateLimitRecovery.BackoffMultiplier)
+	}
+
+	if endpoint.RateLimitRecovery.InitialBackoff != 45 {
+		t.Errorf("Expected InitialBackoff to be 45, got %d", endpoint.RateLimitRecovery.InitialBackoff)
+	}
+
+	if endpoint.RateLimitRecovery.MaxBackoff != 900 {
+		t.Errorf("Expected MaxBackoff to be 900, got %d", endpoint.RateLimitRecovery.MaxBackoff)
+	}
+
+	if endpoint.RateLimitRecovery.MaxRetries != 3 {
+		t.Errorf("Expected MaxRetries to be 3, got %d", endpoint.RateLimitRecovery.MaxRetries)
+	}
+
+	if endpoint.RateLimitRecovery.RequiredSuccesses != 1 {
+		t.Errorf("Expected RequiredSuccesses to be 1, got %d", endpoint.RateLimitRecovery.RequiredSuccesses)
+	}
+
+	if endpoint.RateLimitRecovery.ResetAfter != 7200 {
+		t.Errorf("Expected ResetAfter to be 7200, got %d", endpoint.RateLimitRecovery.ResetAfter)
+	}
+}
