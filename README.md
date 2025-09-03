@@ -5,7 +5,8 @@ A lightweight, low-latency RPC load balancer written in Go. It is designed to ma
 ## Features
 
 - **Round-Robin Load Balancing**: Distributes requests to available endpoints in a round-robin manner, prioritizing those with fewer requests in the last 24 hours.
-- **Intelligent Retry Logic**: Configurable retry attempts with priority-based endpoint selection (first primary endpoints, then fallbacks).
+- **Intelligent Retry Logic**: Configurable retry attempts with priority-based endpoint selection (primary endpoints, fallbacks, and optional public-first mode).
+- **Public-First Mode**: Optional prioritization of public RPC endpoints to reduce costs while maintaining reliability.
 - **Flexible Timeout Control**: Separate timeouts for overall requests and individual retry attempts.
 - **Rate Limit Recovery**: Safe rate limit detection and recovery with exponential backoff strategies per endpoint, to avoid making things worse when a provider is rate-limiting you.
 - **Health Checks**: Regularly checks the health of upstream endpoints and updates their status in Redis.
@@ -109,10 +110,13 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 
 ### How Retries Work
 
-1. **Priority-based selection**: Always tries primary endpoints first, then fallbacks.
+1. **Priority-based selection**: Endpoint selection follows these priorities:
+   - **Normal mode**: primary → fallback → public
+   - **Public-first mode** (`PUBLIC_FIRST=true`): public → primary → fallback
 2. **Configurable attempts**: Retries up to `PROXY_MAX_RETRIES` times.
-3. **Endpoint rotation**: Removes failed endpoints from the retry pool to avoid repeated failures.
-4. **Dual timeout control**: There are 2 settings that control how long requests take:
+3. **Public endpoint limiting**: When `PUBLIC_FIRST=true`, attempts to reach public endpoints are limited to the value of `PUBLIC_FIRST_ATTEMPTS`, after which the proxy tries using a primary or fallback endpoint.
+4. **Endpoint rotation**: Removes failed endpoints from the retry pool to avoid repeated failures.
+5. **Dual timeout control**: There are 2 settings that control how long requests take:
    - **Total request timeout** (`PROXY_TIMEOUT`): Maximum time for the entire request (this is what the end user "sees").
    - **Per-try timeout** (`PROXY_TIMEOUT_PER_TRY`): Maximum time per individual request sent from the proxy to each endpoint.
 
@@ -141,6 +145,8 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 | `--proxy-retries`                      | `3`                                                             | Maximum number of retries for proxy requests                                             |
 | `--proxy-timeout`                      | `15`                                                            | Total timeout for proxy requests in seconds                                              |
 | `--proxy-timeout-per-try`              | `5`                                                             | Timeout per individual retry attempt in seconds                                          |
+| `--public-first`                       | `false`                                                         | Prioritize public endpoints over primary endpoints                                       |
+| `--public-first-attempts`              | `2`                                                             | Number of attempts to make at public endpoints before trying primary/fallback           |
 | `--redis-host`                         | `localhost`                                                     | Redis server hostname                                                                    |
 | `--redis-pass`                         | -                                                               | Redis server password                                                                    |
 | `--redis-port`                         | `6379`                                                          | Redis server port                                                                        |
@@ -170,6 +176,8 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 | `PROXY_MAX_RETRIES`                  | `3`                                                             | Maximum number of retries for proxy requests                                                                                                                                      |
 | `PROXY_TIMEOUT`                      | `15`                                                            | Total timeout for proxy requests in seconds                                                                                                                                       |
 | `PROXY_TIMEOUT_PER_TRY`              | `5`                                                             | Timeout per individual retry attempt in seconds                                                                                                                                   |
+| `PUBLIC_FIRST`                       | `false`                                                         | Prioritize public endpoints over primary and fallback endpoints                                                                                                                                |
+| `PUBLIC_FIRST_ATTEMPTS`              | `2`                                                             | Number of attempts to make at public endpoints before trying with a primary/fallback                                                                                                     |
 | `REDIS_HOST`                         | `localhost`                                                     | Redis server hostname                                                                                                                                                             |
 | `REDIS_PASS`                         | -                                                               | Redis server password                                                                                                                                                             |
 | `REDIS_PORT`                         | `6379`                                                          | Redis server port                                                                                                                                                                 |
@@ -214,6 +222,42 @@ For production deployments with multiple load balancer pods, use the standalone 
 - **Multiple Load Balancer Pods**: Scale independently without health check overhead
 - **Resource Efficiency**: Reduces RPC endpoint usage
 - **Better Separation of Concerns**: Health monitoring isolated from request handling
+
+## Public-First Mode
+
+Ætherlay supports a "public-first" mode that prioritizes public RPC endpoints over primary and fallback endpoints to help reduce costs while maintaining reliability.
+
+### How Public-First Mode Works
+
+1. **Enable public-first**: Set `PUBLIC_FIRST=true` (or use the `--public-first` CLI flag)
+2. **Configure attempts**: Set `PUBLIC_FIRST_ATTEMPTS` to control how many public endpoints to try (default: 2)
+3. **Endpoint hierarchy**: 
+   - **When enabled**: public → primary → fallback
+   - **When disabled**: primary → fallback → public
+
+### Configuration Example
+
+In your `endpoints.json`, mark endpoints with `"role": "public"`:
+
+```json
+{
+  "mainnet": {
+    "publicnode-1": {
+      "provider": "publicnode",
+      "role": "public",
+      "type": "archive",
+      "http_url": "https://ethereum-rpc.publicnode.com",
+      "ws_url": "wss://ethereum-rpc.publicnode.com"
+    },
+    "alchemy-1": {
+      "provider": "alchemy",
+      "role": "primary",
+      "type": "archive",
+      "http_url": "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}"
+    }
+  }
+}
+```
 
 ## Rate Limit Recovery
 

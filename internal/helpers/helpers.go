@@ -25,6 +25,8 @@ type Config struct {
 	ProxyMaxRetries                 int
 	ProxyTimeout                    int
 	ProxyTimeoutPerTry              int
+	PublicFirst                     bool
+	PublicFirstAttempts             int
 	RedisHost                       string
 	RedisPass                       string
 	RedisPort                       string
@@ -52,6 +54,8 @@ func ParseFlags() *Config {
 	flag.IntVar(&config.ProxyMaxRetries, "proxy-retries", 3, "Maximum number of retries for proxy requests")
 	flag.IntVar(&config.ProxyTimeout, "proxy-timeout", 15, "Timeout for proxy requests in seconds")
 	flag.IntVar(&config.ProxyTimeoutPerTry, "proxy-timeout-per-try", 5, "Timeout per individual retry attempt in seconds")
+	flag.BoolVar(&config.PublicFirst, "public-first", false, "Prioritize public endpoints over primary endpoints")
+	flag.IntVar(&config.PublicFirstAttempts, "public-first-attempts", 2, "Number of attempts to make at public endpoints before trying primary/fallback")
 	flag.StringVar(&config.RedisHost, "redis-host", "localhost", "Redis host")
 	flag.StringVar(&config.RedisPass, "redis-pass", "", "Redis password")
 	flag.StringVar(&config.RedisPort, "redis-port", "6379", "Redis port")
@@ -117,6 +121,8 @@ func (c *Config) LoadConfiguration() *LoadedConfig {
 		ProxyMaxRetries:                 c.GetIntValue("proxy-retries", c.ProxyMaxRetries, "PROXY_MAX_RETRIES", 3),
 		ProxyTimeout:                    c.GetIntValue("proxy-timeout", c.ProxyTimeout, "PROXY_TIMEOUT", 15),
 		ProxyTimeoutPerTry:              c.GetIntValue("proxy-timeout-per-try", c.ProxyTimeoutPerTry, "PROXY_TIMEOUT_PER_TRY", 5),
+		PublicFirst:                     c.GetBoolValue("public-first", c.PublicFirst, "PUBLIC_FIRST", false),
+		PublicFirstAttempts:             c.GetIntValue("public-first-attempts", c.PublicFirstAttempts, "PUBLIC_FIRST_ATTEMPTS", 2),
 		RedisHost:                       c.GetStringValue("redis-host", c.RedisHost, "REDIS_HOST", "localhost"),
 		RedisPass:                       c.GetStringValue("redis-pass", c.RedisPass, "REDIS_PASS", ""),
 		RedisPort:                       c.GetStringValue("redis-port", c.RedisPort, "REDIS_PORT", "6379"),
@@ -142,6 +148,8 @@ type LoadedConfig struct {
 	ProxyMaxRetries                 int
 	ProxyTimeout                    int
 	ProxyTimeoutPerTry              int
+	PublicFirst                     bool
+	PublicFirstAttempts             int
 	RedisHost                       string
 	RedisPass                       string
 	RedisPort                       string

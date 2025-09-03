@@ -33,8 +33,8 @@ func TestLoadConfig(t *testing.T) {
 		t.Errorf("Expected provider 'llama', got '%s'", llamaEndpoint.Provider)
 	}
 
-	if llamaEndpoint.Role != "primary" {
-		t.Errorf("Expected role 'primary', got '%s'", llamaEndpoint.Role)
+	if llamaEndpoint.Role != "public" {
+		t.Errorf("Expected role 'public', got '%s'", llamaEndpoint.Role)
 	}
 }
 
