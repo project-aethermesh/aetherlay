@@ -2,7 +2,7 @@
   "mainnet": {
     "llama-1": {
       "provider": "llama",
-      "role": "primary",
+      "role": "public",
       "type": "full",
       "http_url": "https://eth.llamarpc.com",
       "rate_limit_recovery": {
@@ -16,7 +16,7 @@
     },
     "drpc-1": {
       "provider": "drpc",
-      "role": "fallback",
+      "role": "primary",
       "type": "full",
       "http_url": "https://eth.drpc.org",
       "ws_url": "wss://eth.drpc.org"
@@ -32,13 +32,13 @@
   "arbitrum": {
     "drpc-1": {
       "provider": "drpc",
-      "role": "primary",
+      "role": "public",
       "type": "full",
       "http_url": "https://arbitrum.drpc.org"
     },
     "publicnode-1": {
       "provider": "public_node",
-      "role": "fallback",
+      "role": "public",
       "type": "archive",
       "http_url": "https://arbitrum-one-rpc.publicnode.com",
       "ws_url": "wss://arbitrum-one-rpc.publicnode.com"
@@ -47,7 +47,7 @@
   "base": {
     "alchemy-test": {
       "provider": "alchemy",
-      "role": "primary",
+      "role": "public",
       "type": "archive",
       "http_url": "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}",
       "ws_url": "wss://base-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}",
@@ -62,7 +62,7 @@
     },
     "infura-staging": {
       "provider": "infura",
-      "role": "primary",
+      "role": "fallback",
       "type": "archive",
       "http_url": "https://base-mainnet.infura.io/v3/${INFURA_API_KEY}",
       "ws_url": "wss://base-mainnet.infura.io/ws/v3/${INFURA_API_KEY}",

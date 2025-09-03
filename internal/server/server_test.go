@@ -599,10 +599,10 @@ func TestHandleRateLimit(t *testing.T) {
 		Endpoints: map[string]config.ChainEndpoints{
 			"ethereum": {
 				"test-endpoint": config.Endpoint{
-					Provider:          "test-provider",
-					Role:              "primary", 
-					Type:              "full",
-					HTTPURL:           "http://test-url.com",
+					Provider: "test-provider",
+					Role:     "primary",
+					Type:     "full",
+					HTTPURL:  "http://test-url.com",
 					RateLimitRecovery: &config.RateLimitRecovery{
 						BackoffMultiplier: 2.0,
 						InitialBackoff:    60,
@@ -625,7 +625,7 @@ func TestHandleRateLimit(t *testing.T) {
 
 	// Create mock Redis client
 	mockRedis := store.NewMockRedisClient()
-	
+
 	// Create server
 	server := NewServer(cfg, mockRedis, appConfig)
 
@@ -663,7 +663,7 @@ func TestGetAvailableEndpointsSkipsRateLimited(t *testing.T) {
 					HTTPURL:  "http://healthy-endpoint.com",
 				},
 				"rate-limited-endpoint": config.Endpoint{
-					Provider: "test-provider-2", 
+					Provider: "test-provider-2",
 					Role:     "primary",
 					Type:     "full",
 					HTTPURL:  "http://rate-limited-endpoint.com",
@@ -745,7 +745,7 @@ func TestServerGetRateLimitHandler(t *testing.T) {
 				"test-endpoint": config.Endpoint{
 					Provider: "test-provider",
 					Role:     "primary",
-					Type:     "full", 
+					Type:     "full",
 					HTTPURL:  "http://test-url.com",
 				},
 			},

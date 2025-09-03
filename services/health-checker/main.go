@@ -49,7 +49,7 @@ func createStandaloneRateLimitHandler(redisClient store.RedisClientIface) func(c
 		now := time.Now()
 		state.RateLimited = true
 		state.LastRecoveryCheck = now
-		
+
 		// Set first rate limited time if this is the first time
 		if state.FirstRateLimited.IsZero() {
 			state.FirstRateLimited = now
@@ -134,10 +134,10 @@ func RunHealthChecker(
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	checker := health.NewChecker(cfg, redisClient, time.Duration(healthCheckInterval)*time.Second, time.Duration(ephemeralChecksInterval)*time.Second, ephemeralChecksHealthyThreshold)
-	
+
 	// Set up simple rate limit handler for standalone health checker
 	checker.HandleRateLimitFunc = createStandaloneRateLimitHandler(redisClient)
-	
+
 	if testCheckerPatch != nil {
 		testCheckerPatch(checker)
 	}

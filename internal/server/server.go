@@ -33,6 +33,7 @@ func (e *RateLimitError) Error() string {
 
 // Server represents the RPC load balancer server
 type Server struct {
+	appConfig            *helpers.LoadedConfig
 	config               *config.Config
 	httpServer           *http.Server
 	maxRetries           int
@@ -49,6 +50,7 @@ type Server struct {
 // NewServer creates a new server instance
 func NewServer(cfg *config.Config, redisClient store.RedisClientIface, appConfig *helpers.LoadedConfig) *Server {
 	s := &Server{
+		appConfig:            appConfig,
 		config:               cfg,
 		maxRetries:           appConfig.ProxyMaxRetries,
 		redisClient:          redisClient,
@@ -140,7 +142,7 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 			r.Body.Close()
 		}
 
-		// Get all available endpoints (sorted by priority by default)
+		// Get all available endpoints with public-first logic
 		allEndpoints := s.getAvailableEndpoints(chain, archive, false)
 
 		log.Debug().Str("chain", chain).Bool("archive", archive).Int("available_endpoints", len(allEndpoints)).Msg("Retrieved available endpoints for HTTP request")
@@ -153,6 +155,7 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 
 		var triedEndpoints []string
 		retryCount := 0
+		publicAttemptCount := 0
 
 		for retryCount < s.maxRetries && len(allEndpoints) > 0 {
 			select {
@@ -163,11 +166,29 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 			default:
 			}
 
-			// Select the best endpoint based on request counts
+			// Select the best endpoint based on requests count and endpoint type
 			endpoint := s.selectBestEndpoint(chain, allEndpoints)
 			if endpoint == nil {
 				log.Debug().Str("chain", chain).Int("retry", retryCount).Msg("No suitable endpoint found for HTTP request")
 				break
+			}
+
+			// Skip public endpoints if we've exceeded the attempt limit
+			if s.appConfig.PublicFirst && endpoint.Endpoint.Role == "public" && publicAttemptCount >= s.appConfig.PublicFirstAttempts {
+				// Remove this public endpoint and continue
+				var remainingEndpoints []EndpointWithID
+				for _, ep := range allEndpoints {
+					if ep.ID != endpoint.ID {
+						remainingEndpoints = append(remainingEndpoints, ep)
+					}
+				}
+				allEndpoints = remainingEndpoints
+				continue
+			}
+
+			// Track public endpoint attempts
+			if endpoint.Endpoint.Role == "public" {
+				publicAttemptCount++
 			}
 
 			log.Debug().Str("chain", chain).Str("endpoint", endpoint.ID).Str("endpoint_url", helpers.RedactAPIKey(endpoint.Endpoint.HTTPURL)).Int("retry", retryCount).Msg("Attempting HTTP request to endpoint")
@@ -194,7 +215,7 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 				retryCount++
 
 				if len(allEndpoints) > 0 && retryCount < s.maxRetries {
-					log.Debug().Str("chain", chain).Str("failed_endpoint", endpoint.ID).Int("remaining_endpoints", len(allEndpoints)).Int("retry", retryCount).Msg("Retrying HTTP request with different endpoint")
+					log.Debug().Str("chain", chain).Str("failed_endpoint", endpoint.ID).Int("public_attempt_count", publicAttemptCount).Int("remaining_endpoints", len(allEndpoints)).Int("retry", retryCount).Msg("Retrying HTTP request with different endpoint")
 					continue
 				}
 			} else {
@@ -232,7 +253,7 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 
 			archive := r.URL.Query().Get("archive") == "true"
 
-			// Get all available endpoints (sorted by priority by default)
+			// Get all available endpoints with public-first logic
 			allEndpoints := s.getAvailableEndpoints(chain, archive, true)
 
 			log.Debug().Str("chain", chain).Bool("archive", archive).Int("available_endpoints", len(allEndpoints)).Msg("Retrieved available endpoints for WebSocket request")
@@ -245,6 +266,7 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 
 			var triedEndpoints []string
 			retryCount := 0
+			publicAttemptCount := 0
 
 			for retryCount < s.maxRetries && len(allEndpoints) > 0 {
 				select {
@@ -255,10 +277,29 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 				default:
 				}
 
+				// Select the best endpoint based on request counts
 				endpoint := s.selectBestEndpoint(chain, allEndpoints)
 				if endpoint == nil || endpoint.Endpoint.WSURL == "" {
 					log.Debug().Str("chain", chain).Int("retry", retryCount).Msg("No suitable WebSocket endpoint found")
 					break
+				}
+
+				// Skip public endpoints if we've exceeded the attempt limit
+				if s.appConfig.PublicFirst && endpoint.Endpoint.Role == "public" && publicAttemptCount >= s.appConfig.PublicFirstAttempts {
+					// Remove this public endpoint and continue
+					var remainingEndpoints []EndpointWithID
+					for _, ep := range allEndpoints {
+						if ep.ID != endpoint.ID {
+							remainingEndpoints = append(remainingEndpoints, ep)
+						}
+					}
+					allEndpoints = remainingEndpoints
+					continue
+				}
+
+				// Track public endpoint attempts
+				if endpoint.Endpoint.Role == "public" {
+					publicAttemptCount++
 				}
 
 				log.Debug().Str("chain", chain).Str("endpoint", endpoint.ID).Str("endpoint_url", helpers.RedactAPIKey(endpoint.Endpoint.WSURL)).Int("retry", retryCount).Msg("Attempting WebSocket connection to endpoint")
@@ -285,7 +326,7 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 						allEndpoints = remainingEndpoints
 						retryCount++
 						if len(allEndpoints) > 0 && retryCount < s.maxRetries {
-							log.Debug().Str("chain", chain).Str("failed_endpoint", endpoint.ID).Int("remaining_endpoints", len(allEndpoints)).Int("retry", retryCount).Msg("Retrying WebSocket with different endpoint after rate limit")
+							log.Debug().Str("chain", chain).Str("failed_endpoint", endpoint.ID).Int("public_attempt_count", publicAttemptCount).Int("remaining_endpoints", len(allEndpoints)).Int("retry", retryCount).Msg("Retrying WebSocket with different endpoint after rate limit")
 							continue
 						}
 						// If no more endpoints, break and return error
@@ -413,25 +454,51 @@ type EndpointWithID struct {
 	Endpoint config.Endpoint
 }
 
-// getAvailableEndpoints returns available endpoints for a chain and protocol
+// getAvailableEndpoints returns available endpoints for a chain and protocol with support for public-first hierarchy
 func (s *Server) getAvailableEndpoints(chain string, archive bool, ws bool) []EndpointWithID {
 	var endpoints []EndpointWithID
 
-	// Try primary endpoints first
 	chainEndpoints, exists := s.config.GetEndpointsForChain(chain)
 	if !exists {
 		return endpoints
 	}
 
+	// Get all endpoint types
+	publicEndpoints := s.getEndpointsByRole(chainEndpoints, "public", chain, archive, ws)
+	primaryEndpoints := s.getEndpointsByRole(chainEndpoints, "primary", chain, archive, ws)
+	fallbackEndpoints := s.getEndpointsByRole(chainEndpoints, "fallback", chain, archive, ws)
+
+	// Append endpoints in priority order based on PUBLIC_FIRST setting
+	if s.appConfig.PublicFirst {
+		// Public-first hierarchy: public → primary → fallback
+		endpoints = append(endpoints, publicEndpoints...)
+		endpoints = append(endpoints, primaryEndpoints...)
+		endpoints = append(endpoints, fallbackEndpoints...)
+		log.Debug().Str("chain", chain).Int("1_public", len(publicEndpoints)).Int("2_primary", len(primaryEndpoints)).Int("3_fallback", len(fallbackEndpoints)).Msg("Organized endpoints with PUBLIC_FIRST enabled")
+	} else {
+		// Normal hierarchy: primary → fallback → public
+		endpoints = append(endpoints, primaryEndpoints...)
+		endpoints = append(endpoints, fallbackEndpoints...)
+		endpoints = append(endpoints, publicEndpoints...)
+		log.Debug().Str("chain", chain).Int("1_primary", len(primaryEndpoints)).Int("2_fallback", len(fallbackEndpoints)).Int("3_public", len(publicEndpoints)).Msg("Organized endpoints with normal priority")
+	}
+
+	return endpoints
+}
+
+// getEndpointsByRole returns healthy endpoints for a specific role
+func (s *Server) getEndpointsByRole(chainEndpoints config.ChainEndpoints, role string, chain string, archive bool, ws bool) []EndpointWithID {
+	var endpoints []EndpointWithID
+
 	for endpointID, endpoint := range chainEndpoints {
-		if endpoint.Role == "primary" {
+		if endpoint.Role == role {
 			if !archive || (archive && endpoint.Type == "archive") {
 				status, err := s.redisClient.GetEndpointStatus(context.Background(), chain, endpointID)
 				if err == nil {
 					// Check if endpoint is rate limited
 					rateLimitState, err := s.redisClient.GetRateLimitState(context.Background(), chain, endpointID)
 					if err == nil && rateLimitState.RateLimited {
-						log.Debug().Str("chain", chain).Str("endpoint", endpointID).Msg("Skipping rate-limited endpoint")
+						log.Debug().Str("chain", chain).Str("endpoint", endpointID).Str("role", role).Msg("Skipping rate-limited endpoint")
 						continue
 					}
 
@@ -449,53 +516,52 @@ func (s *Server) getAvailableEndpoints(chain string, archive bool, ws bool) []En
 		}
 	}
 
-	// If no primary endpoints are available, try fallback endpoints
-	if len(endpoints) == 0 {
-		for endpointID, endpoint := range chainEndpoints {
-			if endpoint.Role == "fallback" {
-				if !archive || (archive && endpoint.Type == "archive") {
-					status, err := s.redisClient.GetEndpointStatus(context.Background(), chain, endpointID)
-					if err == nil {
-						// Check if endpoint is rate limited
-						rateLimitState, err := s.redisClient.GetRateLimitState(context.Background(), chain, endpointID)
-						if err == nil && rateLimitState.RateLimited {
-							log.Debug().Str("chain", chain).Str("endpoint", endpointID).Msg("Skipping rate-limited fallback endpoint")
-							continue
-						}
-
-						if ws {
-							if status.HasWS && status.HealthyWS {
-								endpoints = append(endpoints, EndpointWithID{ID: endpointID, Endpoint: endpoint})
-							}
-						} else {
-							if status.HasHTTP && status.HealthyHTTP {
-								endpoints = append(endpoints, EndpointWithID{ID: endpointID, Endpoint: endpoint})
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
 	return endpoints
 }
 
-// selectBestEndpoint selects the best endpoint based on request counts
+// selectBestEndpoint selects the best endpoint based on endpoint type priority and request counts
 func (s *Server) selectBestEndpoint(chain string, endpoints []EndpointWithID) *EndpointWithID {
 	if len(endpoints) == 0 {
 		return nil
 	}
 
+	// Define priority order based on PUBLIC_FIRST setting
+	var priorityOrder []string
+	if s.appConfig.PublicFirst {
+		priorityOrder = []string{"public", "primary", "fallback"}
+	} else {
+		priorityOrder = []string{"primary", "fallback", "public"}
+	}
+
+	// Try each endpoint type in priority order
+	for _, role := range priorityOrder {
+		bestEndpoint := s.selectBestEndpointByRole(chain, endpoints, role)
+		if bestEndpoint != nil {
+			return bestEndpoint
+		}
+	}
+
+	return nil
+}
+
+// selectBestEndpointByRole selects the best endpoint of a specific role based on request counts
+func (s *Server) selectBestEndpointByRole(chain string, endpoints []EndpointWithID, role string) *EndpointWithID {
 	var bestEndpoint *EndpointWithID
 	var minRequests int64 = -1
 
 	for i := range endpoints {
+		// Skip endpoints that don't match the requested role
+		if endpoints[i].Endpoint.Role != role {
+			continue
+		}
+
 		r24h, _, _, err := s.redisClient.GetCombinedRequestCounts(context.Background(), chain, endpoints[i].ID)
+		// Skip endpoints where we can't get request count data
 		if err != nil {
 			continue
 		}
 
+		// Select endpoint with lowest 24h request count (or first one if minRequests is uninitialized)
 		if minRequests == -1 || r24h < minRequests {
 			minRequests = r24h
 			bestEndpoint = &endpoints[i]
@@ -540,7 +606,6 @@ func (s *Server) findChainAndEndpointByURL(url string) (chain string, endpointID
 	}
 	return "", "", false
 }
-
 
 // defaultForwardRequestWithBodyFunc forwards the request to the target endpoint using buffered body data
 func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx context.Context, method, targetURL string, bodyBytes []byte, headers http.Header) error {
@@ -722,7 +787,7 @@ func (s *Server) handleRateLimit(chain, endpointID, protocol string) {
 	state.LastRecoveryCheck = now
 	state.ConsecutiveSuccess = 0
 	state.CurrentBackoff = 0 // Will be set to initial backoff on first attempt
-	
+
 	// Set first rate limited time if this is the first time
 	if state.FirstRateLimited.IsZero() {
 		state.FirstRateLimited = now

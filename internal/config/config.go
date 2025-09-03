@@ -119,6 +119,24 @@ func (c *Config) GetFallbackEndpoints(chain string) []Endpoint {
 	return fallbackEndpoints
 }
 
+// GetPublicEndpoints returns all public endpoints for a chain.
+// Public endpoints are free/public RPC nodes that can be prioritized when PUBLIC_FIRST is enabled.
+// Returns nil if the chain doesn't exist or has no public endpoints.
+func (c *Config) GetPublicEndpoints(chain string) []Endpoint {
+	endpoints, exists := c.Endpoints[chain]
+	if !exists {
+		return nil
+	}
+
+	var publicEndpoints []Endpoint
+	for _, endpoint := range endpoints {
+		if endpoint.Role == "public" {
+			publicEndpoints = append(publicEndpoints, endpoint)
+		}
+	}
+	return publicEndpoints
+}
+
 // DefaultRateLimitRecovery returns the default rate limit recovery configuration
 func DefaultRateLimitRecovery() RateLimitRecovery {
 	return RateLimitRecovery{
