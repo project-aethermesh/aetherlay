@@ -15,8 +15,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// stubForwardRequest is a stub for HTTP forwarding in tests.
-func stubForwardRequest(w http.ResponseWriter, r *http.Request, targetURL string) error {
+// stubForwardRequestWithBody is a stub for HTTP forwarding with body in tests.
+func stubForwardRequestWithBody(w http.ResponseWriter, ctx context.Context, method, targetURL string, bodyBytes []byte, headers http.Header) error {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("stubbed"))
 	return nil
@@ -28,8 +28,8 @@ func stubProxyWebSocket(w http.ResponseWriter, r *http.Request, backendURL strin
 	return nil
 }
 
-// failingForwardRequest simulates a failing endpoint for testing retry logic.
-func failingForwardRequest(w http.ResponseWriter, r *http.Request, targetURL string) error {
+// failingForwardRequestWithBody simulates a failing endpoint for testing retry logic with body.
+func failingForwardRequestWithBody(w http.ResponseWriter, ctx context.Context, method, targetURL string, bodyBytes []byte, headers http.Header) error {
 	return fmt.Errorf("endpoint failed: %s", targetURL)
 }
 
@@ -74,7 +74,7 @@ func TestHTTPSelection_HealthyOnly(t *testing.T) {
 		"chainA:ep2": {HasHTTP: true, HealthyHTTP: false},
 	})
 	server := NewServer(cfg, redisClient, createTestConfig())
-	server.forwardRequest = stubForwardRequest
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("POST", "/chainA", nil)
@@ -100,7 +100,7 @@ func TestHTTPSelection_NoneHealthy(t *testing.T) {
 		"chainA:ep1": {HasHTTP: true, HealthyHTTP: false},
 	})
 	server := NewServer(cfg, redisClient, createTestConfig())
-	server.forwardRequest = stubForwardRequest
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("POST", "/chainA", nil)
@@ -128,7 +128,7 @@ func TestWSSelection_HealthyOnly(t *testing.T) {
 		"chainB:ep2": {HasWS: true, HealthyWS: false},
 	})
 	server := NewServer(cfg, redisClient, createTestConfig())
-	server.forwardRequest = stubForwardRequest
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("GET", "/chainB", nil)
@@ -156,7 +156,7 @@ func TestWSSelection_NoneHealthy(t *testing.T) {
 		"chainB:ep1": {HasWS: true, HealthyWS: false},
 	})
 	server := NewServer(cfg, redisClient, createTestConfig())
-	server.forwardRequest = stubForwardRequest
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("GET", "/chainB", nil)
@@ -190,7 +190,7 @@ func TestHTTPSelection_FallbackWhenPrimaryUnhealthy(t *testing.T) {
 		"chainA:fallback2": {HasHTTP: true, HealthyHTTP: true},
 	})
 	server := NewServer(cfg, redisClient, createTestConfig())
-	server.forwardRequest = stubForwardRequest
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("POST", "/chainA", nil)
@@ -222,7 +222,7 @@ func TestWSSelection_FallbackWhenPrimaryUnhealthy(t *testing.T) {
 		"chainB:fallback2": {HasWS: true, HealthyWS: true},
 	})
 	server := NewServer(cfg, redisClient, createTestConfig())
-	server.forwardRequest = stubForwardRequest
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("GET", "/chainB", nil)
@@ -252,7 +252,7 @@ func TestHTTPSelection_NoFallbackAvailable(t *testing.T) {
 		"chainA:fallback1": {HasHTTP: true, HealthyHTTP: false},
 	})
 	server := NewServer(cfg, redisClient, createTestConfig())
-	server.forwardRequest = stubForwardRequest
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("POST", "/chainA", nil)
@@ -280,7 +280,7 @@ func TestWSSelection_NoFallbackAvailable(t *testing.T) {
 		"chainB:fallback1": {HasWS: true, HealthyWS: false},
 	})
 	server := NewServer(cfg, redisClient, createTestConfig())
-	server.forwardRequest = stubForwardRequest
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("GET", "/chainB", nil)
@@ -312,7 +312,7 @@ func TestHTTPSelection_PrimaryHealthyNoFallback(t *testing.T) {
 		"chainA:fallback1": {HasHTTP: true, HealthyHTTP: false},
 	})
 	server := NewServer(cfg, redisClient, createTestConfig())
-	server.forwardRequest = stubForwardRequest
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("POST", "/chainA", nil)
@@ -344,7 +344,7 @@ func TestHTTPRetryLoop(t *testing.T) {
 	server := NewServer(cfg, redisClient, createTestConfig())
 
 	// Create a custom forward function that fails for specific URLs
-	server.forwardRequest = func(w http.ResponseWriter, r *http.Request, targetURL string) error {
+	server.forwardRequestWithBody = func(w http.ResponseWriter, ctx context.Context, method, targetURL string, bodyBytes []byte, headers http.Header) error {
 		if targetURL == "http://success" {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("success"))
@@ -383,7 +383,7 @@ func TestHTTPRetryLoop_AllFail(t *testing.T) {
 		"chainA:ep2": {HasHTTP: true, HealthyHTTP: false},
 	})
 	server := NewServer(cfg, redisClient, createTestConfig())
-	server.forwardRequest = failingForwardRequest
+	server.forwardRequestWithBody = failingForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
 	req := httptest.NewRequest("POST", "/chainA", nil)
@@ -414,7 +414,7 @@ func TestWSRetryLoop(t *testing.T) {
 		"chainB:ep3": {HasWS: true, HealthyWS: true},
 	})
 	server := NewServer(cfg, redisClient, createTestConfig())
-	server.forwardRequest = stubForwardRequest
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 
 	// Create a custom proxy function that fails for specific URLs
 	server.proxyWebSocket = func(w http.ResponseWriter, r *http.Request, backendURL string) error {
@@ -453,7 +453,7 @@ func TestWSRetryLoop_AllFail(t *testing.T) {
 		"chainB:ep2": {HasWS: true, HealthyWS: false},
 	})
 	server := NewServer(cfg, redisClient, createTestConfig())
-	server.forwardRequest = stubForwardRequest
+	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = func(w http.ResponseWriter, r *http.Request, backendURL string) error {
 		return fmt.Errorf("websocket endpoint failed: %s", backendURL)
 	}
@@ -524,7 +524,7 @@ func TestMarkEndpointUnhealthy_HTTP(t *testing.T) {
 	server := NewServer(cfg, redisClient, createTestConfig())
 
 	// Simulate a failed HTTP request
-	err := server.defaultForwardRequest(httptest.NewRecorder(), httptest.NewRequest("POST", "/chainA", nil), "http://fail")
+	err := server.defaultForwardRequestWithBodyFunc(httptest.NewRecorder(), context.Background(), "POST", "http://fail", nil, http.Header{})
 	if err == nil {
 		t.Error("Expected error from failed HTTP request")
 	}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -41,8 +42,8 @@ type Server struct {
 	requestTimeoutPerTry time.Duration
 	router               *mux.Router
 
-	forwardRequest func(w http.ResponseWriter, r *http.Request, targetURL string) error
-	proxyWebSocket func(w http.ResponseWriter, r *http.Request, backendURL string) error
+	forwardRequestWithBody func(w http.ResponseWriter, ctx context.Context, method, targetURL string, bodyBytes []byte, headers http.Header) error
+	proxyWebSocket         func(w http.ResponseWriter, r *http.Request, backendURL string) error
 }
 
 // NewServer creates a new server instance
@@ -56,7 +57,7 @@ func NewServer(cfg *config.Config, redisClient store.RedisClientIface, appConfig
 		router:               mux.NewRouter(),
 	}
 
-	s.forwardRequest = s.defaultForwardRequest
+	s.forwardRequestWithBody = s.defaultForwardRequestWithBodyFunc
 	s.proxyWebSocket = s.defaultProxyWebSocket
 
 	// Initialize rate limit scheduler
@@ -127,6 +128,18 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 		// Check if archive node is requested
 		archive := r.URL.Query().Get("archive") == "true"
 
+		// Read and buffer the request body once to avoid "http: invalid Read on closed Body" errors on retries
+		var bodyBytes []byte
+		if r.Body != nil {
+			var err error
+			bodyBytes, err = io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "Failed to read request body", http.StatusBadRequest)
+				return
+			}
+			r.Body.Close()
+		}
+
 		// Get all available endpoints (sorted by priority by default)
 		allEndpoints := s.getAvailableEndpoints(chain, archive, false)
 
@@ -161,13 +174,13 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 
 			// Create per-try timeout context that respects the overall timeout
 			tryCtx, tryCancel := context.WithTimeout(ctx, s.requestTimeoutPerTry)
-			reqWithCtx := r.WithContext(tryCtx)
 
-			err := s.forwardRequest(w, reqWithCtx, endpoint.Endpoint.HTTPURL)
+			// Create a fresh request with a new body reader for each retry attempt
+			err := s.forwardRequestWithBody(w, tryCtx, r.Method, endpoint.Endpoint.HTTPURL, bodyBytes, r.Header)
 			tryCancel() // Always cancel the per-try context
 
 			if err != nil {
-				log.Debug().Err(err).Str("endpoint", endpoint.ID).Str("endpoint_url", helpers.RedactAPIKey(endpoint.Endpoint.HTTPURL)).Int("retry", retryCount).Msg("HTTP request failed, will retry with different endpoint")
+				log.Debug().Str("error", helpers.RedactAPIKey(err.Error())).Str("endpoint", endpoint.ID).Str("endpoint_url", helpers.RedactAPIKey(endpoint.Endpoint.HTTPURL)).Int("retry", retryCount).Msg("HTTP request failed, will retry with different endpoint")
 				triedEndpoints = append(triedEndpoints, endpoint.ID)
 
 				// Remove the failed endpoint from the list
@@ -528,16 +541,23 @@ func (s *Server) findChainAndEndpointByURL(url string) (chain string, endpointID
 	return "", "", false
 }
 
-// defaultForwardRequest forwards the request to the target endpoint
-func (s *Server) defaultForwardRequest(w http.ResponseWriter, r *http.Request, targetURL string) error {
-	// Create a new request with the same context
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
+
+// defaultForwardRequestWithBodyFunc forwards the request to the target endpoint using buffered body data
+func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx context.Context, method, targetURL string, bodyBytes []byte, headers http.Header) error {
+	// Create a new body reader from the buffered data
+	var bodyReader io.Reader
+	if len(bodyBytes) > 0 {
+		bodyReader = bytes.NewReader(bodyBytes)
+	}
+
+	// Create a new request with the context
+	req, err := http.NewRequestWithContext(ctx, method, targetURL, bodyReader)
 	if err != nil {
 		return err
 	}
 
 	// Copy headers
-	for key, values := range r.Header {
+	for key, values := range headers {
 		for _, value := range values {
 			req.Header.Add(key, value)
 		}
