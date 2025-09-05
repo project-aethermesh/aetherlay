@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"aetherlay/internal/config"
@@ -18,6 +20,19 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 )
+
+// ErrMethodNotFound indicates that the RPC method is not supported by the endpoint
+var ErrMethodNotFound = errors.New("method not found")
+
+// containsMethodNotFound checks if an error message indicates a method is not supported
+func containsMethodNotFound(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "method not found") ||
+		strings.Contains(message, "method does not exist") ||
+		strings.Contains(message, "is not available") ||
+		strings.Contains(message, "not supported") ||
+		strings.Contains(message, "unknown method")
+}
 
 // Checker represents a health checker
 type Checker struct {
@@ -344,6 +359,21 @@ func (c *Checker) makeRPCCall(ctx context.Context, url, method, chain, endpointI
 
 	// Check for errors inside the response
 	if rpcResponse.Error != nil {
+		// Check for "method not found" errors
+		methodNotFound := rpcResponse.Error.Code == -32601 || containsMethodNotFound(rpcResponse.Error.Message)
+
+		if methodNotFound && method == "eth_syncing" {
+			log.Debug().
+				Str("chain", chain).
+				Str("endpoint", helpers.RedactAPIKey(url)).
+				Str("endpoint_id", endpointID).
+				Int("error_code", rpcResponse.Error.Code).
+				Str("error_message", rpcResponse.Error.Message).
+				Str("method", method).
+				Msg("eth_syncing not supported by the endpoint, assuming it is fully synced")
+			return nil, ErrMethodNotFound
+		}
+
 		log.Error().
 			Str("chain", chain).
 			Str("endpoint", helpers.RedactAPIKey(url)).
@@ -352,7 +382,7 @@ func (c *Checker) makeRPCCall(ctx context.Context, url, method, chain, endpointI
 			Str("error_message", rpcResponse.Error.Message).
 			Str("method", method).
 			Msg("RPC call failed: JSON-RPC error response")
-		return nil, err
+		return nil, errors.New(rpcResponse.Error.Message)
 	}
 
 	return rpcResponse.Result, nil
@@ -412,6 +442,21 @@ func (c *Checker) makeWSRPCCall(url, method, chain, endpointID string) (any, err
 
 	// Check for errors inside the response
 	if rpcResponse.Error != nil {
+		// Check for "method not found" errors
+		methodNotFound := rpcResponse.Error.Code == -32601 || containsMethodNotFound(rpcResponse.Error.Message)
+
+		if methodNotFound && method == "eth_syncing" {
+			log.Debug().
+				Str("chain", chain).
+				Str("endpoint", helpers.RedactAPIKey(url)).
+				Str("endpoint_id", endpointID).
+				Int("error_code", rpcResponse.Error.Code).
+				Str("error_message", rpcResponse.Error.Message).
+				Str("method", method).
+				Msg("eth_syncing not supported by the endpoint, assuming it is fully synced")
+			return nil, ErrMethodNotFound
+		}
+
 		log.Error().
 			Str("chain", chain).
 			Str("endpoint", helpers.RedactAPIKey(url)).
@@ -420,7 +465,7 @@ func (c *Checker) makeWSRPCCall(url, method, chain, endpointID string) (any, err
 			Str("error_message", rpcResponse.Error.Message).
 			Str("method", method).
 			Msg("WS RPC call failed: JSON-RPC error response")
-		return nil, err
+		return nil, errors.New(rpcResponse.Error.Message)
 	}
 
 	return rpcResponse.Result, nil
@@ -462,15 +507,19 @@ func parseSyncStatus(syncResult any) bool {
 func (c *Checker) checkHealthParams(chain, endpointID, url, protocol string, syncResult, blockResult any) (healthy bool, blockNumber int64) {
 	// Parse results
 	blockNumber, blockHealthy := parseBlockNumber(blockResult)
-	
+
 	// Block number check is always required
 	healthy = blockHealthy
 
 	// Add sync check if enabled
 	if c.healthCheckSyncStatus {
-		syncHealthy := parseSyncStatus(syncResult)
+		// If syncResult is nil (method not supported), assume node is healthy (not syncing)
+		syncHealthy := true
+		if syncResult != nil {
+			syncHealthy = parseSyncStatus(syncResult)
+		}
 		healthy = healthy && syncHealthy
-		
+
 		if healthy {
 			log.Debug().
 				Int64("block_number", blockNumber).
@@ -591,8 +640,14 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 		c.incrementHealthRequestCount(ctx, chain, endpointID)
 	}
 
-	// If eth_blockNumber call failed (or eth_syncing failed when enabled), the endpoint is unhealthy
-	if blockErr != nil || (c.healthCheckSyncStatus && syncErr != nil) {
+	// If eth_blockNumber call failed, the endpoint is unhealthy
+	if blockErr != nil {
+		c.updateHealthMetrics(chain, endpointID, false)
+		return false
+	}
+
+	// If sync status checking is enabled and eth_syncing failed (but not due to method not found), the endpoint is unhealthy
+	if c.healthCheckSyncStatus && syncErr != nil && !errors.Is(syncErr, ErrMethodNotFound) {
 		c.updateHealthMetrics(chain, endpointID, false)
 		return false
 	}
@@ -635,8 +690,14 @@ func (c *Checker) checkWSHealth(ctx context.Context, chain, endpointID string, e
 		c.incrementHealthRequestCount(ctx, chain, endpointID)
 	}
 
-	// If eth_blockNumber call failed (or eth_syncing failed when enabled), the endpoint is unhealthy
-	if blockErr != nil || (c.healthCheckSyncStatus && syncErr != nil) {
+	// If eth_blockNumber call failed, the endpoint is unhealthy
+	if blockErr != nil {
+		c.updateHealthMetrics(chain, endpointID, false)
+		return false
+	}
+
+	// If sync status checking is enabled and eth_syncing failed (but not due to method not found), the endpoint is unhealthy
+	if c.healthCheckSyncStatus && syncErr != nil && !errors.Is(syncErr, ErrMethodNotFound) {
 		c.updateHealthMetrics(chain, endpointID, false)
 		return false
 	}
