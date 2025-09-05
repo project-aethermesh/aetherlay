@@ -86,7 +86,7 @@ func main() {
 		if appConfig.HealthCheckInterval > 0 {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			checker := health.NewChecker(cfg, redisClient, time.Duration(appConfig.HealthCheckInterval)*time.Second, time.Duration(appConfig.EphemeralChecksInterval)*time.Second, appConfig.EphemeralChecksHealthyThreshold)
+			checker := health.NewChecker(cfg, redisClient, time.Duration(appConfig.HealthCheckInterval)*time.Second, time.Duration(appConfig.EphemeralChecksInterval)*time.Second, appConfig.EphemeralChecksHealthyThreshold, appConfig.HealthCheckSyncStatus)
 
 			// Connect health checker to server's rate limit handler
 			checker.HandleRateLimitFunc = srv.GetRateLimitHandler()

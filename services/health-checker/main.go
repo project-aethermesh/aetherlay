@@ -73,6 +73,7 @@ func RunHealthChecker(
 	ephemeralChecksHealthyThreshold int,
 	ephemeralChecksInterval int,
 	healthCheckInterval int,
+	healthCheckSyncStatus bool,
 	metricsEnabled bool,
 	metricsPort int,
 	redisHost string,
@@ -133,7 +134,7 @@ func RunHealthChecker(
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	checker := health.NewChecker(cfg, redisClient, time.Duration(healthCheckInterval)*time.Second, time.Duration(ephemeralChecksInterval)*time.Second, ephemeralChecksHealthyThreshold)
+	checker := health.NewChecker(cfg, redisClient, time.Duration(healthCheckInterval)*time.Second, time.Duration(ephemeralChecksInterval)*time.Second, ephemeralChecksHealthyThreshold, healthCheckSyncStatus)
 
 	// Set up simple rate limit handler for standalone health checker
 	checker.HandleRateLimitFunc = createStandaloneRateLimitHandler(redisClient)
@@ -202,6 +203,7 @@ func main() {
 		config.EphemeralChecksHealthyThreshold,
 		config.EphemeralChecksInterval,
 		config.HealthCheckInterval,
+		config.HealthCheckSyncStatus,
 		config.MetricsEnabled,
 		config.MetricsPort,
 		config.RedisHost,
