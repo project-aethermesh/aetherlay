@@ -77,10 +77,28 @@ func (rls *RateLimitScheduler) monitorEndpoint(chain, endpointID string) {
 		return
 	}
 
-	// Get rate limit recovery configuration
+	// Get rate limit recovery configuration, start with defaults and override with user values
 	rateLimitConfig := config.DefaultRateLimitRecovery()
 	if endpoint.RateLimitRecovery != nil {
-		rateLimitConfig = *endpoint.RateLimitRecovery
+		userConfig := *endpoint.RateLimitRecovery
+		if userConfig.BackoffMultiplier != 0 {
+			rateLimitConfig.BackoffMultiplier = userConfig.BackoffMultiplier
+		}
+		if userConfig.InitialBackoff != 0 {
+			rateLimitConfig.InitialBackoff = userConfig.InitialBackoff
+		}
+		if userConfig.MaxBackoff != 0 {
+			rateLimitConfig.MaxBackoff = userConfig.MaxBackoff
+		}
+		if userConfig.MaxRetries != 0 {
+			rateLimitConfig.MaxRetries = userConfig.MaxRetries
+		}
+		if userConfig.RequiredSuccesses != 0 {
+			rateLimitConfig.RequiredSuccesses = userConfig.RequiredSuccesses
+		}
+		if userConfig.ResetAfter != 0 {
+			rateLimitConfig.ResetAfter = userConfig.ResetAfter
+		}
 	}
 
 	// Use dynamic backoff instead of fixed ticker

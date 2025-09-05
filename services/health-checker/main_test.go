@@ -67,6 +67,7 @@ func TestRunHealthCheckerFromEnv_Standalone(t *testing.T) {
 		3,                    // ephemeralChecksHealthyThreshold
 		30,                   // ephemeralChecksInterval
 		30,                   // healthCheckInterval
+		true,                 // healthCheckSyncStatus
 		false,                // metricsEnabled
 		9090,                 // metricsPort
 		"localhost",          // redisHost
@@ -124,6 +125,7 @@ func TestRunHealthCheckerFromEnv_Ephemeral(t *testing.T) {
 		3,                    // ephemeralChecksHealthyThreshold
 		30,                   // ephemeralChecksInterval
 		0,                    // healthCheckInterval (ephemeral mode)
+		true,                 // healthCheckSyncStatus
 		false,                // metricsEnabled
 		9090,                 // metricsPort
 		"localhost",          // redisHost
@@ -181,6 +183,7 @@ func TestRunHealthCheckerFromEnv_Disabled(t *testing.T) {
 		3,                    // ephemeralChecksHealthyThreshold
 		30,                   // ephemeralChecksInterval
 		0,                    // healthCheckInterval (doesn't matter)
+		true,                 // healthCheckSyncStatus
 		false,                // metricsEnabled
 		9090,                 // metricsPort
 		"localhost",          // redisHost

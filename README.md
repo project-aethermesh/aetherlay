@@ -130,63 +130,69 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 
 ### Command Line Flags
 
-| Flag                                   | Default                                                         | Description                                                                              |
-| -------------------------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `--config-file`                        | `configs/endpoints.json`                                        | Path to endpoints configuration file                                                     |
-| `--cors-headers`                       | `Accept, Authorization, Content-Type, Origin, X-Requested-With` | Allowed headers for CORS requests                                                        |
-| `--cors-methods`                       | `GET, POST, OPTIONS`                                            | Allowed HTTP methods for CORS requests                                                   |
-| `--cors-origin`                        | `*`                                                             | Allowed origin for CORS requests                                                         |
-| `--ephemeral-checks-healthy-threshold` | `3`                                                             | Amount of consecutive successful responses required to consider endpoint healthy again   |
-| `--ephemeral-checks-interval`          | `30`                                                            | Interval in seconds for ephemeral health checks                                          |
-| `--health-check-interval`              | `30`                                                            | Health check interval in seconds                                                         |
-| `--log-level`                          | `info`                                                          | Set the log level. Valid options are: `debug`, `info`, `warn`, `error`, `fatal`, `panic` |
-| `--metrics-enabled`                    | `true`                                                          | Whether to enable Prometheus metrics                                                     |
-| `--metrics-port`                       | `9090`                                                          | Port for the Prometheus metrics server                                                   |
-| `--proxy-retries`                      | `3`                                                             | Maximum number of retries for proxy requests                                             |
-| `--proxy-timeout`                      | `15`                                                            | Total timeout for proxy requests in seconds                                              |
-| `--proxy-timeout-per-try`              | `5`                                                             | Timeout per individual retry attempt in seconds                                          |
-| `--public-first`                       | `false`                                                         | Prioritize public endpoints over primary endpoints                                       |
-| `--public-first-attempts`              | `2`                                                             | Number of attempts to make at public endpoints before trying primary/fallback           |
-| `--redis-host`                         | `localhost`                                                     | Redis server hostname                                                                    |
-| `--redis-pass`                         | -                                                               | Redis server password                                                                    |
-| `--redis-port`                         | `6379`                                                          | Redis server port                                                                        |
-| `--redis-skip-tls-check`               | `false`                                                         | Whether to skip TLS certificate validation when connecting to Redis                      |
-| `--redis-use-tls`                      | `false`                                                         | Whether to use TLS for connecting to Redis                                               |
-| `--server-port`                        | `8080`                                                          | Port to use for the load balancer / proxy                                                |
-| `--standalone-health-checks`           | `true`                                                          | Enable standalone health checks                                                          |
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--config-file` | `configs/endpoints.json` | Path to endpoints configuration file |
+| `--cors-headers` | `Accept, Authorization, Content-Type, Origin, X-Requested-With` | Allowed headers for CORS requests |
+| `--cors-methods` | `GET, POST, OPTIONS` | Allowed HTTP methods for CORS requests |
+| `--cors-origin` | `*` | Allowed origin for CORS requests |
+| `--ephemeral-checks-healthy-threshold` | `3` | Amount of consecutive successful responses required to consider endpoint healthy again |
+| `--ephemeral-checks-interval` | `30` | Interval in seconds for ephemeral health checks |
+| `--health-check-interval` | `30` | Health check interval in seconds |
+| `--health-check-sync-status` | `true` | Consider the sync status of the endpoints when deciding whether an endpoint is healthy or not. When enabled, endpoints that are syncing are considered to be unhealthy. |
+| `--log-level` | `info` | Set the log level. Valid options are: `debug`, `info`, `warn`, `error`, `fatal`, `panic` |
+| `--metrics-enabled` | `true` | Whether to enable Prometheus metrics |
+| `--metrics-port` | `9090` | Port for the Prometheus metrics server |
+| `--proxy-retries` | `3` | Maximum number of retries for proxy requests |
+| `--proxy-timeout` | `15` | Total timeout for proxy requests in seconds |
+| `--proxy-timeout-per-try` | `5` | Timeout per individual retry attempt in seconds |
+| `--public-first` | `false` | Prioritize public endpoints over primary endpoints |
+| `--public-first-attempts` | `2` | Number of attempts to make at public endpoints before trying primary/fallback |
+| `--redis-host` | `localhost` | Redis server hostname |
+| `--redis-pass` | - | Redis server password |
+| `--redis-port` | `6379` | Redis server port |
+| `--redis-skip-tls-check` | `false` | Whether to skip TLS certificate validation when connecting to Redis |
+| `--redis-use-tls` | `false` | Whether to use TLS for connecting to Redis |
+| `--server-port` | `8080` | Port to use for the load balancer / proxy |
+| `--standalone-health-checks` | `true` | Enable standalone health checks |
 
 > **Note:** Command-line flags take precedence over environment variables if both are set.
 
 ### Environment Variables
 
-| Variable                             | Default                                                         | Description                                                                                                                                                                       |
-| ------------------------------------ | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ALCHEMY_API_KEY`                    | -                                                               | Example API key for Alchemy RPC endpoints. **Only needed for the example config.** The name must match the variable referenced in your `configs/endpoints.json`, if you need any. |
-| `INFURA_API_KEY`                     | -                                                               | Example API key for Infura RPC endpoints. **Only needed for the example config.** The name must match the variable referenced in your `configs/endpoints.json`, if you need any.  |
-| `CONFIG_FILE`                        | `configs/endpoints.json`                                        | Path to the endpoints configuration file                                                                                                                                          |
-| `CORS_HEADERS`                       | `Accept, Authorization, Content-Type, Origin, X-Requested-With` | Allowed headers for CORS requests                                                                                                                                                 |
-| `CORS_METHODS`                       | `GET, POST, OPTIONS`                                            | Allowed HTTP methods for CORS requests                                                                                                                                            |
-| `CORS_ORIGIN`                        | `*`                                                             | Allowed origin for CORS requests                                                                                                                                                  |
-| `EPHEMERAL_CHECKS_HEALTHY_THRESHOLD` | `3`                                                             | Amount of consecutive successful responses from the endpoint required to consider it as being healthy again                                                                       |
-| `EPHEMERAL_CHECKS_INTERVAL`          | `30`                                                            | Interval in seconds for ephemeral health checks                                                                                                                                   |
-| `HEALTH_CHECK_INTERVAL`              | `30`                                                            | Health check interval in seconds                                                                                                                                                  |
-| `LOG_LEVEL`                          | `info`                                                          | Set the log level                                                                                                                                                                 |
-| `METRICS_ENABLED`                    | `true`                                                          | Whether to enable Prometheus metrics                                                                                                                                              |
-| `METRICS_PORT`                       | `9090`                                                          | Port for the Prometheus metrics server                                                                            |
-| `PROXY_MAX_RETRIES`                  | `3`                                                             | Maximum number of retries for proxy requests                                                                                                                                      |
-| `PROXY_TIMEOUT`                      | `15`                                                            | Total timeout for proxy requests in seconds                                                                                                                                       |
-| `PROXY_TIMEOUT_PER_TRY`              | `5`                                                             | Timeout per individual retry attempt in seconds                                                                                                                                   |
-| `PUBLIC_FIRST`                       | `false`                                                         | Prioritize public endpoints over primary and fallback endpoints                                                                                                                                |
-| `PUBLIC_FIRST_ATTEMPTS`              | `2`                                                             | Number of attempts to make at public endpoints before trying with a primary/fallback                                                                                                     |
-| `REDIS_HOST`                         | `localhost`                                                     | Redis server hostname                                                                                                                                                             |
-| `REDIS_PASS`                         | -                                                               | Redis server password                                                                                                                                                             |
-| `REDIS_PORT`                         | `6379`                                                          | Redis server port                                                                                                                                                                 |
-| `REDIS_SKIP_TLS_CHECK`               | `false`                                                         | Whether to skip TLS certificate validation when connecting to Redis                                                                                                               |
-| `REDIS_USE_TLS`                      | `false`                                                         | Whether to use TLS for connecting to Redis                                                                                                                                        |
-| `SERVER_PORT`                        | `8080`                                                          | Port to use for the load balancer / proxy                                                                                                                                         |
-| `STANDALONE_HEALTH_CHECKS`           | `true`                                                          | Enable/disable the standalone mode of the health checker                                                                                                                          |
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ALCHEMY_API_KEY` | - | Example API key for Alchemy RPC endpoints. **Only needed for the example config.** The name must match the variable referenced in your `configs/endpoints.json`, if you need any. |
+| `INFURA_API_KEY` | - | Example API key for Infura RPC endpoints. **Only needed for the example config.** The name must match the variable referenced in your `configs/endpoints.json`, if you need any. |
+| `CONFIG_FILE` | `configs/endpoints.json` | Path to the endpoints configuration file |
+| `CORS_HEADERS` | `Accept, Authorization, Content-Type, Origin, X-Requested-With` | Allowed headers for CORS requests |
+| `CORS_METHODS` | `GET, POST, OPTIONS` | Allowed HTTP methods for CORS requests |
+| `CORS_ORIGIN` | `*` | Allowed origin for CORS requests |
+| `EPHEMERAL_CHECKS_HEALTHY_THRESHOLD` | `3` | Amount of consecutive successful responses from the endpoint required to consider it as being healthy again |
+| `EPHEMERAL_CHECKS_INTERVAL` | `30` | Interval in seconds for ephemeral health checks |
+| `HEALTH_CHECK_INTERVAL` | `30` | Health check interval in seconds |
+| `HEALTH_CHECK_SYNC_STATUS` | `true` | Consider the sync status of the endpoints when deciding whether an endpoint is healthy or not. When enabled, endpoints that are syncing are considered to be unhealthy. |
+| `LOG_LEVEL` | `info` | Set the log level |
+| `METRICS_ENABLED` | `true` | Whether to enable Prometheus metrics |
+| `METRICS_PORT` | `9090` | Port for the Prometheus metrics server |
+| `PROXY_MAX_RETRIES` | `3` | Maximum number of retries for proxy requests |
+| `PROXY_TIMEOUT` | `15` | Total timeout for proxy requests in seconds |
+| `PROXY_TIMEOUT_PER_TRY` | `5` | Timeout per individual retry attempt in seconds |
+| `PUBLIC_FIRST` | `false` | Prioritize public endpoints over primary and fallback endpoints |
+| `PUBLIC_FIRST_ATTEMPTS` | `2` | Number of attempts to make at public endpoints before trying with a primary/fallback |
+| `REDIS_HOST` | `localhost` | Redis server hostname |
+| `REDIS_PASS` | - | Redis server password |
+| `REDIS_PORT` | `6379` | Redis server port |
+| `REDIS_SKIP_TLS_CHECK` | `false` | Whether to skip TLS certificate validation when connecting to Redis |
+| `REDIS_USE_TLS` | `false` | Whether to use TLS for connecting to Redis |
+| `SERVER_PORT` | `8080` | Port to use for the load balancer / proxy |
+| `STANDALONE_HEALTH_CHECKS` | `true` | Enable/disable the standalone mode of the health checker |
 
 ## Health Check Configuration
+
+The service checks the health of an endpoint by sending these requests to it:
+* `eth_blockNumber` - Checks for successful response and that the block is not `0`.
+* `eth_syncing` (unless you disable it by setting `HEALTH_CHECK_SYNC_STATUS=false`) - Checks for successful response and that the node is not syncing (i.e., it has already fully synced, so you get the latest data from it).
 
 ### Integrated Health Checks
 
