@@ -34,6 +34,9 @@ type EndpointStatus struct {
 	HasWS       bool `json:"has_ws"`       // Whether the endpoint supports WebSocket
 	HealthyHTTP bool `json:"healthy_http"` // Whether the HTTP endpoint is healthy
 	HealthyWS   bool `json:"healthy_ws"`   // Whether the WebSocket endpoint is healthy
+
+	// Blockchain state information
+	BlockNumber int64 `json:"block_number"` // Latest block number from eth_blockNumber
 }
 
 // NewEndpointStatus creates a new endpoint status with default values.
@@ -48,6 +51,7 @@ func NewEndpointStatus() EndpointStatus {
 		HasWS:            false,
 		HealthyHTTP:      false,
 		HealthyWS:        false,
+		BlockNumber:      0,
 	}
 }
 

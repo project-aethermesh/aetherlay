@@ -243,9 +243,10 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		log.Debug().Str("path", r.URL.Path).Msg("Entered handleRequestWS")
-		for k, v := range r.Header {
-			log.Debug().Str("header", k).Strs("values", v).Msg("Request header")
-		}
+		//for k, v := range r.Header {
+		//	log.Debug().Str("header", k).Strs("values", v).Msg("Request header")
+		//}
+
 		// Only handle WebSocket upgrade requests (case-insensitive, robust)
 		if isWebSocketUpgrade(r) {
 			ctx, cancel := context.WithTimeout(r.Context(), s.requestTimeout)
