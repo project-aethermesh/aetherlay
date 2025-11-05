@@ -1,6 +1,6 @@
 services:
   valkey:
-    image: valkey:8.0-alpine
+    image: valkey:8.1-alpine
     container_name: aetherlay-valkey-preprod
     ports:
       - "6379:6379"
