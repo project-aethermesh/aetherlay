@@ -22,8 +22,8 @@ import (
 var onModeDetected func(string)
 
 // Allow patching in tests
-var newRedisClient func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface = func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface {
-	return store.NewRedisClient(addr, password, skipTLSVerify, redisUseTLS)
+var newValkeyClient func(addr string, password string, skipTLSVerify bool, valkeyUseTLS bool) store.ValkeyClientIface = func(addr string, password string, skipTLSVerify bool, valkeyUseTLS bool) store.ValkeyClientIface {
+	return store.NewValkeyClient(addr, password, skipTLSVerify, valkeyUseTLS)
 }
 var loadConfig = config.LoadConfig
 
@@ -34,12 +34,12 @@ var testCheckerPatch func(*health.Checker)
 var testExitAfterSetup bool
 
 // createStandaloneRateLimitHandler creates a simple rate limit handler for the standalone health checker
-func createStandaloneRateLimitHandler(redisClient store.RedisClientIface) func(chain, endpointID, protocol string) {
+func createStandaloneRateLimitHandler(valkeyClient store.ValkeyClientIface) func(chain, endpointID, protocol string) {
 	return func(chain, endpointID, protocol string) {
 		log.Debug().Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Standalone health checker detected rate limit")
 
 		// Get current rate limit state
-		state, err := redisClient.GetRateLimitState(context.Background(), chain, endpointID)
+		state, err := valkeyClient.GetRateLimitState(context.Background(), chain, endpointID)
 		if err != nil {
 			log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get rate limit state in standalone health checker")
 			return
@@ -55,7 +55,7 @@ func createStandaloneRateLimitHandler(redisClient store.RedisClientIface) func(c
 			state.FirstRateLimited = now
 		}
 
-		if err := redisClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
+		if err := valkeyClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
 			log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to set rate limit state in standalone health checker")
 			return
 		}
@@ -76,11 +76,11 @@ func RunHealthChecker(
 	healthCheckSyncStatus bool,
 	metricsEnabled bool,
 	metricsPort int,
-	redisHost string,
-	redisPass string,
-	redisPort string,
-	redisSkipTLSCheck bool,
-	redisUseTLS bool,
+	valkeyHost string,
+	valkeyPass string,
+	valkeyPort string,
+	valkeySkipTLSCheck bool,
+	valkeyUseTLS bool,
 	standaloneHealthChecks bool,
 ) {
 
@@ -125,19 +125,19 @@ func RunHealthChecker(
 		}
 	}
 
-	redisAddr := redisHost + ":" + redisPort
-	redisClient := newRedisClient(redisAddr, redisPass, redisSkipTLSCheck, redisUseTLS)
-	if err := redisClient.Ping(context.Background()); err != nil {
-		log.Fatal().Err(err).Msg("Failed to connect to Redis")
+	valkeyAddr := valkeyHost + ":" + valkeyPort
+	valkeyClient := newValkeyClient(valkeyAddr, valkeyPass, valkeySkipTLSCheck, valkeyUseTLS)
+	if err := valkeyClient.Ping(context.Background()); err != nil {
+		log.Fatal().Err(err).Msg("Failed to connect to Valkey")
 	}
-	defer redisClient.Close()
+	defer valkeyClient.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	checker := health.NewChecker(cfg, redisClient, time.Duration(healthCheckInterval)*time.Second, time.Duration(ephemeralChecksInterval)*time.Second, ephemeralChecksHealthyThreshold, healthCheckSyncStatus)
+	checker := health.NewChecker(cfg, valkeyClient, time.Duration(healthCheckInterval)*time.Second, time.Duration(ephemeralChecksInterval)*time.Second, ephemeralChecksHealthyThreshold, healthCheckSyncStatus)
 
 	// Set up simple rate limit handler for standalone health checker
-	checker.HandleRateLimitFunc = createStandaloneRateLimitHandler(redisClient)
+	checker.HandleRateLimitFunc = createStandaloneRateLimitHandler(valkeyClient)
 
 	if testCheckerPatch != nil {
 		testCheckerPatch(checker)
@@ -206,11 +206,11 @@ func main() {
 		config.HealthCheckSyncStatus,
 		config.MetricsEnabled,
 		config.MetricsPort,
-		config.RedisHost,
-		config.RedisPass,
-		config.RedisPort,
-		config.RedisSkipTLSCheck,
-		config.RedisUseTLS,
+		config.ValkeyHost,
+		config.ValkeyPass,
+		config.ValkeyPort,
+		config.ValkeySkipTLSCheck,
+		config.ValkeyUseTLS,
 		config.StandaloneHealthChecks,
 	)
 }

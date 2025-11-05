@@ -28,11 +28,11 @@ type Config struct {
 	ProxyTimeoutPerTry              int
 	PublicFirst                     bool
 	PublicFirstAttempts             int
-	RedisHost                       string
-	RedisPass                       string
-	RedisPort                       string
-	RedisSkipTLSCheck               bool
-	RedisUseTLS                     bool
+	ValkeyHost                      string
+	ValkeyPass                      string
+	ValkeyPort                      string
+	ValkeySkipTLSCheck              bool
+	ValkeyUseTLS                    bool
 	ServerPort                      int
 	StandaloneHealthChecks          bool
 }
@@ -58,11 +58,11 @@ func ParseFlags() *Config {
 	flag.IntVar(&config.ProxyTimeoutPerTry, "proxy-timeout-per-try", 5, "Timeout per individual retry attempt in seconds")
 	flag.BoolVar(&config.PublicFirst, "public-first", false, "Prioritize public endpoints over primary endpoints")
 	flag.IntVar(&config.PublicFirstAttempts, "public-first-attempts", 2, "Number of attempts to make at public endpoints before trying primary/fallback")
-	flag.StringVar(&config.RedisHost, "redis-host", "localhost", "Redis host")
-	flag.StringVar(&config.RedisPass, "redis-pass", "", "Redis password")
-	flag.StringVar(&config.RedisPort, "redis-port", "6379", "Redis port")
-	flag.BoolVar(&config.RedisSkipTLSCheck, "redis-skip-tls-check", false, "Skip TLS certificate validation for Redis")
-	flag.BoolVar(&config.RedisUseTLS, "redis-use-tls", false, "Use TLS for Redis connection")
+	flag.StringVar(&config.ValkeyHost, "valkey-host", "localhost", "Valkey host")
+	flag.StringVar(&config.ValkeyPass, "valkey-pass", "", "Valkey password")
+	flag.StringVar(&config.ValkeyPort, "valkey-port", "6379", "Valkey port")
+	flag.BoolVar(&config.ValkeySkipTLSCheck, "valkey-skip-tls-check", false, "Skip TLS certificate validation for Valkey")
+	flag.BoolVar(&config.ValkeyUseTLS, "valkey-use-tls", false, "Use TLS for Valkey connection")
 	flag.IntVar(&config.ServerPort, "server-port", 8080, "Server port")
 	flag.BoolVar(&config.StandaloneHealthChecks, "standalone-health-checks", true, "Enable standalone health checks")
 
@@ -78,7 +78,7 @@ func (c *Config) GetStringValue(flagName string, flagValue string, envKey string
 	// Check if the flag was explicitly set by looking it up
 	if f := flag.Lookup(flagName); f != nil && f.Value.String() != f.DefValue {
 		logValue := flagValue
-		if flagName == "redis-pass" {
+		if flagName == "valkey-pass" {
 			logValue = "REDACTED"
 		}
 		log.Debug().Str(flagName, logValue).Msg("Using value from flag")
@@ -126,11 +126,11 @@ func (c *Config) LoadConfiguration() *LoadedConfig {
 		ProxyTimeoutPerTry:              c.GetIntValue("proxy-timeout-per-try", c.ProxyTimeoutPerTry, "PROXY_TIMEOUT_PER_TRY", 5),
 		PublicFirst:                     c.GetBoolValue("public-first", c.PublicFirst, "PUBLIC_FIRST", false),
 		PublicFirstAttempts:             c.GetIntValue("public-first-attempts", c.PublicFirstAttempts, "PUBLIC_FIRST_ATTEMPTS", 2),
-		RedisHost:                       c.GetStringValue("redis-host", c.RedisHost, "REDIS_HOST", "localhost"),
-		RedisPass:                       c.GetStringValue("redis-pass", c.RedisPass, "REDIS_PASS", ""),
-		RedisPort:                       c.GetStringValue("redis-port", c.RedisPort, "REDIS_PORT", "6379"),
-		RedisSkipTLSCheck:               c.GetBoolValue("redis-skip-tls-check", c.RedisSkipTLSCheck, "REDIS_SKIP_TLS_CHECK", false),
-		RedisUseTLS:                     c.GetBoolValue("redis-use-tls", c.RedisUseTLS, "REDIS_USE_TLS", false),
+		ValkeyHost:                      c.GetStringValue("valkey-host", c.ValkeyHost, "VALKEY_HOST", "localhost"),
+		ValkeyPass:                      c.GetStringValue("valkey-pass", c.ValkeyPass, "VALKEY_PASS", ""),
+		ValkeyPort:                      c.GetStringValue("valkey-port", c.ValkeyPort, "VALKEY_PORT", "6379"),
+		ValkeySkipTLSCheck:              c.GetBoolValue("valkey-skip-tls-check", c.ValkeySkipTLSCheck, "VALKEY_SKIP_TLS_CHECK", false),
+		ValkeyUseTLS:                    c.GetBoolValue("valkey-use-tls", c.ValkeyUseTLS, "VALKEY_USE_TLS", false),
 		ServerPort:                      c.GetIntValue("server-port", c.ServerPort, "SERVER_PORT", 8080),
 		StandaloneHealthChecks:          c.GetBoolValue("standalone-health-checks", c.StandaloneHealthChecks, "STANDALONE_HEALTH_CHECKS", true),
 	}
@@ -154,11 +154,11 @@ type LoadedConfig struct {
 	ProxyTimeoutPerTry              int
 	PublicFirst                     bool
 	PublicFirstAttempts             int
-	RedisHost                       string
-	RedisPass                       string
-	RedisPort                       string
-	RedisSkipTLSCheck               bool
-	RedisUseTLS                     bool
+	ValkeyHost                      string
+	ValkeyPass                      string
+	ValkeyPort                      string
+	ValkeySkipTLSCheck              bool
+	ValkeyUseTLS                    bool
 	ServerPort                      int
 	StandaloneHealthChecks          bool
 }
@@ -170,7 +170,7 @@ func getStringFromEnv(envKey, defaultValue string) string {
 	if envValue := os.Getenv(envKey); envValue != "" {
 		if strings.TrimSpace(envValue) != "" {
 			logValue := envValue
-			if envKey == "REDIS_PASS" {
+			if envKey == "VALKEY_PASS" {
 				logValue = "REDACTED"
 			}
 			log.Debug().Str(envKey, logValue).Msg("Parsed string value from env var")

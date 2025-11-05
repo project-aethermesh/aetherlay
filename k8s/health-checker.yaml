@@ -17,65 +17,65 @@ spec:
         app: aetherlay-hc
     spec:
       containers:
-      - name: aetherlay-hc
-        image: ghcr.io/project-aethermesh/aetherlay-hc:latest
-        imagePullPolicy: IfNotPresent
-        env:
-        - name: REDIS_HOST
-          value: "redis-service" # Update with your Redis service name
-        - name: REDIS_PORT
-          value: "6379"
-        - name: REDIS_PASS
-          valueFrom:
-            secretKeyRef:
-              name: redis-secret
-              key: redis-pass
-        - name: STANDALONE_HEALTH_CHECKS
-          value: "true" # Enable standalone health checks
-        - name: HEALTH_CHECK_INTERVAL
-          value: "60" # Check every 60 seconds
-        - name: ALCHEMY_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: rpc-api-keys
-              key: alchemy-api-key
-        - name: INFURA_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: rpc-api-keys
-              key: infura-api-key
-        - name: METRICS_PORT
-          value: 9090
-        volumeMounts:
-        - name: config-volume
-          mountPath: /root/configs
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "50m"
-          limits:
-            memory: "128Mi"
-            cpu: "100m"
-        livenessProbe:
-          exec:
-            command:
-            - /bin/sh
-            - -c
-            - "ps aux | grep aetherlay-hc | grep -v grep"
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          exec:
-            command:
-            - /bin/sh
-            - -c
-            - "ps aux | grep aetherlay-hc | grep -v grep"
-          initialDelaySeconds: 5
-          periodSeconds: 5
+        - name: aetherlay-hc
+          image: ghcr.io/project-aethermesh/aetherlay-hc:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: VALKEY_HOST
+              value: "valkey-service" # Update with your valkey service name
+            - name: VALKEY_PORT
+              value: "6379"
+            - name: VALKEY_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: valkey-secret
+                  key: valkey-pass
+            - name: STANDALONE_HEALTH_CHECKS
+              value: "true" # Enable standalone health checks
+            - name: HEALTH_CHECK_INTERVAL
+              value: "60" # Check every 60 seconds
+            - name: ALCHEMY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rpc-api-keys
+                  key: alchemy-api-key
+            - name: INFURA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rpc-api-keys
+                  key: infura-api-key
+            - name: METRICS_PORT
+              value: 9090
+          volumeMounts:
+            - name: config-volume
+              mountPath: /root/configs
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "ps aux | grep aetherlay-hc | grep -v grep"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "ps aux | grep aetherlay-hc | grep -v grep"
+            initialDelaySeconds: 5
+            periodSeconds: 5
       volumes:
-      - name: config-volume
-        configMap:
-          name: rpc-endpoints-config
+        - name: config-volume
+          configMap:
+            name: rpc-endpoints-config
 ---
 apiVersion: v1
 kind: ConfigMap

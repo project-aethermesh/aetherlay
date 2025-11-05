@@ -5,30 +5,31 @@ services:
       dockerfile: .devcontainer/Dockerfile
     volumes:
       - ..:/workspace:cached
+      - /var/run/docker.sock:/var/run/docker.sock
     command: sleep infinity
     environment:
-      - REDIS_URL=redis://:SOME_PASS@redis:6379
+      - VALKEY_URL=valkey://:SOME_PASS@valkey:6379
     depends_on:
-      - redis
+      - valkey
 
-  redis:
-    image: redis:8.0-alpine
+  valkey:
+    image: valkey/valkey:8.1-alpine
     ports:
       - "6379:6379"
       # If you want to enable TLS, uncomment the following line
       #- "6380:6380"
     volumes:
-      - ./.redis-data:/data
-      - ./.redis.conf:/usr/local/etc/redis/redis.conf
+      - ./.valkey-data:/data
+      - ./.valkey.conf:/usr/local/etc/valkey/valkey.conf
       # If you want to enable TLS, uncomment the following line
-      #- ./.tls:/etc/redis/tls
-    command: redis-server /usr/local/etc/redis/redis.conf
+      #- ./.tls:/etc/valkey/tls
+    command: valkey-server /usr/local/etc/valkey/valkey.conf
 
   redisinsight:
     image: redis/redisinsight:latest
     ports:
       - "5540:5540"
     volumes:
-      - ./.redis-insight:/data
+      - ./.redisinsight:/data
     depends_on:
-      - redis
+      - valkey

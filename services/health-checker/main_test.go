@@ -30,13 +30,13 @@ func TestRunHealthCheckerFromEnv_Standalone(t *testing.T) {
 	testExitAfterSetup = true
 	defer func() { testExitAfterSetup = false }()
 
-	// Patch newRedisClient
-	newRedisClient = func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface {
-		return store.NewMockRedisClient()
+	// Patch newValkeyClient
+	newValkeyClient = func(addr string, password string, skipTLSVerify bool, valkeyUseTLS bool) store.ValkeyClientIface {
+		return store.NewMockValkeyClient()
 	}
 	defer func() {
-		newRedisClient = func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface {
-			return store.NewRedisClient(addr, password, skipTLSVerify, redisUseTLS)
+		newValkeyClient = func(addr string, password string, skipTLSVerify bool, valkeyUseTLS bool) store.ValkeyClientIface {
+			return store.NewValkeyClient(addr, password, skipTLSVerify, valkeyUseTLS)
 		}
 	}()
 
@@ -70,11 +70,11 @@ func TestRunHealthCheckerFromEnv_Standalone(t *testing.T) {
 		true,                 // healthCheckSyncStatus
 		false,                // metricsEnabled
 		9090,                 // metricsPort
-		"localhost",          // redisHost
-		"",                   // redisPass
-		"6379",               // redisPort
-		false,                // redisSkipTLSCheck
-		false,                // redisUseTLS
+		"localhost",          // valkeyHost
+		"",                   // valkeyPass
+		"6379",               // valkeyPort
+		false,                // valkeySkipTLSCheck
+		false,                // valkeyUseTLS
 		true,                 // standaloneHealthChecks
 	)
 
@@ -88,13 +88,13 @@ func TestRunHealthCheckerFromEnv_Ephemeral(t *testing.T) {
 	testExitAfterSetup = true
 	defer func() { testExitAfterSetup = false }()
 
-	// Patch newRedisClient
-	newRedisClient = func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface {
-		return store.NewMockRedisClient()
+	// Patch newValkeyClient
+	newValkeyClient = func(addr string, password string, skipTLSVerify bool, valkeyUseTLS bool) store.ValkeyClientIface {
+		return store.NewMockValkeyClient()
 	}
 	defer func() {
-		newRedisClient = func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface {
-			return store.NewRedisClient(addr, password, skipTLSVerify, redisUseTLS)
+		newValkeyClient = func(addr string, password string, skipTLSVerify bool, valkeyUseTLS bool) store.ValkeyClientIface {
+			return store.NewValkeyClient(addr, password, skipTLSVerify, valkeyUseTLS)
 		}
 	}()
 
@@ -128,11 +128,11 @@ func TestRunHealthCheckerFromEnv_Ephemeral(t *testing.T) {
 		true,                 // healthCheckSyncStatus
 		false,                // metricsEnabled
 		9090,                 // metricsPort
-		"localhost",          // redisHost
-		"",                   // redisPass
-		"6379",               // redisPort
-		false,                // redisSkipTLSCheck
-		false,                // redisUseTLS
+		"localhost",          // valkeyHost
+		"",                   // valkeyPass
+		"6379",               // valkeyPort
+		false,                // valkeySkipTLSCheck
+		false,                // valkeyUseTLS
 		true,                 // standaloneHealthChecks
 	)
 
@@ -146,13 +146,13 @@ func TestRunHealthCheckerFromEnv_Disabled(t *testing.T) {
 	testExitAfterSetup = true
 	defer func() { testExitAfterSetup = false }()
 
-	// Patch newRedisClient
-	newRedisClient = func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface {
-		return store.NewMockRedisClient()
+	// Patch newValkeyClient
+	newValkeyClient = func(addr string, password string, skipTLSVerify bool, valkeyUseTLS bool) store.ValkeyClientIface {
+		return store.NewMockValkeyClient()
 	}
 	defer func() {
-		newRedisClient = func(addr string, password string, skipTLSVerify bool, redisUseTLS bool) store.RedisClientIface {
-			return store.NewRedisClient(addr, password, skipTLSVerify, redisUseTLS)
+		newValkeyClient = func(addr string, password string, skipTLSVerify bool, valkeyUseTLS bool) store.ValkeyClientIface {
+			return store.NewValkeyClient(addr, password, skipTLSVerify, valkeyUseTLS)
 		}
 	}()
 
@@ -186,11 +186,11 @@ func TestRunHealthCheckerFromEnv_Disabled(t *testing.T) {
 		true,                 // healthCheckSyncStatus
 		false,                // metricsEnabled
 		9090,                 // metricsPort
-		"localhost",          // redisHost
-		"",                   // redisPass
-		"6379",               // redisPort
-		false,                // redisSkipTLSCheck
-		false,                // redisUseTLS
+		"localhost",          // valkeyHost
+		"",                   // valkeyPass
+		"6379",               // valkeyPort
+		false,                // valkeySkipTLSCheck
+		false,                // valkeyUseTLS
 		false,                // standaloneHealthChecks (disabled)
 	)
 

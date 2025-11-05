@@ -1,13 +1,13 @@
 services:
-  redis:
-    image: redis:8.0-alpine
-    container_name: aetherlay-redis-preprod
+  valkey:
+    image: valkey:8.0-alpine
+    container_name: aetherlay-valkey-preprod
     ports:
       - "6379:6379"
     volumes:
-      - ./.redis-data:/data
-      - ./.redis.conf:/usr/local/etc/redis/redis.conf
-    command: redis-server /usr/local/etc/redis/redis.conf --requirepass SOME_PASS
+      - ./.valkey-data:/data
+      - ./.valkey.conf:/usr/local/etc/valkey/valkey.conf
+    command: valkey-server /usr/local/etc/valkey/valkey.conf --requirepass SOME_PASS
 
   redisinsight:
     image: redis/redisinsight:latest
@@ -15,9 +15,9 @@ services:
     ports:
       - "5540:5540"
     volumes:
-      - ./.redis-insight:/data
+      - ./.redisinsight:/data
     depends_on:
-      - redis
+      - valkey
 
   aetherlay-hc:
     platform: linux/amd64
@@ -27,10 +27,10 @@ services:
       - ../configs:/configs:ro
     environment:
       - LOG_LEVEL=debug
-      - REDIS_HOST=aetherlay-redis-preprod
-      - REDIS_PASS=SOME_PASS
+      - VALKEY_HOST=aetherlay-valkey-preprod
+      - VALKEY_PASS=SOME_PASS
     depends_on:
-      - redis
+      - valkey
 
   aetherlay-lb:
     platform: linux/amd64
@@ -42,7 +42,7 @@ services:
       - ../configs:/configs:ro
     environment:
       - LOG_LEVEL=debug
-      - REDIS_HOST=aetherlay-redis-preprod
-      - REDIS_PASS=SOME_PASS
+      - VALKEY_HOST=aetherlay-valkey-preprod
+      - VALKEY_PASS=SOME_PASS
     depends_on:
       - aetherlay-hc

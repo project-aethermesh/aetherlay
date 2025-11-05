@@ -11,13 +11,13 @@ import (
 )
 
 func TestNewChecker(t *testing.T) {
-	redisClient := store.NewMockRedisClient()
+	valkeyClient := store.NewMockValkeyClient()
 	checker := &Checker{
-		redisClient: redisClient,
+		valkeyClient: valkeyClient,
 	}
 
-	if checker.redisClient != redisClient {
-		t.Error("Redis client should be set correctly")
+	if checker.valkeyClient != valkeyClient {
+		t.Error("Valkey client should be set correctly")
 	}
 }
 
@@ -28,9 +28,9 @@ func TestCheckHealthWithHealthyEndpoint(t *testing.T) {
 	}))
 	defer server.Close()
 
-	redisClient := store.NewMockRedisClient()
+	valkeyClient := store.NewMockValkeyClient()
 	checker := &Checker{
-		redisClient: redisClient,
+		valkeyClient: valkeyClient,
 	}
 
 	err := checker.CheckHealth(server.URL)
@@ -40,7 +40,7 @@ func TestCheckHealthWithHealthyEndpoint(t *testing.T) {
 
 	healthCheck, err := checker.GetHealthStatus(server.URL)
 	if err != nil {
-		t.Fatalf("Failed to get health status from Redis: %v", err)
+		t.Fatalf("Failed to get health status from Valkey: %v", err)
 	}
 
 	if !healthCheck.HealthStatus {
@@ -59,9 +59,9 @@ func TestCheckHealthWithUnhealthyEndpoint(t *testing.T) {
 	}))
 	defer server.Close()
 
-	redisClient := store.NewMockRedisClient()
+	valkeyClient := store.NewMockValkeyClient()
 	checker := &Checker{
-		redisClient: redisClient,
+		valkeyClient: valkeyClient,
 	}
 
 	err := checker.CheckHealth(server.URL)
@@ -71,7 +71,7 @@ func TestCheckHealthWithUnhealthyEndpoint(t *testing.T) {
 
 	healthCheck, err := checker.GetHealthStatus(server.URL)
 	if err != nil {
-		t.Fatalf("Failed to get health status from Redis: %v", err)
+		t.Fatalf("Failed to get health status from Valkey: %v", err)
 	}
 
 	if healthCheck.HealthStatus {
@@ -80,9 +80,9 @@ func TestCheckHealthWithUnhealthyEndpoint(t *testing.T) {
 }
 
 func TestCheckHealthWithNetworkError(t *testing.T) {
-	redisClient := store.NewMockRedisClient()
+	valkeyClient := store.NewMockValkeyClient()
 	checker := &Checker{
-		redisClient: redisClient,
+		valkeyClient: valkeyClient,
 	}
 
 	err := checker.CheckHealth("https://non-existent-domain-that-will-fail.com")
@@ -92,9 +92,9 @@ func TestCheckHealthWithNetworkError(t *testing.T) {
 }
 
 func TestCheckHealthWithInvalidURL(t *testing.T) {
-	redisClient := store.NewMockRedisClient()
+	valkeyClient := store.NewMockValkeyClient()
 	checker := &Checker{
-		redisClient: redisClient,
+		valkeyClient: valkeyClient,
 	}
 
 	err := checker.CheckHealth("invalid-url")
@@ -103,10 +103,10 @@ func TestCheckHealthWithInvalidURL(t *testing.T) {
 	}
 }
 
-func TestGetHealthStatusFromRedis(t *testing.T) {
-	redisClient := store.NewMockRedisClient()
+func TestGetHealthStatusFromValkey(t *testing.T) {
+	valkeyClient := store.NewMockValkeyClient()
 	checker := &Checker{
-		redisClient: redisClient,
+		valkeyClient: valkeyClient,
 	}
 
 	_, err := checker.GetHealthStatus("https://non-existent-endpoint.com")
@@ -150,9 +150,9 @@ func TestCheckHealthWithTimeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	redisClient := store.NewMockRedisClient()
+	valkeyClient := store.NewMockValkeyClient()
 	checker := &Checker{
-		redisClient: redisClient,
+		valkeyClient: valkeyClient,
 	}
 
 	// The current CheckHealth implementation uses a 5s timeout, so this will not timeout.

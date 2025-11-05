@@ -38,7 +38,7 @@ type Server struct {
 	httpServer           *http.Server
 	maxRetries           int
 	rateLimitScheduler   *RateLimitScheduler
-	redisClient          store.RedisClientIface
+	valkeyClient         store.ValkeyClientIface
 	requestTimeout       time.Duration
 	requestTimeoutPerTry time.Duration
 	router               *mux.Router
@@ -48,12 +48,12 @@ type Server struct {
 }
 
 // NewServer creates a new server instance
-func NewServer(cfg *config.Config, redisClient store.RedisClientIface, appConfig *helpers.LoadedConfig) *Server {
+func NewServer(cfg *config.Config, valkeyClient store.ValkeyClientIface, appConfig *helpers.LoadedConfig) *Server {
 	s := &Server{
 		appConfig:            appConfig,
 		config:               cfg,
 		maxRetries:           appConfig.ProxyMaxRetries,
-		redisClient:          redisClient,
+		valkeyClient:         valkeyClient,
 		requestTimeout:       time.Duration(appConfig.ProxyTimeout) * time.Second,
 		requestTimeoutPerTry: time.Duration(appConfig.ProxyTimeoutPerTry) * time.Second,
 		router:               mux.NewRouter(),
@@ -63,7 +63,7 @@ func NewServer(cfg *config.Config, redisClient store.RedisClientIface, appConfig
 	s.proxyWebSocket = s.defaultProxyWebSocket
 
 	// Initialize rate limit scheduler
-	s.rateLimitScheduler = NewRateLimitScheduler(s.config, redisClient)
+	s.rateLimitScheduler = NewRateLimitScheduler(s.config, valkeyClient)
 
 	s.setupRoutes()
 	return s
@@ -221,7 +221,7 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 			} else {
 				// Success. Increment the request count and return.
 				log.Debug().Str("chain", chain).Str("endpoint", endpoint.ID).Str("endpoint_url", helpers.RedactAPIKey(endpoint.Endpoint.HTTPURL)).Int("retry", retryCount).Msg("HTTP request succeeded")
-				if err := s.redisClient.IncrementRequestCount(ctx, chain, endpoint.ID, "proxy_requests"); err != nil {
+				if err := s.valkeyClient.IncrementRequestCount(ctx, chain, endpoint.ID, "proxy_requests"); err != nil {
 					log.Error().Err(err).Str("endpoint", endpoint.ID).Msg("Failed to increment request count")
 				}
 				return
@@ -377,7 +377,7 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 				} else {
 					// Success. Increment the request count and return.
 					log.Debug().Str("chain", chain).Str("endpoint", endpoint.ID).Str("endpoint_url", helpers.RedactAPIKey(endpoint.Endpoint.WSURL)).Int("retry", retryCount).Msg("WebSocket connection succeeded")
-					if err := s.redisClient.IncrementRequestCount(ctx, chain, endpoint.ID, "proxy_requests"); err != nil {
+					if err := s.valkeyClient.IncrementRequestCount(ctx, chain, endpoint.ID, "proxy_requests"); err != nil {
 						log.Error().Err(err).Str("endpoint", endpoint.ID).Msg("Failed to increment WebSocket request count")
 					}
 					return
@@ -494,10 +494,10 @@ func (s *Server) getEndpointsByRole(chainEndpoints config.ChainEndpoints, role s
 	for endpointID, endpoint := range chainEndpoints {
 		if endpoint.Role == role {
 			if !archive || (archive && endpoint.Type == "archive") {
-				status, err := s.redisClient.GetEndpointStatus(context.Background(), chain, endpointID)
+				status, err := s.valkeyClient.GetEndpointStatus(context.Background(), chain, endpointID)
 				if err == nil {
 					// Check if endpoint is rate limited
-					rateLimitState, err := s.redisClient.GetRateLimitState(context.Background(), chain, endpointID)
+					rateLimitState, err := s.valkeyClient.GetRateLimitState(context.Background(), chain, endpointID)
 					if err == nil && rateLimitState.RateLimited {
 						log.Debug().Str("chain", chain).Str("endpoint", endpointID).Str("role", role).Msg("Skipping rate-limited endpoint")
 						continue
@@ -556,7 +556,7 @@ func (s *Server) selectBestEndpointByRole(chain string, endpoints []EndpointWith
 			continue
 		}
 
-		r24h, _, _, err := s.redisClient.GetCombinedRequestCounts(context.Background(), chain, endpoints[i].ID)
+		r24h, _, _, err := s.valkeyClient.GetCombinedRequestCounts(context.Background(), chain, endpoints[i].ID)
 		// Skip endpoints where we can't get request count data
 		if err != nil {
 			continue
@@ -572,9 +572,9 @@ func (s *Server) selectBestEndpointByRole(chain string, endpoints []EndpointWith
 	return bestEndpoint
 }
 
-// markEndpointUnhealthyProtocol marks the given endpoint as unhealthy for the specified protocol ("http" or "ws") in Redis.
+// markEndpointUnhealthyProtocol marks the given endpoint as unhealthy for the specified protocol ("http" or "ws") in Valkey.
 func (s *Server) markEndpointUnhealthyProtocol(chain, endpointID, protocol string) {
-	status, err := s.redisClient.GetEndpointStatus(context.Background(), chain, endpointID)
+	status, err := s.valkeyClient.GetEndpointStatus(context.Background(), chain, endpointID)
 	if err != nil {
 		log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Failed to get endpoint status to mark unhealthy")
 		return
@@ -589,7 +589,7 @@ func (s *Server) markEndpointUnhealthyProtocol(chain, endpointID, protocol strin
 		log.Warn().Str("protocol", protocol).Msg("Unknown protocol, can't mark the endpoint as unhealthy")
 		return
 	}
-	if err := s.redisClient.UpdateEndpointStatus(context.Background(), chain, endpointID, *status); err != nil {
+	if err := s.valkeyClient.UpdateEndpointStatus(context.Background(), chain, endpointID, *status); err != nil {
 		log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Failed to update endpoint status to unhealthy")
 	} else {
 		log.Info().Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Marked endpoint as unhealthy")
@@ -774,8 +774,8 @@ func (s *Server) GetRateLimitHandler() func(chain, endpointID, protocol string) 
 func (s *Server) handleRateLimit(chain, endpointID, protocol string) {
 	log.Debug().Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Handling rate limit")
 
-	// Set the endpoint as rate limited in Redis
-	state, err := s.redisClient.GetRateLimitState(context.Background(), chain, endpointID)
+	// Set the endpoint as rate limited in Valkey
+	state, err := s.valkeyClient.GetRateLimitState(context.Background(), chain, endpointID)
 	if err != nil {
 		log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get rate limit state")
 		return
@@ -794,7 +794,7 @@ func (s *Server) handleRateLimit(chain, endpointID, protocol string) {
 		state.FirstRateLimited = now
 	}
 
-	if err := s.redisClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
+	if err := s.valkeyClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
 		log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to set rate limit state")
 		return
 	}

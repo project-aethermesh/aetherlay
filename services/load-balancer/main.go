@@ -71,22 +71,22 @@ func main() {
 		}
 	}
 
-	// Initialize Redis client
-	redisAddr := appConfig.RedisHost + ":" + appConfig.RedisPort
-	redisClient := store.NewRedisClient(redisAddr, appConfig.RedisPass, appConfig.RedisSkipTLSCheck, appConfig.RedisUseTLS)
-	if err := redisClient.Ping(context.Background()); err != nil {
-		log.Fatal().Err(err).Msg("Failed to connect to Redis")
+	// Initialize Valkey client
+	valkeyAddr := appConfig.ValkeyHost + ":" + appConfig.ValkeyPort
+	valkeyClient := store.NewValkeyClient(valkeyAddr, appConfig.ValkeyPass, appConfig.ValkeySkipTLSCheck, appConfig.ValkeyUseTLS)
+	if err := valkeyClient.Ping(context.Background()); err != nil {
+		log.Fatal().Err(err).Msg("Failed to connect to Valkey")
 	}
 
 	// Initialize and start the server
-	srv := server.NewServer(cfg, redisClient, appConfig)
+	srv := server.NewServer(cfg, valkeyClient, appConfig)
 
 	// Configure regular health checks based on the value of standaloneHealthChecks
 	if !appConfig.StandaloneHealthChecks {
 		if appConfig.HealthCheckInterval > 0 {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			checker := health.NewChecker(cfg, redisClient, time.Duration(appConfig.HealthCheckInterval)*time.Second, time.Duration(appConfig.EphemeralChecksInterval)*time.Second, appConfig.EphemeralChecksHealthyThreshold, appConfig.HealthCheckSyncStatus)
+			checker := health.NewChecker(cfg, valkeyClient, time.Duration(appConfig.HealthCheckInterval)*time.Second, time.Duration(appConfig.EphemeralChecksInterval)*time.Second, appConfig.EphemeralChecksHealthyThreshold, appConfig.HealthCheckSyncStatus)
 
 			// Connect health checker to server's rate limit handler
 			checker.HandleRateLimitFunc = srv.GetRateLimitHandler()
