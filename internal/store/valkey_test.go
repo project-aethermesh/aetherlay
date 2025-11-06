@@ -9,10 +9,10 @@ import (
 	"time"
 )
 
-func TestNewRedisClient(t *testing.T) {
-	client := NewMockRedisClient()
+func TestNewValkeyClient(t *testing.T) {
+	client := NewMockValkeyClient()
 	if client == nil {
-		t.Fatal("Redis client should not be nil")
+		t.Fatal("Valkey client should not be nil")
 	}
 }
 
@@ -43,7 +43,7 @@ func TestNewEndpointStatus(t *testing.T) {
 }
 
 func TestUpdateAndGetEndpointStatus(t *testing.T) {
-	client := NewMockRedisClient()
+	client := NewMockValkeyClient()
 
 	ctx := context.Background()
 	chain := "test-chain"
@@ -97,7 +97,7 @@ func TestUpdateAndGetEndpointStatus(t *testing.T) {
 }
 
 func TestGetEndpointStatusForNonExistentEndpoint(t *testing.T) {
-	client := NewMockRedisClient()
+	client := NewMockValkeyClient()
 
 	ctx := context.Background()
 	chain := "test-chain"
@@ -137,7 +137,7 @@ func uniqueTestKey(base string) string {
 	return fmt.Sprintf("%s-%d", base, time.Now().UnixNano())
 }
 
-func cleanupTestKey(client *MockRedisClient, chain, endpoint string) {
+func cleanupTestKey(client *MockValkeyClient, chain, endpoint string) {
 	ctx := context.Background()
 	// Remove all related keys
 	prefix := fmt.Sprintf("metrics:%s:%s", chain, endpoint)
@@ -151,7 +151,7 @@ func cleanupTestKey(client *MockRedisClient, chain, endpoint string) {
 }
 
 func TestIncrementRequestCount(t *testing.T) {
-	client := NewMockRedisClient()
+	client := NewMockValkeyClient()
 
 	ctx := context.Background()
 	chain := "test-chain"
@@ -185,7 +185,7 @@ func TestIncrementRequestCount(t *testing.T) {
 }
 
 func TestMultipleRequestCountIncrements(t *testing.T) {
-	client := NewMockRedisClient()
+	client := NewMockValkeyClient()
 
 	ctx := context.Background()
 	chain := "test-chain"
@@ -221,7 +221,7 @@ func TestMultipleRequestCountIncrements(t *testing.T) {
 }
 
 func TestGetRequestCountsForNonExistentEndpoint(t *testing.T) {
-	client := NewMockRedisClient()
+	client := NewMockValkeyClient()
 
 	ctx := context.Background()
 	chain := "test-chain"
@@ -247,7 +247,7 @@ func TestGetRequestCountsForNonExistentEndpoint(t *testing.T) {
 }
 
 func TestCombinedRequestCounts(t *testing.T) {
-	client := NewMockRedisClient()
+	client := NewMockValkeyClient()
 
 	ctx := context.Background()
 	chain := "test-chain"
@@ -286,46 +286,46 @@ func TestCombinedRequestCounts(t *testing.T) {
 	}
 }
 
-// TestNewRedisClientTLSConfig is an integration test that checks the TLS configuration.
-// It requires a running Redis server with TLS enabled on port 6380 and non-TLS on 6379.
-func TestNewRedisClientTLSConfig(t *testing.T) {
-	redisHost := "localhost"
-	redisPass := "SOME_PASS"
+// TestNewValkeyClientTLSConfig is an integration test that checks the TLS configuration.
+// It requires a running Valkey server with TLS enabled on port 6380 and non-TLS on 6379.
+func TestNewValkeyClientTLSConfig(t *testing.T) {
+	valkeyHost := "localhost"
+	valkeyPass := "SOME_PASS"
 
-	redisAddrNonTLS := fmt.Sprintf("%s:6379", redisHost)
-	redisAddrTLS := fmt.Sprintf("%s:6380", redisHost)
+	valkeyAddrNonTLS := fmt.Sprintf("%s:6379", valkeyHost)
+	valkeyAddrTLS := fmt.Sprintf("%s:6380", valkeyHost)
 
-	// Pre-flight check to see if Redis is available. If not, skip the test.
-	conn, err := net.DialTimeout("tcp", redisAddrNonTLS, 1*time.Second)
+	// Pre-flight check to see if Valkey is available. If not, skip the test.
+	conn, err := net.DialTimeout("tcp", valkeyAddrNonTLS, 1*time.Second)
 	if err != nil {
-		t.Skipf("Skipping integration test: Redis is not available at %s. Error: %v", redisAddrNonTLS, err)
+		t.Skipf("Skipping integration test: Valkey is not available at %s. Error: %v", valkeyAddrNonTLS, err)
 	}
 	conn.Close()
 
 	ctx := context.Background()
 
 	t.Run("Non-TLS connection", func(t *testing.T) {
-		client := NewRedisClient(redisAddrNonTLS, redisPass, false, false)
+		client := NewValkeyClient(valkeyAddrNonTLS, valkeyPass, false, false)
 		if err := client.Ping(ctx); err != nil {
-			t.Fatalf("Failed to connect to non-TLS Redis: %v", err)
+			t.Fatalf("Failed to connect to non-TLS Valkey: %v", err)
 		}
 	})
 
 	t.Run("TLS connection with skip verify", func(t *testing.T) {
-		os.Setenv("REDIS_SKIP_TLS_CHECK", "true")
-		defer os.Unsetenv("REDIS_SKIP_TLS_CHECK")
+		os.Setenv("VALKEY_SKIP_TLS_CHECK", "true")
+		defer os.Unsetenv("VALKEY_SKIP_TLS_CHECK")
 
-		client := NewRedisClient(redisAddrTLS, redisPass, true, true)
+		client := NewValkeyClient(valkeyAddrTLS, valkeyPass, true, true)
 		if err := client.Ping(ctx); err != nil {
-			t.Fatalf("Failed to connect to TLS Redis with skip verify: %v", err)
+			t.Fatalf("Failed to connect to TLS Valkey with skip verify: %v", err)
 		}
 	})
 
 	t.Run("TLS connection without skip verify (should fail)", func(t *testing.T) {
-		os.Setenv("REDIS_SKIP_TLS_CHECK", "false")
-		defer os.Unsetenv("REDIS_SKIP_TLS_CHECK")
+		os.Setenv("VALKEY_SKIP_TLS_CHECK", "false")
+		defer os.Unsetenv("VALKEY_SKIP_TLS_CHECK")
 
-		client := NewRedisClient(redisAddrTLS, redisPass, true, true)
+		client := NewValkeyClient(valkeyAddrTLS, valkeyPass, true, true)
 		if err := client.Ping(ctx); err == nil {
 			t.Fatal("Expected TLS connection to fail without skip verify, but it succeeded.")
 		} else {
@@ -334,9 +334,9 @@ func TestNewRedisClientTLSConfig(t *testing.T) {
 	})
 
 	t.Run("TLS connection with env var unset (should fail)", func(t *testing.T) {
-		os.Unsetenv("REDIS_SKIP_TLS_CHECK")
+		os.Unsetenv("VALKEY_SKIP_TLS_CHECK")
 
-		client := NewRedisClient(redisAddrTLS, redisPass, true, true)
+		client := NewValkeyClient(valkeyAddrTLS, valkeyPass, true, true)
 		if err := client.Ping(ctx); err == nil {
 			t.Fatal("Expected TLS connection to fail with env var unset, but it succeeded.")
 		} else {

@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	"github.com/valkey-io/valkey-go"
 )
 
 const (
-	// Key prefixes for Redis storage
+	// Key prefixes for Valkey storage
 	healthPrefix    = "health:"
 	metricsPrefix   = "metrics:"
 	rateLimitPrefix = "rate_limit:"
@@ -55,10 +55,10 @@ func NewEndpointStatus() EndpointStatus {
 	}
 }
 
-// RedisClientIface defines the interface for Redis operations used by the server.
+// ValkeyClientIface defines the interface for Valkey operations used by the server.
 // This allows for mocking in tests and provides a clean separation of concerns.
 // Only include methods actually used by the server.
-type RedisClientIface interface {
+type ValkeyClientIface interface {
 	GetEndpointStatus(ctx context.Context, chain, endpoint string) (*EndpointStatus, error)
 	UpdateEndpointStatus(ctx context.Context, chain, endpoint string, status EndpointStatus) error
 	IncrementRequestCount(ctx context.Context, chain, endpoint string, requestType string) error
@@ -69,16 +69,16 @@ type RedisClientIface interface {
 	Close() error
 }
 
-// RedisClient wraps the Redis client with our custom methods.
-// It implements RedisClientIface and provides methods for storing and retrieving
+// ValkeyClient wraps the Valkey client with our custom methods.
+// It implements ValkeyClientIface and provides methods for storing and retrieving
 // endpoint health status and request metrics.
-type RedisClient struct {
-	client *redis.Client
+type ValkeyClient struct {
+	client valkey.Client
 }
 
-// NewRedisClient creates a new Redis client with optimized connection settings.
+// NewValkeyClient creates a new Valkey client with optimized connection settings.
 // It configures connection pooling, timeouts, and retry logic for production use.
-func NewRedisClient(addr string, password string, skipTLSVerify bool, useTLS bool) *RedisClient {
+func NewValkeyClient(addr string, password string, skipTLSVerify bool, useTLS bool) *ValkeyClient {
 	var tlsConfig *tls.Config
 	if useTLS {
 		tlsConfig = &tls.Config{
@@ -87,53 +87,54 @@ func NewRedisClient(addr string, password string, skipTLSVerify bool, useTLS boo
 		}
 	}
 
-	client := redis.NewClient(&redis.Options{
-		Addr:            addr,
-		Password:        password,
-		TLSConfig:       tlsConfig,
-		MinIdleConns:    10,
-		PoolSize:        100,
-		PoolTimeout:     4 * time.Second,
-		MaxRetries:      3,
-		DialTimeout:     5 * time.Second,
-		ReadTimeout:     3 * time.Second,
-		WriteTimeout:    3 * time.Second,
-		ConnMaxLifetime: 30 * time.Minute,
-		ConnMaxIdleTime: 5 * time.Minute,
+	client, err := valkey.NewClient(valkey.ClientOption{
+		InitAddress:      []string{addr},
+		Password:         password,
+		TLSConfig:        tlsConfig,
+		ConnWriteTimeout: 10 * time.Second,
+		ConnLifetime:     30 * time.Minute,
 	})
-	return &RedisClient{client: client}
+	if err != nil {
+		panic(err)
+	}
+	return &ValkeyClient{client: client}
 }
 
-// Ping checks the Redis connection by sending a PING command.
+// Ping checks the Valkey connection by sending a PING command.
 // Returns an error if the connection cannot be established.
-func (r *RedisClient) Ping(ctx context.Context) error {
-	return r.client.Ping(ctx).Err()
+func (r *ValkeyClient) Ping(ctx context.Context) error {
+	cmd := r.client.B().Ping().Build()
+	return r.client.Do(ctx, cmd).Error()
 }
 
-// Close closes the Redis connection and releases all resources.
-func (r *RedisClient) Close() error {
-	return r.client.Close()
+// Close closes the Valkey connection and releases all resources.
+func (r *ValkeyClient) Close() error {
+	r.client.Close()
+	return nil
 }
 
-// UpdateEndpointStatus updates the health status of an endpoint in Redis.
+// UpdateEndpointStatus updates the health status of an endpoint in Valkey.
 // The data is stored as JSON with the key pattern "health:{chain}:{endpoint}".
 // The data has no expiration and persists until explicitly deleted.
-func (r *RedisClient) UpdateEndpointStatus(ctx context.Context, chain, endpoint string, status EndpointStatus) error {
+func (r *ValkeyClient) UpdateEndpointStatus(ctx context.Context, chain, endpoint string, status EndpointStatus) error {
 	key := healthPrefix + chain + ":" + endpoint
 	data, err := json.Marshal(status)
 	if err != nil {
 		return err
 	}
-	return r.client.Set(ctx, key, data, 0).Err()
+	cmd := r.client.B().Set().Key(key).Value(string(data)).Build()
+	return r.client.Do(ctx, cmd).Error()
 }
 
-// GetEndpointStatus retrieves the health status of an endpoint from Redis.
-// If the endpoint doesn't exist in Redis, it creates a new status with default values.
+// GetEndpointStatus retrieves the health status of an endpoint from Valkey.
+// If the endpoint doesn't exist in Valkey, it creates a new status with default values.
 // Returns the endpoint status and any error that occurred during retrieval.
-func (r *RedisClient) GetEndpointStatus(ctx context.Context, chain, endpoint string) (*EndpointStatus, error) {
+func (r *ValkeyClient) GetEndpointStatus(ctx context.Context, chain, endpoint string) (*EndpointStatus, error) {
 	key := healthPrefix + chain + ":" + endpoint
-	data, err := r.client.Get(ctx, key).Bytes()
-	if err == redis.Nil {
+	cmd := r.client.B().Get().Key(key).Build()
+	result := r.client.Do(ctx, cmd)
+
+	if valkey.IsValkeyNil(result.Error()) {
 		// Initialize new endpoint status if it doesn't exist
 		status := NewEndpointStatus()
 		if err := r.UpdateEndpointStatus(ctx, chain, endpoint, status); err != nil {
@@ -141,6 +142,8 @@ func (r *RedisClient) GetEndpointStatus(ctx context.Context, chain, endpoint str
 		}
 		return &status, nil
 	}
+
+	data, err := result.AsBytes()
 	if err != nil {
 		return nil, err
 	}
@@ -162,51 +165,58 @@ type RateLimitState struct {
 	RecoveryAttempts   int       `json:"recovery_attempts"`   // Number of recovery attempts made
 }
 
-// IncrementRequestCount increments the request count for an endpoint in Redis.
+// IncrementRequestCount increments the request count for an endpoint in Valkey.
 // It maintains separate counters for 24-hour, 1-month, and lifetime requests.
 // The 24-hour and 1-month counters have automatic expiration set.
-func (r *RedisClient) IncrementRequestCount(ctx context.Context, chain, endpoint string, requestType string) error {
+func (r *ValkeyClient) IncrementRequestCount(ctx context.Context, chain, endpoint string, requestType string) error {
 	key := metricsPrefix + chain + ":" + endpoint + ":" + requestType
-	pipe := r.client.Pipeline()
 
-	// Initialize counters if they don't exist
-	pipe.Incr(ctx, key+":"+requests24hKey)
-	pipe.Expire(ctx, key+":"+requests24hKey, 24*time.Hour)
+	// Build all commands
+	cmds := []valkey.Completed{
+		r.client.B().Incr().Key(key + ":" + requests24hKey).Build(),
+		r.client.B().Expire().Key(key + ":" + requests24hKey).Seconds(int64((24 * time.Hour).Seconds())).Build(),
+		r.client.B().Incr().Key(key + ":" + requests1mKey).Build(),
+		r.client.B().Expire().Key(key + ":" + requests1mKey).Seconds(int64((30 * 24 * time.Hour).Seconds())).Build(),
+		r.client.B().Incr().Key(key + ":" + requestsAllKey).Build(),
+	}
 
-	pipe.Incr(ctx, key+":"+requests1mKey)
-	pipe.Expire(ctx, key+":"+requests1mKey, 30*24*time.Hour)
-
-	pipe.Incr(ctx, key+":"+requestsAllKey)
-
-	_, err := pipe.Exec(ctx)
-	return err
+	// Execute all commands in a pipeline
+	results := r.client.DoMulti(ctx, cmds...)
+	for _, result := range results {
+		if err := result.Error(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetRequestCounts gets the request counts for an endpoint.
 // Returns the 24-hour, 1-month, and lifetime request counts.
 // If any counter doesn't exist, it returns 0 for that counter.
-func (r *RedisClient) GetRequestCounts(ctx context.Context, chain, endpoint string, requestType string) (int64, int64, int64, error) {
+func (r *ValkeyClient) GetRequestCounts(ctx context.Context, chain, endpoint string, requestType string) (int64, int64, int64, error) {
 	key := metricsPrefix + chain + ":" + endpoint + ":" + requestType
-	pipe := r.client.Pipeline()
 
-	requests24h := pipe.Get(ctx, key+":"+requests24hKey)
-	requests1m := pipe.Get(ctx, key+":"+requests1mKey)
-	requestsAll := pipe.Get(ctx, key+":"+requestsAllKey)
-
-	_, err := pipe.Exec(ctx)
-	if err != nil && err != redis.Nil {
-		return 0, 0, 0, err
+	// Build all GET commands
+	cmds := []valkey.Completed{
+		r.client.B().Get().Key(key + ":" + requests24hKey).Build(),
+		r.client.B().Get().Key(key + ":" + requests1mKey).Build(),
+		r.client.B().Get().Key(key + ":" + requestsAllKey).Build(),
 	}
+
+	// Execute all commands in a pipeline
+	results := r.client.DoMulti(ctx, cmds...)
 
 	var r24h, r1m, rAll int64
-	if requests24h.Val() != "" {
-		r24h, _ = requests24h.Int64()
+
+	// Parse each result, treating nil as 0
+	if !valkey.IsValkeyNil(results[0].Error()) {
+		r24h, _ = results[0].AsInt64()
 	}
-	if requests1m.Val() != "" {
-		r1m, _ = requests1m.Int64()
+	if !valkey.IsValkeyNil(results[1].Error()) {
+		r1m, _ = results[1].AsInt64()
 	}
-	if requestsAll.Val() != "" {
-		rAll, _ = requestsAll.Int64()
+	if !valkey.IsValkeyNil(results[2].Error()) {
+		rAll, _ = results[2].AsInt64()
 	}
 
 	return r24h, r1m, rAll, nil
@@ -215,7 +225,7 @@ func (r *RedisClient) GetRequestCounts(ctx context.Context, chain, endpoint stri
 // GetCombinedRequestCounts gets the combined request counts (proxy + health) for an endpoint.
 // This is useful for monitoring total endpoint usage including health check requests.
 // Returns the combined 24-hour, 1-month, and lifetime request counts.
-func (r *RedisClient) GetCombinedRequestCounts(ctx context.Context, chain, endpoint string) (int64, int64, int64, error) {
+func (r *ValkeyClient) GetCombinedRequestCounts(ctx context.Context, chain, endpoint string) (int64, int64, int64, error) {
 	// Get proxy request counts
 	p24h, p1m, pAll, err := r.GetRequestCounts(ctx, chain, endpoint, proxyRequests)
 	if err != nil {
@@ -232,11 +242,13 @@ func (r *RedisClient) GetCombinedRequestCounts(ctx context.Context, chain, endpo
 	return p24h + h24h, p1m + h1m, pAll + hAll, nil
 }
 
-// GetRateLimitState retrieves the rate limit state for an endpoint from Redis
-func (r *RedisClient) GetRateLimitState(ctx context.Context, chain, endpoint string) (*RateLimitState, error) {
+// GetRateLimitState retrieves the rate limit state for an endpoint from Valkey
+func (r *ValkeyClient) GetRateLimitState(ctx context.Context, chain, endpoint string) (*RateLimitState, error) {
 	key := rateLimitPrefix + chain + ":" + endpoint
-	data, err := r.client.Get(ctx, key).Bytes()
-	if err == redis.Nil {
+	cmd := r.client.B().Get().Key(key).Build()
+	result := r.client.Do(ctx, cmd)
+
+	if valkey.IsValkeyNil(result.Error()) {
 		// Return default state if not found
 		return &RateLimitState{
 			ConsecutiveSuccess: 0,
@@ -247,6 +259,8 @@ func (r *RedisClient) GetRateLimitState(ctx context.Context, chain, endpoint str
 			RecoveryAttempts:   0,
 		}, nil
 	}
+
+	data, err := result.AsBytes()
 	if err != nil {
 		return nil, err
 	}
@@ -258,13 +272,14 @@ func (r *RedisClient) GetRateLimitState(ctx context.Context, chain, endpoint str
 	return &state, nil
 }
 
-// SetRateLimitState updates the rate limit state for an endpoint in Redis
-func (r *RedisClient) SetRateLimitState(ctx context.Context, chain, endpoint string, state RateLimitState) error {
+// SetRateLimitState updates the rate limit state for an endpoint in Valkey
+func (r *ValkeyClient) SetRateLimitState(ctx context.Context, chain, endpoint string, state RateLimitState) error {
 	key := rateLimitPrefix + chain + ":" + endpoint
 	data, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
 	// Set with 24-hour expiration to prevent indefinite storage of old rate limit states
-	return r.client.Set(ctx, key, data, 24*time.Hour).Err()
+	cmd := r.client.B().Set().Key(key).Value(string(data)).Ex(24 * time.Hour).Build()
+	return r.client.Do(ctx, cmd).Error()
 }

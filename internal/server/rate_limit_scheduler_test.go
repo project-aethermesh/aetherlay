@@ -25,8 +25,8 @@ func TestNewRateLimitScheduler(t *testing.T) {
 		},
 	}
 
-	mockRedis := store.NewMockRedisClient()
-	scheduler := NewRateLimitScheduler(cfg, mockRedis)
+	mockValkey := store.NewMockValkeyClient()
+	scheduler := NewRateLimitScheduler(cfg, mockValkey)
 
 	if scheduler == nil {
 		t.Fatal("Expected scheduler to be created")
@@ -36,8 +36,8 @@ func TestNewRateLimitScheduler(t *testing.T) {
 		t.Error("Expected config to be set")
 	}
 
-	if scheduler.redisClient != mockRedis {
-		t.Error("Expected redis client to be set")
+	if scheduler.valkeyClient != mockValkey {
+		t.Error("Expected Valkey client to be set")
 	}
 
 	if scheduler.activeMonitoring == nil {
@@ -59,8 +59,8 @@ func TestStartMonitoringDoesNotDuplicate(t *testing.T) {
 		},
 	}
 
-	mockRedis := store.NewMockRedisClient()
-	scheduler := NewRateLimitScheduler(cfg, mockRedis)
+	mockValkey := store.NewMockValkeyClient()
+	scheduler := NewRateLimitScheduler(cfg, mockValkey)
 
 	// Start monitoring
 	scheduler.StartMonitoring("ethereum", "test-endpoint")
@@ -106,8 +106,8 @@ func TestCheckEndpointHealthSuccess(t *testing.T) {
 		},
 	}
 
-	mockRedis := store.NewMockRedisClient()
-	scheduler := NewRateLimitScheduler(cfg, mockRedis)
+	mockValkey := store.NewMockValkeyClient()
+	scheduler := NewRateLimitScheduler(cfg, mockValkey)
 
 	endpoint := cfg.Endpoints["ethereum"]["test-endpoint"]
 	healthy := scheduler.checkEndpointHealth(endpoint)
@@ -137,8 +137,8 @@ func TestCheckEndpointHealthRateLimited(t *testing.T) {
 		},
 	}
 
-	mockRedis := store.NewMockRedisClient()
-	scheduler := NewRateLimitScheduler(cfg, mockRedis)
+	mockValkey := store.NewMockValkeyClient()
+	scheduler := NewRateLimitScheduler(cfg, mockValkey)
 
 	endpoint := cfg.Endpoints["ethereum"]["test-endpoint"]
 	healthy := scheduler.checkEndpointHealth(endpoint)
@@ -162,7 +162,7 @@ func TestPerformRecoveryCheckStopsWhenNotRateLimited(t *testing.T) {
 		},
 	}
 
-	mockRedis := store.NewMockRedisClient()
+	mockValkey := store.NewMockValkeyClient()
 
 	// Set up endpoint as not rate limited
 	state := store.RateLimitState{
@@ -171,9 +171,9 @@ func TestPerformRecoveryCheckStopsWhenNotRateLimited(t *testing.T) {
 		LastRecoveryCheck:  time.Time{},
 		ConsecutiveSuccess: 0,
 	}
-	mockRedis.SetRateLimitState(context.Background(), "ethereum", "test-endpoint", state)
+	mockValkey.SetRateLimitState(context.Background(), "ethereum", "test-endpoint", state)
 
-	scheduler := NewRateLimitScheduler(cfg, mockRedis)
+	scheduler := NewRateLimitScheduler(cfg, mockValkey)
 
 	endpoint := cfg.Endpoints["ethereum"]["test-endpoint"]
 	rateLimitConfig := config.DefaultRateLimitRecovery()
@@ -203,7 +203,7 @@ func TestPerformRecoveryCheckStopsAfterMaxRetries(t *testing.T) {
 		},
 	}
 
-	mockRedis := store.NewMockRedisClient()
+	mockValkey := store.NewMockValkeyClient()
 
 	// Set up endpoint as rate limited with max retries reached
 	state := store.RateLimitState{
@@ -214,9 +214,9 @@ func TestPerformRecoveryCheckStopsAfterMaxRetries(t *testing.T) {
 		RateLimited:        true,
 		RecoveryAttempts:   5, // At max retries
 	}
-	mockRedis.SetRateLimitState(context.Background(), "ethereum", "test-endpoint", state)
+	mockValkey.SetRateLimitState(context.Background(), "ethereum", "test-endpoint", state)
 
-	scheduler := NewRateLimitScheduler(cfg, mockRedis)
+	scheduler := NewRateLimitScheduler(cfg, mockValkey)
 
 	endpoint := cfg.Endpoints["ethereum"]["test-endpoint"]
 	rateLimitConfig := config.RateLimitRecovery{
@@ -259,14 +259,14 @@ func TestPerformRecoveryCheckRecovery(t *testing.T) {
 		},
 	}
 
-	mockRedis := store.NewMockRedisClient()
+	mockValkey := store.NewMockValkeyClient()
 
 	// Set up initial endpoint status
 	endpointStatus := store.EndpointStatus{
 		HasHTTP:     true,
 		HealthyHTTP: false, // Currently unhealthy
 	}
-	mockRedis.UpdateEndpointStatus(context.Background(), "ethereum", "test-endpoint", endpointStatus)
+	mockValkey.UpdateEndpointStatus(context.Background(), "ethereum", "test-endpoint", endpointStatus)
 
 	// Set up endpoint as rate limited with enough consecutive successes to recover
 	state := store.RateLimitState{
@@ -277,9 +277,9 @@ func TestPerformRecoveryCheckRecovery(t *testing.T) {
 		RateLimited:        true,
 		RecoveryAttempts:   2,
 	}
-	mockRedis.SetRateLimitState(context.Background(), "ethereum", "test-endpoint", state)
+	mockValkey.SetRateLimitState(context.Background(), "ethereum", "test-endpoint", state)
 
-	scheduler := NewRateLimitScheduler(cfg, mockRedis)
+	scheduler := NewRateLimitScheduler(cfg, mockValkey)
 
 	endpoint := cfg.Endpoints["ethereum"]["test-endpoint"]
 	rateLimitConfig := config.RateLimitRecovery{
@@ -302,7 +302,7 @@ func TestPerformRecoveryCheckRecovery(t *testing.T) {
 	}
 
 	// Verify endpoint was marked as recovered
-	finalState, err := mockRedis.GetRateLimitState(context.Background(), "ethereum", "test-endpoint")
+	finalState, err := mockValkey.GetRateLimitState(context.Background(), "ethereum", "test-endpoint")
 	if err != nil {
 		t.Fatalf("Failed to get final rate limit state: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestPerformRecoveryCheckRecovery(t *testing.T) {
 	}
 
 	// Verify endpoint status was updated
-	finalStatus, err := mockRedis.GetEndpointStatus(context.Background(), "ethereum", "test-endpoint")
+	finalStatus, err := mockValkey.GetEndpointStatus(context.Background(), "ethereum", "test-endpoint")
 	if err != nil {
 		t.Fatalf("Failed to get final endpoint status: %v", err)
 	}
@@ -324,8 +324,8 @@ func TestPerformRecoveryCheckRecovery(t *testing.T) {
 
 func TestCalculateNextBackoff(t *testing.T) {
 	cfg := &config.Config{}
-	mockRedis := store.NewMockRedisClient()
-	scheduler := NewRateLimitScheduler(cfg, mockRedis)
+	mockValkey := store.NewMockValkeyClient()
+	scheduler := NewRateLimitScheduler(cfg, mockValkey)
 
 	config := config.RateLimitRecovery{
 		InitialBackoff: 30,
@@ -349,8 +349,8 @@ func TestCalculateNextBackoff(t *testing.T) {
 
 func TestShouldResetBackoff(t *testing.T) {
 	cfg := &config.Config{}
-	mockRedis := store.NewMockRedisClient()
-	scheduler := NewRateLimitScheduler(cfg, mockRedis)
+	mockValkey := store.NewMockValkeyClient()
+	scheduler := NewRateLimitScheduler(cfg, mockValkey)
 
 	config := config.RateLimitRecovery{
 		ResetAfter: 3600, // 1 hour

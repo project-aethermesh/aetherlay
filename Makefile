@@ -79,17 +79,17 @@ dev-setup:
 
 # Kubernetes deployment helpers
 .PHONY: k8s-deploy
-k8s-deploy: k8s-deploy-ns k8s-deploy-redis k8s-deploy-hc k8s-deploy-lb
+k8s-deploy: k8s-deploy-ns k8s-deploy-valkey k8s-deploy-hc k8s-deploy-lb
 
 .PHONY: k8s-deploy-ns
 k8s-deploy-ns:
 	@echo "Deploying namespace to Kubernetes..."
 	kubectl apply -f k8s/namespace.yaml
 
-.PHONY: k8s-deploy-redis
-k8s-deploy-redis:
-	@echo "Deploying Redis to Kubernetes..."
-	kubectl apply -f k8s/redis.yaml
+.PHONY: k8s-deploy-valkey
+k8s-deploy-valkey:
+	@echo "Deploying Valkey to Kubernetes..."
+	kubectl apply -f k8s/valkey.yaml
 
 .PHONY: k8s-deploy-hc
 k8s-deploy-hc:

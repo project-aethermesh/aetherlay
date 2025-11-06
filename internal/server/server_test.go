@@ -45,8 +45,8 @@ func createTestConfig() *helpers.LoadedConfig {
 // TestServerHealthCheck tests the /health endpoint handler.
 func TestServerHealthCheck(t *testing.T) {
 	cfg := &config.Config{}
-	redisClient := store.NewMockRedisClient()
-	server := NewServer(cfg, redisClient, createTestConfig())
+	valkeyClient := store.NewMockValkeyClient()
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
@@ -68,12 +68,12 @@ func TestHTTPSelection_HealthyOnly(t *testing.T) {
 			},
 		},
 	}
-	redisClient := store.NewMockRedisClient()
-	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainA:ep1": {HasHTTP: true, HealthyHTTP: true},
 		"chainA:ep2": {HasHTTP: true, HealthyHTTP: false},
 	})
-	server := NewServer(cfg, redisClient, createTestConfig())
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -95,11 +95,11 @@ func TestHTTPSelection_NoneHealthy(t *testing.T) {
 			},
 		},
 	}
-	redisClient := store.NewMockRedisClient()
-	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainA:ep1": {HasHTTP: true, HealthyHTTP: false},
 	})
-	server := NewServer(cfg, redisClient, createTestConfig())
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -122,12 +122,12 @@ func TestWSSelection_HealthyOnly(t *testing.T) {
 			},
 		},
 	}
-	redisClient := store.NewMockRedisClient()
-	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainB:ep1": {HasWS: true, HealthyWS: true},
 		"chainB:ep2": {HasWS: true, HealthyWS: false},
 	})
-	server := NewServer(cfg, redisClient, createTestConfig())
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -151,11 +151,11 @@ func TestWSSelection_NoneHealthy(t *testing.T) {
 			},
 		},
 	}
-	redisClient := store.NewMockRedisClient()
-	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainB:ep1": {HasWS: true, HealthyWS: false},
 	})
-	server := NewServer(cfg, redisClient, createTestConfig())
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -182,14 +182,14 @@ func TestHTTPSelection_FallbackWhenPrimaryUnhealthy(t *testing.T) {
 			},
 		},
 	}
-	redisClient := store.NewMockRedisClient()
-	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainA:primary1":  {HasHTTP: true, HealthyHTTP: false},
 		"chainA:primary2":  {HasHTTP: true, HealthyHTTP: false},
 		"chainA:fallback1": {HasHTTP: true, HealthyHTTP: true},
 		"chainA:fallback2": {HasHTTP: true, HealthyHTTP: true},
 	})
-	server := NewServer(cfg, redisClient, createTestConfig())
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -214,14 +214,14 @@ func TestWSSelection_FallbackWhenPrimaryUnhealthy(t *testing.T) {
 			},
 		},
 	}
-	redisClient := store.NewMockRedisClient()
-	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainB:primary1":  {HasWS: true, HealthyWS: false},
 		"chainB:primary2":  {HasWS: true, HealthyWS: false},
 		"chainB:fallback1": {HasWS: true, HealthyWS: true},
 		"chainB:fallback2": {HasWS: true, HealthyWS: true},
 	})
-	server := NewServer(cfg, redisClient, createTestConfig())
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -246,12 +246,12 @@ func TestHTTPSelection_NoFallbackAvailable(t *testing.T) {
 			},
 		},
 	}
-	redisClient := store.NewMockRedisClient()
-	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainA:primary1":  {HasHTTP: true, HealthyHTTP: false},
 		"chainA:fallback1": {HasHTTP: true, HealthyHTTP: false},
 	})
-	server := NewServer(cfg, redisClient, createTestConfig())
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -274,12 +274,12 @@ func TestWSSelection_NoFallbackAvailable(t *testing.T) {
 			},
 		},
 	}
-	redisClient := store.NewMockRedisClient()
-	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainB:primary1":  {HasWS: true, HealthyWS: false},
 		"chainB:fallback1": {HasWS: true, HealthyWS: false},
 	})
-	server := NewServer(cfg, redisClient, createTestConfig())
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -306,12 +306,12 @@ func TestHTTPSelection_PrimaryHealthyNoFallback(t *testing.T) {
 			},
 		},
 	}
-	redisClient := store.NewMockRedisClient()
-	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainA:primary1":  {HasHTTP: true, HealthyHTTP: true},
 		"chainA:fallback1": {HasHTTP: true, HealthyHTTP: false},
 	})
-	server := NewServer(cfg, redisClient, createTestConfig())
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -335,13 +335,13 @@ func TestHTTPRetryLoop(t *testing.T) {
 			},
 		},
 	}
-	redisClient := store.NewMockRedisClient()
-	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainA:ep1": {HasHTTP: true, HealthyHTTP: false},
 		"chainA:ep2": {HasHTTP: true, HealthyHTTP: false},
 		"chainA:ep3": {HasHTTP: true, HealthyHTTP: true},
 	})
-	server := NewServer(cfg, redisClient, createTestConfig())
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 
 	// Create a custom forward function that fails for specific URLs
 	server.forwardRequestWithBody = func(w http.ResponseWriter, ctx context.Context, method, targetURL string, bodyBytes []byte, headers http.Header) error {
@@ -377,12 +377,12 @@ func TestHTTPRetryLoop_AllFail(t *testing.T) {
 			},
 		},
 	}
-	redisClient := store.NewMockRedisClient()
-	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainA:ep1": {HasHTTP: true, HealthyHTTP: false},
 		"chainA:ep2": {HasHTTP: true, HealthyHTTP: false},
 	})
-	server := NewServer(cfg, redisClient, createTestConfig())
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 	server.forwardRequestWithBody = failingForwardRequestWithBody
 	server.proxyWebSocket = stubProxyWebSocket
 
@@ -407,13 +407,13 @@ func TestWSRetryLoop(t *testing.T) {
 			},
 		},
 	}
-	redisClient := store.NewMockRedisClient()
-	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainB:ep1": {HasWS: true, HealthyWS: false},
 		"chainB:ep2": {HasWS: true, HealthyWS: false},
 		"chainB:ep3": {HasWS: true, HealthyWS: true},
 	})
-	server := NewServer(cfg, redisClient, createTestConfig())
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 	server.forwardRequestWithBody = stubForwardRequestWithBody
 
 	// Create a custom proxy function that fails for specific URLs
@@ -447,12 +447,12 @@ func TestWSRetryLoop_AllFail(t *testing.T) {
 			},
 		},
 	}
-	redisClient := store.NewMockRedisClient()
-	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainB:ep1": {HasWS: true, HealthyWS: false},
 		"chainB:ep2": {HasWS: true, HealthyWS: false},
 	})
-	server := NewServer(cfg, redisClient, createTestConfig())
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 	server.forwardRequestWithBody = stubForwardRequestWithBody
 	server.proxyWebSocket = func(w http.ResponseWriter, r *http.Request, backendURL string) error {
 		return fmt.Errorf("websocket endpoint failed: %s", backendURL)
@@ -517,11 +517,11 @@ func TestMarkEndpointUnhealthy_HTTP(t *testing.T) {
 			},
 		},
 	}
-	redisClient := store.NewMockRedisClient()
-	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainA:ep1": {HasHTTP: true, HealthyHTTP: true},
 	})
-	server := NewServer(cfg, redisClient, createTestConfig())
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 
 	// Simulate a failed HTTP request
 	err := server.defaultForwardRequestWithBodyFunc(httptest.NewRecorder(), context.Background(), "POST", "http://fail", nil, http.Header{})
@@ -529,7 +529,7 @@ func TestMarkEndpointUnhealthy_HTTP(t *testing.T) {
 		t.Error("Expected error from failed HTTP request")
 	}
 
-	status, _ := redisClient.GetEndpointStatus(context.Background(), "chainA", "ep1")
+	status, _ := valkeyClient.GetEndpointStatus(context.Background(), "chainA", "ep1")
 	if status.HealthyHTTP {
 		t.Error("Expected HealthyHTTP to be false after failed request")
 	}
@@ -546,16 +546,16 @@ func TestMarkEndpointUnhealthy_WS(t *testing.T) {
 			},
 		},
 	}
-	redisClient := store.NewMockRedisClient()
-	redisClient.PopulateStatuses(map[string]*store.EndpointStatus{
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
 		"chainB:ep1": {HasWS: true, HealthyWS: true},
 	})
-	server := NewServer(cfg, redisClient, createTestConfig())
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 
 	// Directly call the marking logic
 	server.markEndpointUnhealthyProtocol("chainB", "ep1", "ws")
 
-	status, _ := redisClient.GetEndpointStatus(context.Background(), "chainB", "ep1")
+	status, _ := valkeyClient.GetEndpointStatus(context.Background(), "chainB", "ep1")
 	if status.HealthyWS {
 		t.Error("Expected HealthyWS to be false after marking unhealthy for WS")
 	}
@@ -564,8 +564,8 @@ func TestMarkEndpointUnhealthy_WS(t *testing.T) {
 // TestShouldRetry tests the HTTP status code retry logic.
 func TestShouldRetry(t *testing.T) {
 	cfg := &config.Config{}
-	redisClient := store.NewMockRedisClient()
-	server := NewServer(cfg, redisClient, createTestConfig())
+	valkeyClient := store.NewMockValkeyClient()
+	server := NewServer(cfg, valkeyClient, createTestConfig())
 
 	tests := []struct {
 		statusCode  int
@@ -623,17 +623,17 @@ func TestHandleRateLimit(t *testing.T) {
 		ProxyTimeoutPerTry: 5,
 	}
 
-	// Create mock Redis client
-	mockRedis := store.NewMockRedisClient()
+	// Create mock Valkey client
+	mockValkey := store.NewMockValkeyClient()
 
 	// Create server
-	server := NewServer(cfg, mockRedis, appConfig)
+	server := NewServer(cfg, mockValkey, appConfig)
 
 	// Test handling rate limit
 	server.handleRateLimit("ethereum", "test-endpoint", "http")
 
 	// Verify rate limit state was set
-	state, err := mockRedis.GetRateLimitState(context.Background(), "ethereum", "test-endpoint")
+	state, err := mockValkey.GetRateLimitState(context.Background(), "ethereum", "test-endpoint")
 	if err != nil {
 		t.Fatalf("Failed to get rate limit state: %v", err)
 	}
@@ -679,8 +679,8 @@ func TestGetAvailableEndpointsSkipsRateLimited(t *testing.T) {
 		ProxyTimeoutPerTry: 5,
 	}
 
-	// Create mock Redis client
-	mockRedis := store.NewMockRedisClient()
+	// Create mock Valkey client
+	mockValkey := store.NewMockValkeyClient()
 
 	// Set up endpoint statuses
 	healthyStatus := store.EndpointStatus{
@@ -692,8 +692,8 @@ func TestGetAvailableEndpointsSkipsRateLimited(t *testing.T) {
 		HealthyHTTP: true, // Still healthy but rate limited
 	}
 
-	mockRedis.UpdateEndpointStatus(context.Background(), "ethereum", "healthy-endpoint", healthyStatus)
-	mockRedis.UpdateEndpointStatus(context.Background(), "ethereum", "rate-limited-endpoint", rateLimitedStatus)
+	mockValkey.UpdateEndpointStatus(context.Background(), "ethereum", "healthy-endpoint", healthyStatus)
+	mockValkey.UpdateEndpointStatus(context.Background(), "ethereum", "rate-limited-endpoint", rateLimitedStatus)
 
 	// Set rate limit state for one endpoint
 	rateLimitState := store.RateLimitState{
@@ -704,10 +704,10 @@ func TestGetAvailableEndpointsSkipsRateLimited(t *testing.T) {
 		RateLimited:        true,
 		RecoveryAttempts:   1,
 	}
-	mockRedis.SetRateLimitState(context.Background(), "ethereum", "rate-limited-endpoint", rateLimitState)
+	mockValkey.SetRateLimitState(context.Background(), "ethereum", "rate-limited-endpoint", rateLimitState)
 
 	// Create server
-	server := NewServer(cfg, mockRedis, appConfig)
+	server := NewServer(cfg, mockValkey, appConfig)
 
 	// Get available endpoints
 	endpoints := server.getAvailableEndpoints("ethereum", false, false)
@@ -759,11 +759,11 @@ func TestServerGetRateLimitHandler(t *testing.T) {
 		ProxyTimeoutPerTry: 5,
 	}
 
-	// Create mock Redis client
-	mockRedis := store.NewMockRedisClient()
+	// Create mock Valkey client
+	mockValkey := store.NewMockValkeyClient()
 
 	// Create server
-	server := NewServer(cfg, mockRedis, appConfig)
+	server := NewServer(cfg, mockValkey, appConfig)
 
 	// Get rate limit handler
 	handler := server.GetRateLimitHandler()
@@ -776,7 +776,7 @@ func TestServerGetRateLimitHandler(t *testing.T) {
 	handler("ethereum", "test-endpoint", "http")
 
 	// Verify rate limit state was set
-	state, err := mockRedis.GetRateLimitState(context.Background(), "ethereum", "test-endpoint")
+	state, err := mockValkey.GetRateLimitState(context.Background(), "ethereum", "test-endpoint")
 	if err != nil {
 		t.Fatalf("Failed to get rate limit state: %v", err)
 	}

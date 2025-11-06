@@ -1,6 +1,6 @@
 # Ætherlay - Standalone Health Checker
 
-This is a standalone health checker service that monitors RPC endpoints and updates their health status in Redis. It's designed to work alongside multiple load balancer instances that have health checks disabled.
+This is a standalone health checker service that monitors RPC endpoints and updates their health status in Valkey. It's designed to work alongside multiple load balancer instances that have health checks disabled.
 
 ## Overview
 
@@ -23,7 +23,7 @@ make build-hc
 make run-hc
 
 # Or with custom config
-./bin/aetherlay-hc --config /custom/path/endpoints.json --redis-host localhost --redis-port 6379
+./bin/aetherlay-hc --config /custom/path/endpoints.json --valkey-host localhost --valkey-port 6379
 ```
 
 ### 3. Run with Docker
@@ -35,8 +35,8 @@ make docker-build-hc
 # Run container
 docker run -d \
   --name aetherlay-hc \
-  -e REDIS_HOST=localhost \
-  -e REDIS_PORT=6379 \
+  -e VALKEY_HOST=localhost \
+  -e VALKEY_PORT=6379 \
   -e HEALTH_CHECK_INTERVAL=60 \
   -v $(pwd)/configs:/root/configs \
   aetherlay-hc:latest
@@ -56,8 +56,8 @@ If you only want to deploy the health checker:
 # Create namespace
 make k8s-deploy-ns
 
-# Deploy Redis if needed
-make k8s-deploy-redis
+# Deploy Valkey if needed
+make k8s-deploy-valkey
 
 # Deploy health checker
 make k8s-deploy-hc
@@ -93,7 +93,7 @@ The health checker uses the same configuration format as the load balancer:
 1. **Endpoint Discovery**: Reads all endpoints from configuration.
 2. **Concurrent Checking**: Checks multiple endpoints simultaneously using goroutines.
 3. **JSON-RPC Validation**: Sends `eth_blockNumber` requests to validate endpoint health.
-4. **Status Update**: Updates Redis with health status and request counts.
+4. **Status Update**: Updates Valkey with health status and request counts.
 5. **Logging**: Provides detailed logs for monitoring and debugging.
 
 ### Note on Ephemeral Health Checks
@@ -102,16 +102,18 @@ The health checker uses the same configuration format as the load balancer:
 - In this mode, the load balancer will use ephemeral health checks to monitor failed endpoints at the specified interval (default: 30s).
 - The standalone health checker will not run if `HEALTH_CHECK_INTERVAL=0`.
 
-## Redis Data Structure
+## Valkey Data Structure
 
-The health checker stores data in Redis with the following key patterns:
+The health checker stores data in Valkey with the following key patterns:
 
 ### Health Status
+
 ```
 health:{chain}:{endpoint} -> JSON encoded EndpointStatus
 ```
 
 #### Example EndpointStatus JSON
+
 ```json
 {
   "last_health_check": "2024-06-10T12:34:56.789Z",
@@ -126,6 +128,7 @@ health:{chain}:{endpoint} -> JSON encoded EndpointStatus
 ```
 
 ### Request Counts
+
 ```
 metrics:{chain}:{endpoint_id}:proxy_requests:requests_24h -> int64
 metrics:{chain}:{endpoint_id}:proxy_requests:requests_1m -> int64
@@ -139,29 +142,31 @@ metrics:{chain}:{endpoint_id}:health_requests:requests_all -> int64
 
 ## Monitoring
 
-You can use Redis keys to track health status:
+You can use Valkey keys to track health status:
 
 ```bash
 # Check health status for all endpoints
-redis-cli keys "health:*"
+valkey-cli keys "health:*"
 
 # Get specific endpoint status
-redis-cli get "health:mainnet:infura-1"
+valkey-cli get "health:mainnet:infura-1"
 
 # Monitor request counts
-redis-cli keys "metrics:*"
+valkey-cli keys "metrics:*"
 ```
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Redis Connection Failed**
+1. **Valkey Connection Failed**
+
    ```
-   Failed to connect to Redis: dial tcp: connection refused
+   Failed to connect to Valkey: dial tcp: connection refused
    ```
-   - Verify Redis is running
-   - Check REDIS_HOST, REDIS_PORT and REDIS_PASS environment variables
+
+   - Verify Valkey is running
+   - Check VALKEY_HOST, VALKEY_PORT and VALKEY_PASS environment variables
 
 2. **Configuration File Not Found**
    ```

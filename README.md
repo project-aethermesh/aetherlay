@@ -1,6 +1,6 @@
 # Ætherlay - RPC Load Balancer
 
-A lightweight, low-latency RPC load balancer written in Go. It is designed to manage and distribute requests to multiple upstream RPC endpoints based on their health status and request counts. The load balancer supports health checks and utilizes Redis for state management.
+A lightweight, low-latency RPC load balancer written in Go. It is designed to manage and distribute requests to multiple upstream RPC endpoints based on their health status and request counts. The load balancer supports health checks and utilizes Valkey for state management.
 
 ## Features
 
@@ -9,7 +9,7 @@ A lightweight, low-latency RPC load balancer written in Go. It is designed to ma
 - **Public-First Mode**: Optional prioritization of public RPC endpoints to reduce costs while maintaining reliability.
 - **Flexible Timeout Control**: Separate timeouts for overall requests and individual retry attempts.
 - **Rate Limit Recovery**: Safe rate limit detection and recovery with exponential backoff strategies per endpoint, to avoid making things worse when a provider is rate-limiting you.
-- **Health Checks**: Regularly checks the health of upstream endpoints and updates their status in Redis.
+- **Health Checks**: Regularly checks the health of upstream endpoints and updates their status in Valkey.
 - **Standalone Health Checker**: Optional standalone health checker service for efficient multi-pod deployments.
 - **Static Configuration**: Loads RPC endpoint configurations from a static JSON file.
 - **Multi-threaded**: Capable of handling multiple requests concurrently.
@@ -148,13 +148,13 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 | `--proxy-timeout-per-try` | `5` | Timeout per individual retry attempt in seconds |
 | `--public-first` | `false` | Prioritize public endpoints over primary endpoints |
 | `--public-first-attempts` | `2` | Number of attempts to make at public endpoints before trying primary/fallback |
-| `--redis-host` | `localhost` | Redis server hostname |
-| `--redis-pass` | - | Redis server password |
-| `--redis-port` | `6379` | Redis server port |
-| `--redis-skip-tls-check` | `false` | Whether to skip TLS certificate validation when connecting to Redis |
-| `--redis-use-tls` | `false` | Whether to use TLS for connecting to Redis |
 | `--server-port` | `8080` | Port to use for the load balancer / proxy |
 | `--standalone-health-checks` | `true` | Enable standalone health checks |
+| `--valkey-host` | `localhost` | Valkey server hostname |
+| `--valkey-pass` | - | Valkey server password |
+| `--valkey-port` | `6379` | Valkey server port |
+| `--valkey-skip-tls-check` | `false` | Whether to skip TLS certificate validation when connecting to Valkey |
+| `--valkey-use-tls` | `false` | Whether to use TLS for connecting to Valkey |
 
 > **Note:** Command-line flags take precedence over environment variables if both are set.
 
@@ -180,19 +180,20 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 | `PROXY_TIMEOUT_PER_TRY` | `5` | Timeout per individual retry attempt in seconds |
 | `PUBLIC_FIRST` | `false` | Prioritize public endpoints over primary and fallback endpoints |
 | `PUBLIC_FIRST_ATTEMPTS` | `2` | Number of attempts to make at public endpoints before trying with a primary/fallback |
-| `REDIS_HOST` | `localhost` | Redis server hostname |
-| `REDIS_PASS` | - | Redis server password |
-| `REDIS_PORT` | `6379` | Redis server port |
-| `REDIS_SKIP_TLS_CHECK` | `false` | Whether to skip TLS certificate validation when connecting to Redis |
-| `REDIS_USE_TLS` | `false` | Whether to use TLS for connecting to Redis |
 | `SERVER_PORT` | `8080` | Port to use for the load balancer / proxy |
 | `STANDALONE_HEALTH_CHECKS` | `true` | Enable/disable the standalone mode of the health checker |
+| `VALKEY_HOST` | `localhost` | Valkey server hostname |
+| `VALKEY_PASS` | - | Valkey server password |
+| `VALKEY_PORT` | `6379` | Valkey server port |
+| `VALKEY_SKIP_TLS_CHECK` | `false` | Whether to skip TLS certificate validation when connecting to Valkey |
+| `VALKEY_USE_TLS` | `false` | Whether to use TLS for connecting to Valkey |
 
 ## Health Check Configuration
 
 The service checks the health of an endpoint by sending these requests to it:
-* `eth_blockNumber` - Checks for successful response and that the block is not `0`.
-* `eth_syncing` (unless you disable it by setting `HEALTH_CHECK_SYNC_STATUS=false`) - Checks for successful response and that the node is not syncing (i.e., it has already fully synced, so you get the latest data from it).
+
+- `eth_blockNumber` - Checks for successful response and that the block is not `0`.
+- `eth_syncing` (unless you disable it by setting `HEALTH_CHECK_SYNC_STATUS=false`) - Checks for successful response and that the node is not syncing (i.e., it has already fully synced, so you get the latest data from it).
 
 ### Integrated Health Checks
 
@@ -216,7 +217,7 @@ You can also disable health checks altogether by setting `HEALTH_CHECK_INTERVAL`
 
 #### Per-Protocol Unhealthy Marking
 
-- When a request to an endpoint fails (HTTP or WebSocket), the server marks that endpoint as unhealthy for the specific protocol that failed (e.g., `HealthyHTTP = false` or `HealthyWS = false` in Redis).
+- When a request to an endpoint fails (HTTP or WebSocket), the server marks that endpoint as unhealthy for the specific protocol that failed (e.g., `HealthyHTTP = false` or `HealthyWS = false` in Valkey).
 - The health checker service detects this change and starts ephemeral health checks for that protocol only.
 - Once the endpoint passes the configured number of consecutive health checks, it is marked healthy again and ephemeral checks stop.
 
@@ -237,7 +238,7 @@ For production deployments with multiple load balancer pods, use the standalone 
 
 1. **Enable public-first**: Set `PUBLIC_FIRST=true` (or use the `--public-first` CLI flag)
 2. **Configure attempts**: Set `PUBLIC_FIRST_ATTEMPTS` to control how many public endpoints to try (default: 2)
-3. **Endpoint hierarchy**: 
+3. **Endpoint hierarchy**:
    - **When enabled**: public → primary → fallback
    - **When disabled**: primary → fallback → public
 
@@ -272,7 +273,7 @@ In your `endpoints.json`, mark endpoints with `"role": "public"`:
 ### How Rate Limit Recovery Works
 
 1. **Detection**: When a request returns a rate limit error (HTTP 429), the endpoint is automatically marked as rate-limited.
-2. **Retries with "backoff"**: The system tries to reach the endpoint only after waiting for a specific amount of time, defined as a backoff, which is configurable by the user.  This wait period increases each time, relative to another user-defined parameter (the backoff multiplier).
+2. **Retries with "backoff"**: The system tries to reach the endpoint only after waiting for a specific amount of time, defined as a backoff, which is configurable by the user. This wait period increases each time, relative to another user-defined parameter (the backoff multiplier).
 3. **Automatic recovery**: The system will reintroduce the endpoint back into the load balancing pool after a certain amount of successful consecutive requests. Users can specify how many consecutive requests are required for endpoints to be marked again as healthy.
 4. **Per-endpoint configuration**: Each endpoint can have its own rate limit recovery strategy tailored to the provider's limits. You can also simply rely on the system's defaults, which have been carefully set.
 
@@ -313,6 +314,7 @@ Rate limit recovery is configured per endpoint in your `endpoints.json` file:
 ### Recovery Strategy Examples
 
 **Conservative**:
+
 ```json
 "rate_limit_recovery": {
   "backoff_multiplier": 4.0,
@@ -325,6 +327,7 @@ Rate limit recovery is configured per endpoint in your `endpoints.json` file:
 ```
 
 **Aggressive**:
+
 ```json
 "rate_limit_recovery": {
   "backoff_multiplier": 1.5,

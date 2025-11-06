@@ -1,0 +1,93 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: valkey-data-pvc
+  namespace: aetherlay
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkey
+  namespace: aetherlay
+  labels:
+    app: valkey
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: valkey
+  template:
+    metadata:
+      labels:
+        app: valkey
+    spec:
+      containers:
+        - name: valkey
+          image: valkey:8.1-alpine
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: valkey-data
+              mountPath: /data
+          command:
+            [
+              "valkey-server",
+              "--requirepass",
+              "$(VALKEY_PASS)",
+              "--appendonly",
+              "yes",
+            ]
+          env:
+            - name: VALKEY_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: valkey-secret
+                  key: valkey-pass
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+      volumes:
+        - name: valkey-data
+          persistentVolumeClaim:
+            claimName: valkey-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey-service
+  namespace: aetherlay
+  labels:
+    app: valkey
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6379
+      targetPort: 6379
+      protocol: TCP
+      name: valkey
+  selector:
+    app: valkey
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: valkey-secret
+  namespace: aetherlay
+  labels:
+    app: valkey
+type: Opaque
+data:
+  # Replace this with your base64-encoded Valkey password
+  # To generate: echo -n "your_password" | base64
+  valkey-pass: <base64-encoded-valkey-pass>

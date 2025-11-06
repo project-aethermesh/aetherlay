@@ -33,9 +33,9 @@ go.work
 # Environment variables
 .env
 
-# Redis data
-.redis-data/
-.redis-insight/
+# Valkey data
+.valkey-data/
+.redisinsight/
 .tls/
 
 # Custom endpoints
@@ -43,3 +43,6 @@ configs/endpoints.json
 
 # Claude Code
 .claude/
+
+# Local benchmarks
+benchmarks/

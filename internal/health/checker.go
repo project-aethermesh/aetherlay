@@ -39,7 +39,7 @@ type Checker struct {
 	config                *config.Config
 	healthCheckSyncStatus bool
 	interval              time.Duration
-	redisClient           store.RedisClientIface
+	valkeyClient          store.ValkeyClientIface
 
 	ephemeralChecks          map[string]*ephemeralState // key: chain|endpointID|protocol
 	ephemeralChecksInterval  time.Duration
@@ -59,12 +59,12 @@ type ephemeralState struct {
 }
 
 // NewChecker creates a new health checker
-func NewChecker(cfg *config.Config, redisClient store.RedisClientIface, interval time.Duration, ephemeralChecksInterval time.Duration, ephemeralChecksThreshold int, healthCheckSyncStatus bool) *Checker {
+func NewChecker(cfg *config.Config, valkeyClient store.ValkeyClientIface, interval time.Duration, ephemeralChecksInterval time.Duration, ephemeralChecksThreshold int, healthCheckSyncStatus bool) *Checker {
 	c := &Checker{
 		config:                   cfg,
 		healthCheckSyncStatus:    healthCheckSyncStatus,
 		interval:                 interval,
-		redisClient:              redisClient,
+		valkeyClient:             valkeyClient,
 		ephemeralChecks:          make(map[string]*ephemeralState),
 		ephemeralChecksInterval:  ephemeralChecksInterval,
 		ephemeralChecksThreshold: ephemeralChecksThreshold,
@@ -125,13 +125,13 @@ func (c *Checker) StartEphemeralChecks(ctx context.Context) {
 			// Scan all endpoints for unhealthy status
 			for chain, endpoints := range c.config.Endpoints {
 				for endpointID, endpoint := range endpoints {
-					status, err := c.redisClient.GetEndpointStatus(ctx, chain, endpointID)
+					status, err := c.valkeyClient.GetEndpointStatus(ctx, chain, endpointID)
 					if err != nil {
 						log.Error().Err(err).Str("chain", chain).Str("endpoint_id", endpointID).Msg("Failed to get endpoint status for ephemeral check")
 						continue
 					}
 					// Check if endpoint is rate limited
-					rateLimitState, err := c.redisClient.GetRateLimitState(ctx, chain, endpointID)
+					rateLimitState, err := c.valkeyClient.GetRateLimitState(ctx, chain, endpointID)
 					if err == nil && rateLimitState.RateLimited {
 						log.Debug().Str("chain", chain).Str("endpoint_id", endpointID).Msg("Skipping ephemeral checks for rate-limited endpoint")
 						continue
@@ -200,8 +200,8 @@ func (c *Checker) runEphemeralCheckProtocol(ctx context.Context, chain, endpoint
 				log.Debug().Str("chain", chain).Str("endpoint_id", endpointID).Str("protocol", protocol).Int("consecutive", consecutive).Msg("Ephemeral check: success")
 				if consecutive >= threshold {
 					log.Info().Str("chain", chain).Str("endpoint_id", endpointID).Str("protocol", protocol).Msg("Ephemeral check: protocol considered healthy again")
-					// Mark protocol healthy in Redis
-					status, err := c.redisClient.GetEndpointStatus(ctx, chain, endpointID)
+					// Mark protocol healthy in Valkey
+					status, err := c.valkeyClient.GetEndpointStatus(ctx, chain, endpointID)
 					if err == nil {
 						switch protocol {
 						case "http":
@@ -266,14 +266,14 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 	status.HealthyWS = <-wsResult
 
 	// Get current request counts
-	r24h, r1m, rAll, err := c.redisClient.GetCombinedRequestCounts(ctx, chain, endpointID)
+	r24h, r1m, rAll, err := c.valkeyClient.GetCombinedRequestCounts(ctx, chain, endpointID)
 	if err == nil {
 		status.Requests24h = r24h
 		status.Requests1Month = r1m
 		status.RequestsLifetime = rAll
 	}
 
-	// Update status in Redis
+	// Update status in Valkey
 	c.updateStatus(ctx, chain, endpointID, status)
 }
 
@@ -588,14 +588,14 @@ func (c *Checker) updateHealthMetrics(chain, endpointID string, healthy bool) {
 
 // incrementHealthRequestCount increments the health request count and logs errors
 func (c *Checker) incrementHealthRequestCount(ctx context.Context, chain, endpointID string) {
-	if err := c.redisClient.IncrementRequestCount(ctx, chain, endpointID, "health_requests"); err != nil {
+	if err := c.valkeyClient.IncrementRequestCount(ctx, chain, endpointID, "health_requests"); err != nil {
 		log.Error().Err(err).Str("chain", chain).Str("endpoint_id", endpointID).Msg("Failed to increment health request count")
 	}
 }
 
-// updateEndpointStatusInRedis fetches current status, updates it with new values, and stores it in Redis
-func (c *Checker) updateEndpointStatusInRedis(ctx context.Context, chain, endpointID string, updateFn func(*store.EndpointStatus)) {
-	status, err := c.redisClient.GetEndpointStatus(ctx, chain, endpointID)
+// updateEndpointStatusInValkey fetches current status, updates it with new values, and stores it in Valkey
+func (c *Checker) updateEndpointStatusInValkey(ctx context.Context, chain, endpointID string, updateFn func(*store.EndpointStatus)) {
+	status, err := c.valkeyClient.GetEndpointStatus(ctx, chain, endpointID)
 	if err != nil || status == nil {
 		st := store.NewEndpointStatus()
 		status = &st
@@ -605,14 +605,14 @@ func (c *Checker) updateEndpointStatusInRedis(ctx context.Context, chain, endpoi
 	updateFn(status)
 
 	// Get current request counts
-	r24h, r1m, rAll, err := c.redisClient.GetCombinedRequestCounts(ctx, chain, endpointID)
+	r24h, r1m, rAll, err := c.valkeyClient.GetCombinedRequestCounts(ctx, chain, endpointID)
 	if err == nil {
 		status.Requests24h = r24h
 		status.Requests1Month = r1m
 		status.RequestsLifetime = rAll
 	}
 
-	// Update in Redis
+	// Update in Valkey
 	c.updateStatus(ctx, chain, endpointID, *status)
 }
 
@@ -655,9 +655,9 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 	// Check all health parameters
 	healthy, blockNumber := c.checkHealthParams(chain, endpointID, endpoint.HTTPURL, "HTTP", syncResult, blockResult)
 
-	// Update metrics and status in Redis
+	// Update metrics and status in Valkey
 	c.updateHealthMetrics(chain, endpointID, healthy)
-	c.updateEndpointStatusInRedis(ctx, chain, endpointID, func(status *store.EndpointStatus) {
+	c.updateEndpointStatusInValkey(ctx, chain, endpointID, func(status *store.EndpointStatus) {
 		status.BlockNumber = blockNumber // Store the block number for future reference
 		status.HasHTTP = endpoint.HTTPURL != ""
 		status.HealthyHTTP = healthy
@@ -705,9 +705,9 @@ func (c *Checker) checkWSHealth(ctx context.Context, chain, endpointID string, e
 	// Check all health parameters
 	healthy, blockNumber := c.checkHealthParams(chain, endpointID, endpoint.WSURL, "WS", syncResult, blockResult)
 
-	// Update metrics and status in Redis
+	// Update metrics and status in Valkey
 	c.updateHealthMetrics(chain, endpointID, healthy)
-	c.updateEndpointStatusInRedis(ctx, chain, endpointID, func(status *store.EndpointStatus) {
+	c.updateEndpointStatusInValkey(ctx, chain, endpointID, func(status *store.EndpointStatus) {
 		status.BlockNumber = blockNumber // Store the block number for future reference
 		status.HasWS = endpoint.WSURL != ""
 		status.HealthyWS = healthy
@@ -716,9 +716,9 @@ func (c *Checker) checkWSHealth(ctx context.Context, chain, endpointID string, e
 	return healthy
 }
 
-// updateStatus updates the endpoint status in Redis
+// updateStatus updates the endpoint status in Valkey
 func (c *Checker) updateStatus(ctx context.Context, chain, endpointID string, status store.EndpointStatus) {
-	if err := c.redisClient.UpdateEndpointStatus(ctx, chain, endpointID, status); err != nil {
+	if err := c.valkeyClient.UpdateEndpointStatus(ctx, chain, endpointID, status); err != nil {
 		log.Error().Err(err).
 			Str("chain", chain).
 			Str("endpoint_id", endpointID).

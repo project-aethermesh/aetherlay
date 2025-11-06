@@ -16,54 +16,54 @@ spec:
         app: aetherlay-lb
     spec:
       containers:
-      - name: aetherlay-lb
-        image: ghcr.io/project-aethermesh/aetherlay-lb:latest
-        imagePullPolicy: IfNotPresent
-        ports:
-        - containerPort: 8080
-          name: http
-        env:
-        - name: REDIS_HOST
-          value: "redis-service" # Update with your Redis service name
-        - name: REDIS_PORT
-          value: "6379"
-        - name: REDIS_PASS
-          valueFrom:
-            secretKeyRef:
-              name: redis-secret
-              key: redis-pass
-        - name: STANDALONE_HEALTH_CHECKS
-          value: "true" # Enable standalone health checks
-        - name: HEALTH_CHECK_INTERVAL
-          value: "0" # Disable integrated health checks
-        - name: METRICS_PORT
-          value: 9090
-        volumeMounts:
-        - name: config-volume
-          mountPath: /app/configs
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "256Mi"
-            cpu: "200m"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8080
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 8080
-          initialDelaySeconds: 5
-          periodSeconds: 5
+        - name: aetherlay-lb
+          image: ghcr.io/project-aethermesh/aetherlay-lb:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: VALKEY_HOST
+              value: "valkey-service" # Update with your valkey service name
+            - name: VALKEY_PORT
+              value: "6379"
+            - name: VALKEY_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: valkey-secret
+                  key: valkey-pass
+            - name: STANDALONE_HEALTH_CHECKS
+              value: "true" # Enable standalone health checks
+            - name: HEALTH_CHECK_INTERVAL
+              value: "0" # Disable integrated health checks
+            - name: METRICS_PORT
+              value: 9090
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app/configs
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
       volumes:
-      - name: config-volume
-        configMap:
-          name: rpc-endpoints-config
+        - name: config-volume
+          configMap:
+            name: rpc-endpoints-config
 ---
 apiVersion: v1
 kind: Service
@@ -75,10 +75,10 @@ metadata:
 spec:
   type: ClusterIP # Or LoadBalancer, depending on your setup
   ports:
-  - port: 80
-    targetPort: 8080
-    protocol: TCP
-    name: http
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+      name: http
   selector:
     app: aetherlay-lb
 ---
@@ -95,15 +95,15 @@ spec:
   minReplicas: 2
   maxReplicas: 10
   metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 90
-  - type: Resource
-    resource:
-      name: memory
-      target:
-        type: Utilization
-        averageUtilization: 90
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 90
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 90

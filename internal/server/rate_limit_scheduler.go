@@ -15,8 +15,8 @@ import (
 
 // RateLimitScheduler manages recovery checks for rate-limited endpoints
 type RateLimitScheduler struct {
-	config      *config.Config
-	redisClient store.RedisClientIface
+	config       *config.Config
+	valkeyClient store.ValkeyClientIface
 
 	// Active monitoring tracking
 	activeMonitoring map[string]bool // key: chain:endpoint
@@ -24,10 +24,10 @@ type RateLimitScheduler struct {
 }
 
 // NewRateLimitScheduler creates a new rate limit scheduler
-func NewRateLimitScheduler(cfg *config.Config, redisClient store.RedisClientIface) *RateLimitScheduler {
+func NewRateLimitScheduler(cfg *config.Config, valkeyClient store.ValkeyClientIface) *RateLimitScheduler {
 	return &RateLimitScheduler{
 		config:           cfg,
-		redisClient:      redisClient,
+		valkeyClient:     valkeyClient,
 		activeMonitoring: make(map[string]bool),
 	}
 }
@@ -104,7 +104,7 @@ func (rls *RateLimitScheduler) monitorEndpoint(chain, endpointID string) {
 	// Use dynamic backoff instead of fixed ticker
 	for {
 		// Get current state to determine next check time
-		state, err := rls.redisClient.GetRateLimitState(context.Background(), chain, endpointID)
+		state, err := rls.valkeyClient.GetRateLimitState(context.Background(), chain, endpointID)
 		if err != nil {
 			log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get rate limit state for scheduling")
 			return
@@ -117,7 +117,7 @@ func (rls *RateLimitScheduler) monitorEndpoint(chain, endpointID string) {
 			state.CurrentBackoff = 0
 			state.ConsecutiveSuccess = 0
 			state.FirstRateLimited = time.Now()
-			if err := rls.redisClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
+			if err := rls.valkeyClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
 				log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to reset rate limit state")
 				return
 			}
@@ -151,7 +151,7 @@ func (rls *RateLimitScheduler) monitorEndpoint(chain, endpointID string) {
 // performRecoveryCheck performs a single recovery check for an endpoint
 func (rls *RateLimitScheduler) performRecoveryCheck(chain, endpointID string, endpoint config.Endpoint, rateLimitConfig config.RateLimitRecovery) (bool, error) {
 	// Get current rate limit state
-	state, err := rls.redisClient.GetRateLimitState(context.Background(), chain, endpointID)
+	state, err := rls.valkeyClient.GetRateLimitState(context.Background(), chain, endpointID)
 	if err != nil {
 		return false, err
 	}
@@ -213,7 +213,7 @@ func (rls *RateLimitScheduler) performRecoveryCheck(chain, endpointID string, en
 			state.FirstRateLimited = time.Time{} // Clear the first rate limited time
 
 			// Update endpoint status to healthy
-			endpointStatus, err := rls.redisClient.GetEndpointStatus(context.Background(), chain, endpointID)
+			endpointStatus, err := rls.valkeyClient.GetEndpointStatus(context.Background(), chain, endpointID)
 			if err != nil {
 				log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get endpoint status")
 			} else {
@@ -224,7 +224,7 @@ func (rls *RateLimitScheduler) performRecoveryCheck(chain, endpointID string, en
 					endpointStatus.HealthyWS = true
 				}
 
-				if err := rls.redisClient.UpdateEndpointStatus(context.Background(), chain, endpointID, *endpointStatus); err != nil {
+				if err := rls.valkeyClient.UpdateEndpointStatus(context.Background(), chain, endpointID, *endpointStatus); err != nil {
 					log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to update endpoint status")
 				} else {
 					log.Info().
@@ -236,7 +236,7 @@ func (rls *RateLimitScheduler) performRecoveryCheck(chain, endpointID string, en
 			}
 
 			// Save state and stop monitoring
-			if err := rls.redisClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
+			if err := rls.valkeyClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
 				log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to save recovery state")
 			}
 			return false, nil // Stop monitoring
@@ -248,7 +248,7 @@ func (rls *RateLimitScheduler) performRecoveryCheck(chain, endpointID string, en
 	}
 
 	// Save updated state
-	if err := rls.redisClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
+	if err := rls.valkeyClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
 		log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to save rate limit state")
 		return false, err
 	}
