@@ -31,10 +31,16 @@ func (e *RateLimitError) Error() string {
 	return e.Message
 }
 
+// HealthCheckerIface defines the interface for health checker operations needed by the server
+type HealthCheckerIface interface {
+	IsReady() bool
+}
+
 // Server represents the RPC load balancer server
 type Server struct {
 	appConfig            *helpers.LoadedConfig
 	config               *config.Config
+	healthChecker        HealthCheckerIface
 	httpServer           *http.Server
 	maxRetries           int
 	rateLimitScheduler   *RateLimitScheduler
@@ -74,6 +80,9 @@ func (s *Server) setupRoutes() {
 	// Health check endpoint
 	s.router.HandleFunc("/health", s.handleHealthCheck).Methods("GET")
 
+	// Readiness endpoint (reports ready only after initial health checks complete)
+	s.router.HandleFunc("/ready", s.handleReadinessCheck).Methods("GET")
+
 	// Chain-specific endpoints
 	for chain := range s.config.Endpoints {
 		s.router.HandleFunc("/"+chain, s.handleRequestHTTP(chain)).Methods("POST")
@@ -97,9 +106,26 @@ func (s *Server) Start(port int) error {
 
 // Shutdown gracefully shuts down the server
 func (s *Server) Shutdown() error {
+	log.Info().Msg("Initiating server shutdown...")
+
+	// Shutdown rate limit scheduler first
+	if s.rateLimitScheduler != nil {
+		if err := s.rateLimitScheduler.Shutdown(10 * time.Second); err != nil {
+			log.Warn().Err(err).Msg("Rate limit scheduler shutdown did not complete cleanly")
+		}
+	}
+
+	// Shutdown HTTP server
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return s.httpServer.Shutdown(ctx)
+
+	if err := s.httpServer.Shutdown(ctx); err != nil {
+		log.Error().Err(err).Msg("HTTP server shutdown failed")
+		return err
+	}
+
+	log.Info().Msg("Server shutdown completed")
+	return nil
 }
 
 // AddMiddleware adds a middleware to the server's router
@@ -107,11 +133,34 @@ func (s *Server) AddMiddleware(middleware func(http.Handler) http.Handler) {
 	s.router.Use(middleware)
 }
 
-// handleHealthCheck handles the /health endpoint for health checks
+// SetHealthChecker sets the health checker for the server
+func (s *Server) SetHealthChecker(checker HealthCheckerIface) {
+	s.healthChecker = checker
+}
+
+// handleHealthCheck handles the /health endpoint for liveness checks
 func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "healthy",
+	})
+}
+
+// handleReadinessCheck handles the /ready endpoint for readiness checks
+// This returns 200 only after initial health checks complete
+func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
+	if s.healthChecker != nil && !s.healthChecker.IsReady() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "not_ready",
+			"reason": "initial_health_check_in_progress",
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "ready",
 	})
 }
 

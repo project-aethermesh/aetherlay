@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/valkey-io/valkey-go"
@@ -28,6 +29,7 @@ type EndpointStatus struct {
 	Requests24h      int64     `json:"requests_24h"`      // Number of requests in the last 24 hours
 	Requests1Month   int64     `json:"requests_1_month"`  // Number of requests in the last month
 	RequestsLifetime int64     `json:"requests_lifetime"` // Total number of requests since start
+	Version          int64     `json:"version"`           // Version number for optimistic locking
 
 	// Protocol support and health flags
 	HasHTTP     bool `json:"has_http"`     // Whether the endpoint supports HTTP/HTTPS
@@ -43,15 +45,16 @@ type EndpointStatus struct {
 // All health flags are set to false and request counts are initialized to 0.
 func NewEndpointStatus() EndpointStatus {
 	return EndpointStatus{
-		LastHealthCheck:  time.Now(),
-		Requests24h:      0,
-		Requests1Month:   0,
-		RequestsLifetime: 0,
+		BlockNumber:      0,
 		HasHTTP:          false,
 		HasWS:            false,
 		HealthyHTTP:      false,
 		HealthyWS:        false,
-		BlockNumber:      0,
+		LastHealthCheck:  time.Now(),
+		Requests24h:      0,
+		Requests1Month:   0,
+		RequestsLifetime: 0,
+		Version:          0,
 	}
 }
 
@@ -113,18 +116,76 @@ func (r *ValkeyClient) Close() error {
 	return nil
 }
 
-// UpdateEndpointStatus updates the health status of an endpoint in Valkey.
+// UpdateEndpointStatus updates the health status of an endpoint in Valkey with optimistic locking.
+// It uses the version field to detect concurrent modifications and retries up to 3 times.
 // The data is stored as JSON with the key pattern "health:{chain}:{endpoint}".
 // The data has no expiration and persists until explicitly deleted.
 func (r *ValkeyClient) UpdateEndpointStatus(ctx context.Context, chain, endpoint string, status EndpointStatus) error {
 	key := healthPrefix + chain + ":" + endpoint
-	data, err := json.Marshal(status)
-	if err != nil {
-		return err
+
+	// Try up to 3 times with optimistic locking
+	maxRetries := 3
+	for range maxRetries {
+		// Get current version
+		currentStatus, err := r.GetEndpointStatus(ctx, chain, endpoint)
+		if err != nil {
+			return err
+		}
+
+		// Check if version matches (optimistic locking)
+		if currentStatus.Version != status.Version {
+			// Version mismatch, someone else updated it
+			// Retry with updated version
+			status.Version = currentStatus.Version
+		}
+
+		// Increment version for this update
+		status.Version++
+
+		// Marshal with new version
+		data, err := json.Marshal(status)
+		if err != nil {
+			return err
+		}
+
+		// Use SET with GET to implement compare-and-swap
+		// First, verify the current version hasn't changed
+		getCmd := r.client.B().Get().Key(key).Build()
+		currentData := r.client.Do(ctx, getCmd)
+
+		if !valkey.IsValkeyNil(currentData.Error()) {
+			// Parse current data to check version
+			currentBytes, err := currentData.AsBytes()
+			if err != nil {
+				return err
+			}
+
+			var current EndpointStatus
+			if err := json.Unmarshal(currentBytes, &current); err != nil {
+				return err
+			}
+
+			// If version changed, retry
+			if current.Version >= status.Version {
+				// Version conflict, another update occurred
+				continue
+			}
+		}
+
+		// Perform the update
+		setCmd := r.client.B().Set().Key(key).Value(string(data)).Build()
+		if err := r.client.Do(ctx, setCmd).Error(); err != nil {
+			return err
+		}
+
+		return nil // Success
 	}
-	cmd := r.client.B().Set().Key(key).Value(string(data)).Build()
-	return r.client.Do(ctx, cmd).Error()
+
+	return ErrVersionConflict
 }
+
+// ErrVersionConflict is returned when optimistic locking fails after max retries
+var ErrVersionConflict = errors.New("version conflict: endpoint status was modified by another process")
 
 // GetEndpointStatus retrieves the health status of an endpoint from Valkey.
 // If the endpoint doesn't exist in Valkey, it creates a new status with default values.
@@ -163,6 +224,7 @@ type RateLimitState struct {
 	LastRecoveryCheck  time.Time `json:"last_recovery_check"` // When the last recovery check was performed
 	RateLimited        bool      `json:"rate_limited"`        // Whether the endpoint is currently rate limited
 	RecoveryAttempts   int       `json:"recovery_attempts"`   // Number of recovery attempts made
+	Version            int64     `json:"version"`             // Version number for optimistic locking
 }
 
 // IncrementRequestCount increments the request count for an endpoint in Valkey.
@@ -257,6 +319,7 @@ func (r *ValkeyClient) GetRateLimitState(ctx context.Context, chain, endpoint st
 			LastRecoveryCheck:  time.Time{},
 			RateLimited:        false,
 			RecoveryAttempts:   0,
+			Version:            0,
 		}, nil
 	}
 
@@ -272,14 +335,69 @@ func (r *ValkeyClient) GetRateLimitState(ctx context.Context, chain, endpoint st
 	return &state, nil
 }
 
-// SetRateLimitState updates the rate limit state for an endpoint in Valkey
+// SetRateLimitState updates the rate limit state for an endpoint in Valkey with optimistic locking.
+// It uses the version field to detect concurrent modifications and retries up to 3 times.
+// Set with 24-hour expiration to prevent indefinite storage of old rate limit states
 func (r *ValkeyClient) SetRateLimitState(ctx context.Context, chain, endpoint string, state RateLimitState) error {
 	key := rateLimitPrefix + chain + ":" + endpoint
-	data, err := json.Marshal(state)
-	if err != nil {
-		return err
+
+	// Try up to 3 times with optimistic locking
+	maxRetries := 3
+	for range maxRetries {
+		// Get current version
+		currentState, err := r.GetRateLimitState(ctx, chain, endpoint)
+		if err != nil {
+			return err
+		}
+
+		// Check if version matches (optimistic locking)
+		if currentState.Version != state.Version {
+			// Version mismatch, someone else updated it
+			// Retry with updated version
+			state.Version = currentState.Version
+		}
+
+		// Increment version for this update
+		state.Version++
+
+		// Marshal with new version
+		data, err := json.Marshal(state)
+		if err != nil {
+			return err
+		}
+
+		// Use SET with GET to implement compare-and-swap
+		// First, verify the current version hasn't changed
+		getCmd := r.client.B().Get().Key(key).Build()
+		currentData := r.client.Do(ctx, getCmd)
+
+		if !valkey.IsValkeyNil(currentData.Error()) {
+			// Parse current data to check version
+			currentBytes, err := currentData.AsBytes()
+			if err != nil {
+				return err
+			}
+
+			var current RateLimitState
+			if err := json.Unmarshal(currentBytes, &current); err != nil {
+				return err
+			}
+
+			// If version changed, retry
+			if current.Version >= state.Version {
+				// Version conflict, another update occurred
+				continue
+			}
+		}
+
+		// Perform the update with 24-hour expiration
+		setCmd := r.client.B().Set().Key(key).Value(string(data)).Ex(24 * time.Hour).Build()
+		if err := r.client.Do(ctx, setCmd).Error(); err != nil {
+			return err
+		}
+
+		return nil // Success
 	}
-	// Set with 24-hour expiration to prevent indefinite storage of old rate limit states
-	cmd := r.client.B().Set().Key(key).Value(string(data)).Ex(24 * time.Hour).Build()
-	return r.client.Do(ctx, cmd).Error()
+
+	return ErrVersionConflict
 }

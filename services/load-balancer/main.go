@@ -82,20 +82,31 @@ func main() {
 	srv := server.NewServer(cfg, valkeyClient, appConfig)
 
 	// Configure regular health checks based on the value of standaloneHealthChecks
+	var checker *health.Checker
 	if !appConfig.StandaloneHealthChecks {
 		if appConfig.HealthCheckInterval > 0 {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			checker := health.NewChecker(cfg, valkeyClient, time.Duration(appConfig.HealthCheckInterval)*time.Second, time.Duration(appConfig.EphemeralChecksInterval)*time.Second, appConfig.EphemeralChecksHealthyThreshold, appConfig.HealthCheckSyncStatus)
+			checker = health.NewChecker(cfg, valkeyClient, time.Duration(appConfig.HealthCheckInterval)*time.Second, time.Duration(appConfig.EphemeralChecksInterval)*time.Second, appConfig.EphemeralChecksHealthyThreshold, appConfig.HealthCheckSyncStatus)
 
 			// Connect health checker to server's rate limit handler
 			checker.HandleRateLimitFunc = srv.GetRateLimitHandler()
 
 			log.Info().Int("interval_seconds", appConfig.HealthCheckInterval).Msg("Starting integrated health check service")
 			go checker.Start(ctx)
+
+			// Wait for initial health check to complete before accepting traffic
+			log.Info().Msg("Waiting for initial health check to complete...")
+			checker.WaitForInitialCheck()
+			log.Info().Msg("Initial health check completed, ready to accept traffic")
 		}
 	} else if appConfig.StandaloneHealthChecks {
 		log.Info().Msg("Standalone health checks enabled (STANDALONE_HEALTH_CHECKS=true). Using external health checker service.")
+	}
+
+	// Pass health checker to server for readiness endpoint
+	if checker != nil {
+		srv.SetHealthChecker(checker)
 	}
 	srv.AddMiddleware(func(next http.Handler) http.Handler {
 		return cors.Middleware(next, appConfig.CorsHeaders, appConfig.CorsMethods, appConfig.CorsOrigin)

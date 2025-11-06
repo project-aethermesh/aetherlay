@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"aetherlay/internal/config"
@@ -51,6 +52,11 @@ type Checker struct {
 	// For testability: allow patching health check methods
 	CheckHTTPHealthFunc func(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool
 	CheckWSHealthFunc   func(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool
+
+	// Startup synchronization
+	initialCheckDone sync.WaitGroup
+	isReady          bool
+	readyMu          sync.RWMutex
 }
 
 // Add a map to track running ephemeral checks (at the top of the file, after Checker struct)
@@ -68,10 +74,27 @@ func NewChecker(cfg *config.Config, valkeyClient store.ValkeyClientIface, interv
 		ephemeralChecks:          make(map[string]*ephemeralState),
 		ephemeralChecksInterval:  ephemeralChecksInterval,
 		ephemeralChecksThreshold: ephemeralChecksThreshold,
+		isReady:                  false,
 	}
 	c.CheckHTTPHealthFunc = c.checkHTTPHealth
 	c.CheckWSHealthFunc = c.checkWSHealth
+
+	// Initialize WaitGroup with 1 to block until initial check completes
+	c.initialCheckDone.Add(1)
+
 	return c
+}
+
+// IsReady returns true if the initial health check has completed
+func (c *Checker) IsReady() bool {
+	c.readyMu.RLock()
+	defer c.readyMu.RUnlock()
+	return c.isReady
+}
+
+// WaitForInitialCheck blocks until the initial health check completes
+func (c *Checker) WaitForInitialCheck() {
+	c.initialCheckDone.Wait()
 }
 
 // Start starts the health checker loop
@@ -79,8 +102,8 @@ func (c *Checker) Start(ctx context.Context) {
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
 
-	// Run initial health check
-	c.checkAllEndpoints(ctx)
+	// Run initial health check and wait for completion
+	c.checkAllEndpointsAndWait(ctx, true)
 
 	for {
 		select {
@@ -235,6 +258,34 @@ func (c *Checker) checkAllEndpoints(ctx context.Context) {
 		for endpointID, endpoint := range endpoints {
 			go c.checkEndpoint(ctx, chain, endpointID, endpoint)
 		}
+	}
+}
+
+// checkAllEndpointsAndWait checks all endpoints and waits for all checks to complete
+// If isInitial is true, it marks the checker as ready after completion
+func (c *Checker) checkAllEndpointsAndWait(ctx context.Context, isInitial bool) {
+	var wg sync.WaitGroup
+
+	for chain, endpoints := range c.config.Endpoints {
+		for endpointID, endpoint := range endpoints {
+			wg.Add(1)
+			go func(chain, endpointID string, endpoint config.Endpoint) {
+				defer wg.Done()
+				c.checkEndpoint(ctx, chain, endpointID, endpoint)
+			}(chain, endpointID, endpoint)
+		}
+	}
+
+	// Wait for all endpoint checks to complete
+	wg.Wait()
+
+	// Mark as ready if this is the initial check
+	if isInitial {
+		c.readyMu.Lock()
+		c.isReady = true
+		c.readyMu.Unlock()
+		c.initialCheckDone.Done()
+		log.Info().Msg("Initial health check completed, service is ready")
 	}
 }
 
