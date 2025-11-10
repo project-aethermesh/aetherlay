@@ -21,6 +21,7 @@ type Config struct {
 	EphemeralChecksHealthyThreshold int
 	EphemeralChecksInterval         int
 	HealthCacheTTL                  int
+	HealthCheckConcurrency          int
 	HealthCheckInterval             int
 	HealthCheckSyncStatus           bool
 	LogLevel                        string
@@ -54,6 +55,7 @@ func ParseFlags() *Config {
 	flag.IntVar(&config.EphemeralChecksHealthyThreshold, "ephemeral-checks-healthy-threshold", 3, "Ephemeral checks healthy threshold")
 	flag.IntVar(&config.EphemeralChecksInterval, "ephemeral-checks-interval", 30, "Ephemeral checks interval in seconds")
 	flag.IntVar(&config.HealthCacheTTL, "health-cache-ttl", 10, "Health status cache TTL in seconds")
+	flag.IntVar(&config.HealthCheckConcurrency, "health-check-concurrency", 20, "Maximum number of concurrent health checks during startup")
 	flag.IntVar(&config.HealthCheckInterval, "health-check-interval", 30, "Health check interval in seconds")
 	flag.BoolVar(&config.HealthCheckSyncStatus, "health-check-sync-status", true, "Consider the sync status of the endpoints when deciding whether an endpoint is healthy or not.")
 	flag.StringVar(&config.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
@@ -125,6 +127,7 @@ func (c *Config) LoadConfiguration() *LoadedConfig {
 		EphemeralChecksHealthyThreshold: c.GetIntValue("ephemeral-checks-healthy-threshold", c.EphemeralChecksHealthyThreshold, "EPHEMERAL_CHECKS_HEALTHY_THRESHOLD", 3),
 		EphemeralChecksInterval:         c.GetIntValue("ephemeral-checks-interval", c.EphemeralChecksInterval, "EPHEMERAL_CHECKS_INTERVAL", 30),
 		HealthCacheTTL:                  c.GetIntValue("health-cache-ttl", c.HealthCacheTTL, "HEALTH_CACHE_TTL", 10),
+		HealthCheckConcurrency:          c.GetIntValue("health-check-concurrency", c.HealthCheckConcurrency, "HEALTH_CHECK_CONCURRENCY", 20),
 		HealthCheckInterval:             c.GetIntValue("health-check-interval", c.HealthCheckInterval, "HEALTH_CHECK_INTERVAL", 30),
 		HealthCheckSyncStatus:           c.GetBoolValue("health-check-sync-status", c.HealthCheckSyncStatus, "HEALTH_CHECK_SYNC_STATUS", true),
 		LogLevel:                        c.GetStringValue("log-level", c.LogLevel, "LOG_LEVEL", "info"),
@@ -156,6 +159,7 @@ type LoadedConfig struct {
 	EphemeralChecksHealthyThreshold int
 	EphemeralChecksInterval         int
 	HealthCacheTTL                  int
+	HealthCheckConcurrency          int
 	HealthCheckInterval             int
 	HealthCheckSyncStatus           bool
 	LogLevel                        string

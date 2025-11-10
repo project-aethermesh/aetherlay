@@ -38,6 +38,7 @@ func containsMethodNotFound(message string) bool {
 // Checker represents a health checker
 type Checker struct {
 	config                *config.Config
+	concurrency           int
 	healthCheckSyncStatus bool
 	interval              time.Duration
 	valkeyClient          store.ValkeyClientIface
@@ -65,9 +66,10 @@ type ephemeralState struct {
 }
 
 // NewChecker creates a new health checker
-func NewChecker(cfg *config.Config, valkeyClient store.ValkeyClientIface, interval time.Duration, ephemeralChecksInterval time.Duration, ephemeralChecksThreshold int, healthCheckSyncStatus bool) *Checker {
+func NewChecker(cfg *config.Config, valkeyClient store.ValkeyClientIface, interval time.Duration, ephemeralChecksInterval time.Duration, ephemeralChecksThreshold int, healthCheckSyncStatus bool, concurrency int) *Checker {
 	c := &Checker{
 		config:                   cfg,
+		concurrency:              concurrency,
 		healthCheckSyncStatus:    healthCheckSyncStatus,
 		interval:                 interval,
 		valkeyClient:             valkeyClient,
@@ -266,11 +268,19 @@ func (c *Checker) checkAllEndpoints(ctx context.Context) {
 func (c *Checker) checkAllEndpointsAndWait(ctx context.Context, isInitial bool) {
 	var wg sync.WaitGroup
 
+	// Create a semaphore channel to limit concurrency
+	semaphore := make(chan struct{}, c.concurrency)
+
 	for chain, endpoints := range c.config.Endpoints {
 		for endpointID, endpoint := range endpoints {
 			wg.Add(1)
 			go func(chain, endpointID string, endpoint config.Endpoint) {
 				defer wg.Done()
+
+				// Acquire semaphore (blocks if at capacity)
+				semaphore <- struct{}{}
+				defer func() { <-semaphore }() // Release semaphore
+
 				c.checkEndpoint(ctx, chain, endpointID, endpoint)
 			}(chain, endpointID, endpoint)
 		}
