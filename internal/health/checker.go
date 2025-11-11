@@ -25,6 +25,48 @@ import (
 // ErrMethodNotFound indicates that the RPC method is not supported by the endpoint
 var ErrMethodNotFound = errors.New("method not found")
 
+// rpcResponse represents a JSON-RPC 2.0 response
+type rpcResponse struct {
+	Result any `json:"result"`
+	Error  *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// checkRPCError checks for errors in an RPC response and handles method-not-found errors specially
+func checkRPCError(response *rpcResponse, method, protocol, chain, endpointID, url string) error {
+	if response.Error == nil {
+		return nil
+	}
+
+	// Check for "method not found" errors
+	methodNotFound := response.Error.Code == -32601 || containsMethodNotFound(response.Error.Message)
+
+	if methodNotFound && method == "eth_syncing" {
+		log.Debug().
+			Str("chain", chain).
+			Str("endpoint", helpers.RedactAPIKey(url)).
+			Str("endpoint_id", endpointID).
+			Int("error_code", response.Error.Code).
+			Str("error_message", response.Error.Message).
+			Str("method", method).
+			Msg("eth_syncing not supported by the endpoint, assuming it is fully synced")
+		return ErrMethodNotFound
+	}
+
+	log.Error().
+		Str("chain", chain).
+		Str("endpoint", helpers.RedactAPIKey(url)).
+		Str("endpoint_id", endpointID).
+		Int("error_code", response.Error.Code).
+		Str("error_message", response.Error.Message).
+		Str("method", method).
+		Msgf("%s RPC call failed: JSON-RPC error response", protocol)
+
+	return errors.New(response.Error.Message)
+}
+
 // containsMethodNotFound checks if an error message indicates a method is not supported
 func containsMethodNotFound(message string) bool {
 	message = strings.ToLower(message)
@@ -397,16 +439,10 @@ func (c *Checker) makeRPCCall(ctx context.Context, url, method, chain, endpointI
 	}
 
 	// Define the structure of the response
-	var rpcResponse struct {
-		Result any `json:"result"`
-		Error  *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
+	var response rpcResponse
 
 	// Parse the response
-	if err := json.Unmarshal(body, &rpcResponse); err != nil {
+	if err := json.Unmarshal(body, &response); err != nil {
 		log.Error().
 			Err(err).
 			Str("body", string(body)).
@@ -419,34 +455,11 @@ func (c *Checker) makeRPCCall(ctx context.Context, url, method, chain, endpointI
 	}
 
 	// Check for errors inside the response
-	if rpcResponse.Error != nil {
-		// Check for "method not found" errors
-		methodNotFound := rpcResponse.Error.Code == -32601 || containsMethodNotFound(rpcResponse.Error.Message)
-
-		if methodNotFound && method == "eth_syncing" {
-			log.Debug().
-				Str("chain", chain).
-				Str("endpoint", helpers.RedactAPIKey(url)).
-				Str("endpoint_id", endpointID).
-				Int("error_code", rpcResponse.Error.Code).
-				Str("error_message", rpcResponse.Error.Message).
-				Str("method", method).
-				Msg("eth_syncing not supported by the endpoint, assuming it is fully synced")
-			return nil, ErrMethodNotFound
-		}
-
-		log.Error().
-			Str("chain", chain).
-			Str("endpoint", helpers.RedactAPIKey(url)).
-			Str("endpoint_id", endpointID).
-			Int("error_code", rpcResponse.Error.Code).
-			Str("error_message", rpcResponse.Error.Message).
-			Str("method", method).
-			Msg("RPC call failed: JSON-RPC error response")
-		return nil, errors.New(rpcResponse.Error.Message)
+	if err := checkRPCError(&response, method, "HTTP", chain, endpointID, url); err != nil {
+		return nil, err
 	}
 
-	return rpcResponse.Result, nil
+	return response.Result, nil
 }
 
 // makeWSRPCCall makes a single JSON-RPC call over WebSocket and returns the result
@@ -482,15 +495,9 @@ func (c *Checker) makeWSRPCCall(url, method, chain, endpointID string) (any, err
 	wsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
 
 	// Read the response
-	var rpcResponse struct {
-		Result any `json:"result"`
-		Error  *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
+	var response rpcResponse
 
-	if err := wsConn.ReadJSON(&rpcResponse); err != nil {
+	if err := wsConn.ReadJSON(&response); err != nil {
 		log.Error().
 			Err(err).
 			Str("endpoint", helpers.RedactAPIKey(url)).
@@ -502,34 +509,11 @@ func (c *Checker) makeWSRPCCall(url, method, chain, endpointID string) (any, err
 	}
 
 	// Check for errors inside the response
-	if rpcResponse.Error != nil {
-		// Check for "method not found" errors
-		methodNotFound := rpcResponse.Error.Code == -32601 || containsMethodNotFound(rpcResponse.Error.Message)
-
-		if methodNotFound && method == "eth_syncing" {
-			log.Debug().
-				Str("chain", chain).
-				Str("endpoint", helpers.RedactAPIKey(url)).
-				Str("endpoint_id", endpointID).
-				Int("error_code", rpcResponse.Error.Code).
-				Str("error_message", rpcResponse.Error.Message).
-				Str("method", method).
-				Msg("eth_syncing not supported by the endpoint, assuming it is fully synced")
-			return nil, ErrMethodNotFound
-		}
-
-		log.Error().
-			Str("chain", chain).
-			Str("endpoint", helpers.RedactAPIKey(url)).
-			Str("endpoint_id", endpointID).
-			Int("error_code", rpcResponse.Error.Code).
-			Str("error_message", rpcResponse.Error.Message).
-			Str("method", method).
-			Msg("WS RPC call failed: JSON-RPC error response")
-		return nil, errors.New(rpcResponse.Error.Message)
+	if err := checkRPCError(&response, method, "WS", chain, endpointID, url); err != nil {
+		return nil, err
 	}
 
-	return rpcResponse.Result, nil
+	return response.Result, nil
 }
 
 // parseBlockNumber parses a hex string block number and validates it's > 0
