@@ -246,13 +246,7 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 			// Skip public endpoints if we've exceeded the attempt limit
 			if s.appConfig.PublicFirst && endpoint.Endpoint.Role == "public" && publicAttemptCount >= s.appConfig.PublicFirstAttempts {
 				// Remove this public endpoint and continue
-				var remainingEndpoints []EndpointWithID
-				for _, ep := range allEndpoints {
-					if ep.ID != endpoint.ID {
-						remainingEndpoints = append(remainingEndpoints, ep)
-					}
-				}
-				allEndpoints = remainingEndpoints
+				allEndpoints = removeEndpointByID(allEndpoints, endpoint.ID)
 				continue
 			}
 
@@ -360,13 +354,7 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 				// Skip public endpoints if we've exceeded the attempt limit
 				if s.appConfig.PublicFirst && endpoint.Endpoint.Role == "public" && publicAttemptCount >= s.appConfig.PublicFirstAttempts {
 					// Remove this public endpoint and continue
-					var remainingEndpoints []EndpointWithID
-					for _, ep := range allEndpoints {
-						if ep.ID != endpoint.ID {
-							remainingEndpoints = append(remainingEndpoints, ep)
-						}
-					}
-					allEndpoints = remainingEndpoints
+					allEndpoints = removeEndpointByID(allEndpoints, endpoint.ID)
 					continue
 				}
 
@@ -480,10 +468,10 @@ func isWebSocketUpgrade(r *http.Request) bool {
 }
 
 // containsToken checks if a comma-separated header contains a token (case-insensitive, exact match).
-// It splits the header value, trims whitespace, and compares each token to the target using equalFold.
+// It splits the header value, trims whitespace, and compares each token to the target using strings.EqualFold.
 func containsToken(headerVal, token string) bool {
 	for _, part := range splitAndTrim(headerVal) {
-		if len(part) == len(token) && equalFold(part, token) {
+		if strings.EqualFold(part, token) {
 			return true
 		}
 	}
@@ -497,30 +485,6 @@ func splitAndTrim(s string) []string {
 		parts[i] = strings.TrimSpace(parts[i])
 	}
 	return parts
-}
-
-// equalFold compares two ASCII strings for equality, ignoring case, without allocating new strings.
-// It works by converting any uppercase ASCII letter to lowercase using arithmetic on their byte values.
-// For example, 'B' (66) becomes 'b' (98) by adding 32 to it, which is the value of 'a' minus 'A'.
-func equalFold(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := 0; i < len(a); i++ {
-		ca, cb := a[i], b[i]
-		// Convert uppercase ASCII to lowercase
-		if ca >= 'A' && ca <= 'Z' {
-			ca += 'a' - 'A'
-		}
-		if cb >= 'A' && cb <= 'Z' {
-			cb += 'a' - 'A'
-		}
-		// Compare 2 lowercase letters
-		if ca != cb {
-			return false
-		}
-	}
-	return true
 }
 
 // EndpointWithID represents an endpoint along with its ID (map key)
@@ -655,8 +619,19 @@ func (s *Server) selectBestEndpointByRole(chain string, endpoints []EndpointWith
 	return bestEndpoint
 }
 
-// markEndpointUnhealthyProtocol marks the given endpoint as unhealthy for the specified protocol ("http" or "ws") in Valkey.
-func (s *Server) markEndpointUnhealthyProtocol(chain, endpointID, protocol string) {
+// removeEndpointByID removes an endpoint from a slice by its ID
+func removeEndpointByID(endpoints []EndpointWithID, id string) []EndpointWithID {
+	var remaining []EndpointWithID
+	for _, ep := range endpoints {
+		if ep.ID != id {
+			remaining = append(remaining, ep)
+		}
+	}
+	return remaining
+}
+
+// updateEndpointHealthState tracks consecutive successes/failures and updates endpoint health status when thresholds are reached
+func (s *Server) updateEndpointHealthState(chain, endpointID, protocol string, isSuccess bool) {
 	// Get or create failure state for this endpoint:protocol
 	key := chain + ":" + endpointID + ":" + protocol
 
@@ -672,54 +647,94 @@ func (s *Server) markEndpointUnhealthyProtocol(chain, endpointID, protocol strin
 	}
 	s.failureStatesMu.Unlock()
 
-	// Update failure state
+	// Update state counters
 	state.mu.Lock()
-	state.consecutiveFailures++
-	state.consecutiveSuccesses = 0 // Reset success counter
+	if isSuccess {
+		state.consecutiveSuccesses++
+		state.consecutiveFailures = 0
+	} else {
+		state.consecutiveFailures++
+		state.consecutiveSuccesses = 0
+	}
 	state.lastUpdate = time.Now()
+	currentSuccesses := state.consecutiveSuccesses
 	currentFailures := state.consecutiveFailures
 	state.mu.Unlock()
 
-	log.Debug().
-		Str("chain", chain).
-		Str("endpoint", endpointID).
-		Str("protocol", protocol).
-		Int("consecutive_failures", currentFailures).
-		Int("threshold", s.failureThreshold).
-		Msg("Tracking endpoint failure")
+	// Determine if threshold is reached
+	var thresholdReached bool
+	var targetHealthy bool
+	var threshold int
 
-	// Only mark unhealthy if we've reached the threshold
-	if currentFailures >= s.failureThreshold {
-		status, err := s.valkeyClient.GetEndpointStatus(context.Background(), chain, endpointID)
-		if err != nil {
-			log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Failed to get endpoint status to mark unhealthy")
-			return
-		}
+	if isSuccess {
+		threshold = s.successThreshold
+		thresholdReached = currentSuccesses >= threshold
+		targetHealthy = true
 
-		// Check if already marked unhealthy to avoid unnecessary writes
-		alreadyUnhealthy := false
-		switch protocol {
-		case "http":
-			alreadyUnhealthy = !status.HealthyHTTP
-			status.HealthyHTTP = false
-		case "ws":
-			alreadyUnhealthy = !status.HealthyWS
-			status.HealthyWS = false
-		default:
-			log.Warn().Str("protocol", protocol).Msg("Unknown protocol, can't mark the endpoint as unhealthy")
-			return
-		}
+		log.Debug().
+			Str("chain", chain).
+			Str("endpoint", endpointID).
+			Str("protocol", protocol).
+			Int("consecutive_successes", currentSuccesses).
+			Int("threshold", threshold).
+			Msg("Tracking endpoint success")
+	} else {
+		threshold = s.failureThreshold
+		thresholdReached = currentFailures >= threshold
+		targetHealthy = false
 
-		if alreadyUnhealthy {
-			log.Debug().Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Endpoint already marked unhealthy, skipping update")
-			return
-		}
+		log.Debug().
+			Str("chain", chain).
+			Str("endpoint", endpointID).
+			Str("protocol", protocol).
+			Int("consecutive_failures", currentFailures).
+			Int("threshold", threshold).
+			Msg("Tracking endpoint failure")
+	}
 
-		if err := s.valkeyClient.UpdateEndpointStatus(context.Background(), chain, endpointID, *status); err != nil {
-			log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Failed to update endpoint status to unhealthy")
+	// Only update status if threshold is reached
+	if !thresholdReached {
+		return
+	}
+
+	status, err := s.valkeyClient.GetEndpointStatus(context.Background(), chain, endpointID)
+	if err != nil {
+		log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msgf("Failed to get endpoint status to mark %s", map[bool]string{true: "healthy", false: "unhealthy"}[targetHealthy])
+		return
+	}
+
+	// Update protocol-specific health status and check if already in target state
+	var alreadyInTargetState bool
+	switch protocol {
+	case "http":
+		alreadyInTargetState = status.HealthyHTTP == targetHealthy
+		status.HealthyHTTP = targetHealthy
+	case "ws":
+		alreadyInTargetState = status.HealthyWS == targetHealthy
+		status.HealthyWS = targetHealthy
+	default:
+		log.Warn().Str("protocol", protocol).Msg("Unknown protocol, can't update endpoint health status")
+		return
+	}
+
+	if alreadyInTargetState {
+		log.Debug().Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msgf("Endpoint already marked %s, skipping update", map[bool]string{true: "healthy", false: "unhealthy"}[targetHealthy])
+		return
+	}
+
+	if err := s.valkeyClient.UpdateEndpointStatus(context.Background(), chain, endpointID, *status); err != nil {
+		log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msgf("Failed to update endpoint status to %s", map[bool]string{true: "healthy", false: "unhealthy"}[targetHealthy])
+	} else {
+		// Invalidate cache after successful write
+		s.healthCache.Invalidate(chain, endpointID)
+		if targetHealthy {
+			log.Info().
+				Str("chain", chain).
+				Str("endpoint", endpointID).
+				Str("protocol", protocol).
+				Int("consecutive_successes", currentSuccesses).
+				Msg("Marked endpoint as healthy after reaching success threshold")
 		} else {
-			// Invalidate cache after successful write
-			s.healthCache.Invalidate(chain, endpointID)
 			log.Info().
 				Str("chain", chain).
 				Str("endpoint", endpointID).
@@ -730,79 +745,14 @@ func (s *Server) markEndpointUnhealthyProtocol(chain, endpointID, protocol strin
 	}
 }
 
+// markEndpointUnhealthyProtocol marks the given endpoint as unhealthy for the specified protocol ("http" or "ws") in Valkey.
+func (s *Server) markEndpointUnhealthyProtocol(chain, endpointID, protocol string) {
+	s.updateEndpointHealthState(chain, endpointID, protocol, false)
+}
+
 // markEndpointHealthyAttempt tracks successful requests and marks endpoint as healthy after reaching success threshold
 func (s *Server) markEndpointHealthyAttempt(chain, endpointID, protocol string) {
-	// Get or create failure state for this endpoint:protocol
-	key := chain + ":" + endpointID + ":" + protocol
-
-	s.failureStatesMu.Lock()
-	state, exists := s.failureStates[key]
-	if !exists {
-		state = &endpointFailureState{
-			consecutiveFailures:  0,
-			consecutiveSuccesses: 0,
-			lastUpdate:           time.Now(),
-		}
-		s.failureStates[key] = state
-	}
-	s.failureStatesMu.Unlock()
-
-	// Update success state
-	state.mu.Lock()
-	state.consecutiveSuccesses++
-	state.consecutiveFailures = 0 // Reset failure counter
-	state.lastUpdate = time.Now()
-	currentSuccesses := state.consecutiveSuccesses
-	state.mu.Unlock()
-
-	log.Debug().
-		Str("chain", chain).
-		Str("endpoint", endpointID).
-		Str("protocol", protocol).
-		Int("consecutive_successes", currentSuccesses).
-		Int("threshold", s.successThreshold).
-		Msg("Tracking endpoint success")
-
-	// Only mark healthy if we've reached the threshold
-	if currentSuccesses >= s.successThreshold {
-		status, err := s.valkeyClient.GetEndpointStatus(context.Background(), chain, endpointID)
-		if err != nil {
-			log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Failed to get endpoint status to mark healthy")
-			return
-		}
-
-		// Check if already marked healthy to avoid unnecessary writes
-		alreadyHealthy := false
-		switch protocol {
-		case "http":
-			alreadyHealthy = status.HealthyHTTP
-			status.HealthyHTTP = true
-		case "ws":
-			alreadyHealthy = status.HealthyWS
-			status.HealthyWS = true
-		default:
-			log.Warn().Str("protocol", protocol).Msg("Unknown protocol, can't mark the endpoint as healthy")
-			return
-		}
-
-		if alreadyHealthy {
-			log.Debug().Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Endpoint already marked healthy, skipping update")
-			return
-		}
-
-		if err := s.valkeyClient.UpdateEndpointStatus(context.Background(), chain, endpointID, *status); err != nil {
-			log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Failed to update endpoint status to healthy")
-		} else {
-			// Invalidate cache after successful write
-			s.healthCache.Invalidate(chain, endpointID)
-			log.Info().
-				Str("chain", chain).
-				Str("endpoint", endpointID).
-				Str("protocol", protocol).
-				Int("consecutive_successes", currentSuccesses).
-				Msg("Marked endpoint as healthy after reaching success threshold")
-		}
-	}
+	s.updateEndpointHealthState(chain, endpointID, protocol, true)
 }
 
 // findChainAndEndpointByURL searches the config for an endpoint matching the given URL (HTTPURL or WSURL) and returns the chain and endpoint ID.
