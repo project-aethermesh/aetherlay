@@ -123,35 +123,74 @@ func (r *ValkeyClient) Close() error {
 func (r *ValkeyClient) UpdateEndpointStatus(ctx context.Context, chain, endpoint string, status EndpointStatus) error {
 	key := healthPrefix + chain + ":" + endpoint
 
-	// Try up to 3 times with optimistic locking
+	return updateWithOptimisticLock(
+		ctx,
+		r.client,
+		key,
+		&status,
+		func(ctx context.Context) (*EndpointStatus, error) {
+			return r.GetEndpointStatus(ctx, chain, endpoint)
+		},
+		func(key, jsonData string) valkey.Completed {
+			return r.client.B().Set().Key(key).Value(jsonData).Build()
+		},
+	)
+}
+
+// ErrVersionConflict is returned when optimistic locking fails after max retries
+var ErrVersionConflict = errors.New("version conflict: endpoint status was modified by another process")
+
+// versionedData is an interface for types that support optimistic locking with versions
+type versionedData interface {
+	GetVersion() int64
+	SetVersion(int64)
+}
+
+// Implement versionedData for EndpointStatus
+func (e *EndpointStatus) GetVersion() int64 { return e.Version }
+func (e *EndpointStatus) SetVersion(v int64) { e.Version = v }
+
+// Implement versionedData for RateLimitState
+func (r *RateLimitState) GetVersion() int64 { return r.Version }
+func (r *RateLimitState) SetVersion(v int64) { r.Version = v }
+
+// updateWithOptimisticLock performs an update with optimistic locking and automatic retries
+func updateWithOptimisticLock[T versionedData](
+	ctx context.Context,
+	client valkey.Client,
+	key string,
+	data T,
+	getCurrent func(context.Context) (T, error),
+	buildSetCmd func(key, jsonData string) valkey.Completed,
+) error {
 	maxRetries := 3
 	for range maxRetries {
 		// Get current version
-		currentStatus, err := r.GetEndpointStatus(ctx, chain, endpoint)
+		current, err := getCurrent(ctx)
 		if err != nil {
 			return err
 		}
 
 		// Check if version matches (optimistic locking)
-		if currentStatus.Version != status.Version {
+		if current.GetVersion() != data.GetVersion() {
 			// Version mismatch, someone else updated it
 			// Retry with updated version
-			status.Version = currentStatus.Version
+			data.SetVersion(current.GetVersion())
 		}
 
 		// Increment version for this update
-		status.Version++
+		data.SetVersion(data.GetVersion() + 1)
 
 		// Marshal with new version
-		data, err := json.Marshal(status)
+		jsonBytes, err := json.Marshal(data)
 		if err != nil {
 			return err
 		}
 
 		// Use SET with GET to implement compare-and-swap
 		// First, verify the current version hasn't changed
-		getCmd := r.client.B().Get().Key(key).Build()
-		currentData := r.client.Do(ctx, getCmd)
+		getCmd := client.B().Get().Key(key).Build()
+		currentData := client.Do(ctx, getCmd)
 
 		if !valkey.IsValkeyNil(currentData.Error()) {
 			// Parse current data to check version
@@ -160,21 +199,21 @@ func (r *ValkeyClient) UpdateEndpointStatus(ctx context.Context, chain, endpoint
 				return err
 			}
 
-			var current EndpointStatus
-			if err := json.Unmarshal(currentBytes, &current); err != nil {
+			var currentParsed T
+			if err := json.Unmarshal(currentBytes, &currentParsed); err != nil {
 				return err
 			}
 
 			// If version changed, retry
-			if current.Version >= status.Version {
+			if currentParsed.GetVersion() >= data.GetVersion() {
 				// Version conflict, another update occurred
 				continue
 			}
 		}
 
 		// Perform the update
-		setCmd := r.client.B().Set().Key(key).Value(string(data)).Build()
-		if err := r.client.Do(ctx, setCmd).Error(); err != nil {
+		setCmd := buildSetCmd(key, string(jsonBytes))
+		if err := client.Do(ctx, setCmd).Error(); err != nil {
 			return err
 		}
 
@@ -183,9 +222,6 @@ func (r *ValkeyClient) UpdateEndpointStatus(ctx context.Context, chain, endpoint
 
 	return ErrVersionConflict
 }
-
-// ErrVersionConflict is returned when optimistic locking fails after max retries
-var ErrVersionConflict = errors.New("version conflict: endpoint status was modified by another process")
 
 // GetEndpointStatus retrieves the health status of an endpoint from Valkey.
 // If the endpoint doesn't exist in Valkey, it creates a new status with default values.
@@ -341,63 +377,16 @@ func (r *ValkeyClient) GetRateLimitState(ctx context.Context, chain, endpoint st
 func (r *ValkeyClient) SetRateLimitState(ctx context.Context, chain, endpoint string, state RateLimitState) error {
 	key := rateLimitPrefix + chain + ":" + endpoint
 
-	// Try up to 3 times with optimistic locking
-	maxRetries := 3
-	for range maxRetries {
-		// Get current version
-		currentState, err := r.GetRateLimitState(ctx, chain, endpoint)
-		if err != nil {
-			return err
-		}
-
-		// Check if version matches (optimistic locking)
-		if currentState.Version != state.Version {
-			// Version mismatch, someone else updated it
-			// Retry with updated version
-			state.Version = currentState.Version
-		}
-
-		// Increment version for this update
-		state.Version++
-
-		// Marshal with new version
-		data, err := json.Marshal(state)
-		if err != nil {
-			return err
-		}
-
-		// Use SET with GET to implement compare-and-swap
-		// First, verify the current version hasn't changed
-		getCmd := r.client.B().Get().Key(key).Build()
-		currentData := r.client.Do(ctx, getCmd)
-
-		if !valkey.IsValkeyNil(currentData.Error()) {
-			// Parse current data to check version
-			currentBytes, err := currentData.AsBytes()
-			if err != nil {
-				return err
-			}
-
-			var current RateLimitState
-			if err := json.Unmarshal(currentBytes, &current); err != nil {
-				return err
-			}
-
-			// If version changed, retry
-			if current.Version >= state.Version {
-				// Version conflict, another update occurred
-				continue
-			}
-		}
-
-		// Perform the update with 24-hour expiration
-		setCmd := r.client.B().Set().Key(key).Value(string(data)).Ex(24 * time.Hour).Build()
-		if err := r.client.Do(ctx, setCmd).Error(); err != nil {
-			return err
-		}
-
-		return nil // Success
-	}
-
-	return ErrVersionConflict
+	return updateWithOptimisticLock(
+		ctx,
+		r.client,
+		key,
+		&state,
+		func(ctx context.Context) (*RateLimitState, error) {
+			return r.GetRateLimitState(ctx, chain, endpoint)
+		},
+		func(key, jsonData string) valkey.Completed {
+			return r.client.B().Set().Key(key).Value(jsonData).Ex(24 * time.Hour).Build()
+		},
+	)
 }
