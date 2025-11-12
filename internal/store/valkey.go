@@ -127,11 +127,10 @@ func (r *ValkeyClient) UpdateEndpointStatus(ctx context.Context, chain, endpoint
 		return err
 	}
 
-	// Simple SET operation - last write wins
+	// Simple SET operation, last write wins
 	cmd := r.client.B().Set().Key(key).Value(string(jsonBytes)).Build()
 	return r.client.Do(ctx, cmd).Error()
 }
-
 
 // GetEndpointStatus retrieves the health status of an endpoint from Valkey.
 // If the endpoint doesn't exist in Valkey, it creates a new status with default values.
@@ -292,7 +291,7 @@ func (r *ValkeyClient) SetRateLimitState(ctx context.Context, chain, endpoint st
 		return err
 	}
 
-	// Simple SET operation with expiration - last write wins
+	// Simple SET operation with expiration, last write wins
 	cmd := r.client.B().Set().Key(key).Value(string(jsonBytes)).Ex(24 * time.Hour).Build()
 	return r.client.Do(ctx, cmd).Error()
 }
