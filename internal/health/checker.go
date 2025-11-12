@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"aetherlay/internal/config"
@@ -24,6 +25,48 @@ import (
 // ErrMethodNotFound indicates that the RPC method is not supported by the endpoint
 var ErrMethodNotFound = errors.New("method not found")
 
+// rpcResponse represents a JSON-RPC 2.0 response
+type rpcResponse struct {
+	Result any `json:"result"`
+	Error  *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// checkRPCError checks for errors in an RPC response and handles method-not-found errors specially
+func checkRPCError(response *rpcResponse, method, protocol, chain, endpointID, url string) error {
+	if response.Error == nil {
+		return nil
+	}
+
+	// Check for "method not found" errors
+	methodNotFound := response.Error.Code == -32601 || containsMethodNotFound(response.Error.Message)
+
+	if methodNotFound && method == "eth_syncing" {
+		log.Debug().
+			Str("chain", chain).
+			Str("endpoint", helpers.RedactAPIKey(url)).
+			Str("endpoint_id", endpointID).
+			Int("error_code", response.Error.Code).
+			Str("error_message", response.Error.Message).
+			Str("method", method).
+			Msg("eth_syncing not supported by the endpoint, assuming it is fully synced")
+		return ErrMethodNotFound
+	}
+
+	log.Error().
+		Str("chain", chain).
+		Str("endpoint", helpers.RedactAPIKey(url)).
+		Str("endpoint_id", endpointID).
+		Int("error_code", response.Error.Code).
+		Str("error_message", response.Error.Message).
+		Str("method", method).
+		Msgf("%s RPC call failed: JSON-RPC error response", protocol)
+
+	return errors.New(response.Error.Message)
+}
+
 // containsMethodNotFound checks if an error message indicates a method is not supported
 func containsMethodNotFound(message string) bool {
 	message = strings.ToLower(message)
@@ -37,6 +80,7 @@ func containsMethodNotFound(message string) bool {
 // Checker represents a health checker
 type Checker struct {
 	config                *config.Config
+	concurrency           int
 	healthCheckSyncStatus bool
 	interval              time.Duration
 	valkeyClient          store.ValkeyClientIface
@@ -51,6 +95,11 @@ type Checker struct {
 	// For testability: allow patching health check methods
 	CheckHTTPHealthFunc func(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool
 	CheckWSHealthFunc   func(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool
+
+	// Startup synchronization
+	initialCheckDone sync.WaitGroup
+	isReady          bool
+	readyMu          sync.RWMutex
 }
 
 // Add a map to track running ephemeral checks (at the top of the file, after Checker struct)
@@ -59,19 +108,37 @@ type ephemeralState struct {
 }
 
 // NewChecker creates a new health checker
-func NewChecker(cfg *config.Config, valkeyClient store.ValkeyClientIface, interval time.Duration, ephemeralChecksInterval time.Duration, ephemeralChecksThreshold int, healthCheckSyncStatus bool) *Checker {
+func NewChecker(cfg *config.Config, valkeyClient store.ValkeyClientIface, interval time.Duration, ephemeralChecksInterval time.Duration, ephemeralChecksThreshold int, healthCheckSyncStatus bool, concurrency int) *Checker {
 	c := &Checker{
 		config:                   cfg,
+		concurrency:              concurrency,
 		healthCheckSyncStatus:    healthCheckSyncStatus,
 		interval:                 interval,
 		valkeyClient:             valkeyClient,
 		ephemeralChecks:          make(map[string]*ephemeralState),
 		ephemeralChecksInterval:  ephemeralChecksInterval,
 		ephemeralChecksThreshold: ephemeralChecksThreshold,
+		isReady:                  false,
 	}
 	c.CheckHTTPHealthFunc = c.checkHTTPHealth
 	c.CheckWSHealthFunc = c.checkWSHealth
+
+	// Initialize WaitGroup with 1 to block until initial check completes
+	c.initialCheckDone.Add(1)
+
 	return c
+}
+
+// IsReady returns true if the initial health check has completed
+func (c *Checker) IsReady() bool {
+	c.readyMu.RLock()
+	defer c.readyMu.RUnlock()
+	return c.isReady
+}
+
+// WaitForInitialCheck blocks until the initial health check completes
+func (c *Checker) WaitForInitialCheck() {
+	c.initialCheckDone.Wait()
 }
 
 // Start starts the health checker loop
@@ -79,8 +146,8 @@ func (c *Checker) Start(ctx context.Context) {
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
 
-	// Run initial health check
-	c.checkAllEndpoints(ctx)
+	// Run initial health check and wait for completion
+	c.checkAllEndpointsAndWait(ctx, true)
 
 	for {
 		select {
@@ -238,6 +305,42 @@ func (c *Checker) checkAllEndpoints(ctx context.Context) {
 	}
 }
 
+// checkAllEndpointsAndWait checks all endpoints and waits for all checks to complete
+// If isInitial is true, it marks the checker as ready after completion
+func (c *Checker) checkAllEndpointsAndWait(ctx context.Context, isInitial bool) {
+	var wg sync.WaitGroup
+
+	// Create a semaphore channel to limit concurrency
+	semaphore := make(chan struct{}, c.concurrency)
+
+	for chain, endpoints := range c.config.Endpoints {
+		for endpointID, endpoint := range endpoints {
+			wg.Add(1)
+			go func(chain, endpointID string, endpoint config.Endpoint) {
+				defer wg.Done()
+
+				// Acquire semaphore (blocks if at capacity)
+				semaphore <- struct{}{}
+				defer func() { <-semaphore }() // Release semaphore
+
+				c.checkEndpoint(ctx, chain, endpointID, endpoint)
+			}(chain, endpointID, endpoint)
+		}
+	}
+
+	// Wait for all endpoint checks to complete
+	wg.Wait()
+
+	// Mark as ready if this is the initial check
+	if isInitial {
+		c.readyMu.Lock()
+		c.isReady = true
+		c.readyMu.Unlock()
+		c.initialCheckDone.Done()
+		log.Info().Msg("Initial health check completed, service is ready")
+	}
+}
+
 // checkEndpoint checks the health of a single endpoint
 func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) {
 	status := store.NewEndpointStatus()
@@ -336,16 +439,10 @@ func (c *Checker) makeRPCCall(ctx context.Context, url, method, chain, endpointI
 	}
 
 	// Define the structure of the response
-	var rpcResponse struct {
-		Result any `json:"result"`
-		Error  *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
+	var response rpcResponse
 
 	// Parse the response
-	if err := json.Unmarshal(body, &rpcResponse); err != nil {
+	if err := json.Unmarshal(body, &response); err != nil {
 		log.Error().
 			Err(err).
 			Str("body", string(body)).
@@ -358,34 +455,11 @@ func (c *Checker) makeRPCCall(ctx context.Context, url, method, chain, endpointI
 	}
 
 	// Check for errors inside the response
-	if rpcResponse.Error != nil {
-		// Check for "method not found" errors
-		methodNotFound := rpcResponse.Error.Code == -32601 || containsMethodNotFound(rpcResponse.Error.Message)
-
-		if methodNotFound && method == "eth_syncing" {
-			log.Debug().
-				Str("chain", chain).
-				Str("endpoint", helpers.RedactAPIKey(url)).
-				Str("endpoint_id", endpointID).
-				Int("error_code", rpcResponse.Error.Code).
-				Str("error_message", rpcResponse.Error.Message).
-				Str("method", method).
-				Msg("eth_syncing not supported by the endpoint, assuming it is fully synced")
-			return nil, ErrMethodNotFound
-		}
-
-		log.Error().
-			Str("chain", chain).
-			Str("endpoint", helpers.RedactAPIKey(url)).
-			Str("endpoint_id", endpointID).
-			Int("error_code", rpcResponse.Error.Code).
-			Str("error_message", rpcResponse.Error.Message).
-			Str("method", method).
-			Msg("RPC call failed: JSON-RPC error response")
-		return nil, errors.New(rpcResponse.Error.Message)
+	if err := checkRPCError(&response, method, "HTTP", chain, endpointID, url); err != nil {
+		return nil, err
 	}
 
-	return rpcResponse.Result, nil
+	return response.Result, nil
 }
 
 // makeWSRPCCall makes a single JSON-RPC call over WebSocket and returns the result
@@ -421,15 +495,9 @@ func (c *Checker) makeWSRPCCall(url, method, chain, endpointID string) (any, err
 	wsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
 
 	// Read the response
-	var rpcResponse struct {
-		Result any `json:"result"`
-		Error  *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
+	var response rpcResponse
 
-	if err := wsConn.ReadJSON(&rpcResponse); err != nil {
+	if err := wsConn.ReadJSON(&response); err != nil {
 		log.Error().
 			Err(err).
 			Str("endpoint", helpers.RedactAPIKey(url)).
@@ -441,34 +509,11 @@ func (c *Checker) makeWSRPCCall(url, method, chain, endpointID string) (any, err
 	}
 
 	// Check for errors inside the response
-	if rpcResponse.Error != nil {
-		// Check for "method not found" errors
-		methodNotFound := rpcResponse.Error.Code == -32601 || containsMethodNotFound(rpcResponse.Error.Message)
-
-		if methodNotFound && method == "eth_syncing" {
-			log.Debug().
-				Str("chain", chain).
-				Str("endpoint", helpers.RedactAPIKey(url)).
-				Str("endpoint_id", endpointID).
-				Int("error_code", rpcResponse.Error.Code).
-				Str("error_message", rpcResponse.Error.Message).
-				Str("method", method).
-				Msg("eth_syncing not supported by the endpoint, assuming it is fully synced")
-			return nil, ErrMethodNotFound
-		}
-
-		log.Error().
-			Str("chain", chain).
-			Str("endpoint", helpers.RedactAPIKey(url)).
-			Str("endpoint_id", endpointID).
-			Int("error_code", rpcResponse.Error.Code).
-			Str("error_message", rpcResponse.Error.Message).
-			Str("method", method).
-			Msg("WS RPC call failed: JSON-RPC error response")
-		return nil, errors.New(rpcResponse.Error.Message)
+	if err := checkRPCError(&response, method, "WS", chain, endpointID, url); err != nil {
+		return nil, err
 	}
 
-	return rpcResponse.Result, nil
+	return response.Result, nil
 }
 
 // parseBlockNumber parses a hex string block number and validates it's > 0

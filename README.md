@@ -10,6 +10,8 @@ A lightweight, low-latency RPC load balancer written in Go. It is designed to ma
 - **Flexible Timeout Control**: Separate timeouts for overall requests and individual retry attempts.
 - **Rate Limit Recovery**: Safe rate limit detection and recovery with exponential backoff strategies per endpoint, to avoid making things worse when a provider is rate-limiting you.
 - **Health Checks**: Regularly checks the health of upstream endpoints and updates their status in Valkey.
+- **Health Status Caching**: Local per-pod caching with configurable TTL reduces Valkey load and race condition windows.
+- **Graceful Shutdown**: Proper cleanup of goroutines during pod termination with configurable timeout.
 - **Standalone Health Checker**: Optional standalone health checker service for efficient multi-pod deployments.
 - **Static Configuration**: Loads RPC endpoint configurations from a static JSON file.
 - **Multi-threaded**: Capable of handling multiple requests concurrently.
@@ -136,8 +138,12 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 | `--cors-headers` | `Accept, Authorization, Content-Type, Origin, X-Requested-With` | Allowed headers for CORS requests |
 | `--cors-methods` | `GET, POST, OPTIONS` | Allowed HTTP methods for CORS requests |
 | `--cors-origin` | `*` | Allowed origin for CORS requests |
+| `--endpoint-failure-threshold` | `2` | Number of consecutive failures before marking endpoint unhealthy |
+| `--endpoint-success-threshold` | `2` | Number of consecutive successes before marking endpoint healthy |
 | `--ephemeral-checks-healthy-threshold` | `3` | Amount of consecutive successful responses required to consider endpoint healthy again |
 | `--ephemeral-checks-interval` | `30` | Interval in seconds for ephemeral health checks |
+| `--health-cache-ttl` | `10` | Health status cache TTL in seconds |
+| `--health-check-concurrency` | `20` | Maximum number of concurrent health checks during startup |
 | `--health-check-interval` | `30` | Health check interval in seconds |
 | `--health-check-sync-status` | `true` | Consider the sync status of the endpoints when deciding whether an endpoint is healthy or not. When enabled, endpoints that are syncing are considered to be unhealthy. |
 | `--log-level` | `info` | Set the log level. Valid options are: `debug`, `info`, `warn`, `error`, `fatal`, `panic` |
@@ -168,8 +174,12 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 | `CORS_HEADERS` | `Accept, Authorization, Content-Type, Origin, X-Requested-With` | Allowed headers for CORS requests |
 | `CORS_METHODS` | `GET, POST, OPTIONS` | Allowed HTTP methods for CORS requests |
 | `CORS_ORIGIN` | `*` | Allowed origin for CORS requests |
+| `ENDPOINT_FAILURE_THRESHOLD` | `2` | Number of consecutive failures before marking endpoint unhealthy |
+| `ENDPOINT_SUCCESS_THRESHOLD` | `2` | Number of consecutive successes before marking endpoint healthy |
 | `EPHEMERAL_CHECKS_HEALTHY_THRESHOLD` | `3` | Amount of consecutive successful responses from the endpoint required to consider it as being healthy again |
 | `EPHEMERAL_CHECKS_INTERVAL` | `30` | Interval in seconds for ephemeral health checks |
+| `HEALTH_CACHE_TTL` | `10` | Health status cache TTL in seconds |
+| `HEALTH_CHECK_CONCURRENCY` | `20` | Maximum number of concurrent health checks during startup |
 | `HEALTH_CHECK_INTERVAL` | `30` | Health check interval in seconds |
 | `HEALTH_CHECK_SYNC_STATUS` | `true` | Consider the sync status of the endpoints when deciding whether an endpoint is healthy or not. When enabled, endpoints that are syncing are considered to be unhealthy. |
 | `LOG_LEVEL` | `info` | Set the log level |
@@ -265,6 +275,55 @@ In your `endpoints.json`, mark endpoints with `"role": "public"`:
   }
 }
 ```
+
+## Reliability Features
+
+Ætherlay includes several advanced features to ensure high availability and prevent race conditions in multi-pod deployments.
+
+### Health Status Caching
+
+Local per-pod caching of endpoint health status reduces Valkey load and minimizes race condition windows:
+
+- **Configurable TTL**: Cache entries expire after `HEALTH_CACHE_TTL` seconds (default: 10).
+- **Automatic invalidation**: Cache entries are invalidated when health status changes.
+- **Reduced latency**: Cache reads are <0.1ms vs 1-5ms for Valkey reads.
+- **Fallback behavior**: Falls back to Valkey on cache miss.
+
+### Endpoint Health Debouncing
+
+Prevents health status "flapping" by requiring multiple consecutive observations before changing state:
+
+- **Failure threshold** (`ENDPOINT_FAILURE_THRESHOLD`): Number of consecutive failures before marking endpoint unhealthy (default: 2).
+- **Success threshold** (`ENDPOINT_SUCCESS_THRESHOLD`): Number of consecutive successes before marking endpoint healthy (default: 2).
+- **Per-protocol tracking**: HTTP and WebSocket health tracked independently.
+- **Reset on opposite event**: Success resets failure counter, failure resets success counter.
+
+**Example with default thresholds (2)**:
+```
+Request 1: Success
+Request 2: Failure (1/2 failures) -> endpoint stays healthy
+Request 3: Failure (2/2 failures) -> endpoint is marked unhealthy
+Request 4: Success (1/2 successes) -> endpoint stays unhealthy
+Request 5: Success (2/2 successes) -> endpoint is marked healthy
+```
+
+### Graceful Shutdown
+
+Ensures proper cleanup during pod termination (e.g., Kubernetes rolling updates, Karpenter node replacements):
+
+- **Context cancellation**: All goroutines receive shutdown signal.
+- **Coordinated cleanup**: Rate limit scheduler shuts down before HTTP server.
+- **Configurable timeout**: 10-second default wait for goroutines to complete.
+- **No orphaned goroutines**: WaitGroup tracking ensures all background tasks finish.
+
+### Startup Synchronization
+
+Prevents routing traffic to pods before initial health checks complete:
+
+- **Blocks traffic**: HTTP server doesn't accept requests until ready.
+- **Kubernetes integration**: `/ready` endpoint returns 503 until health check completes.
+- **Initial check**: All endpoints checked with configurable concurrency limit (default: 20 concurrent checks).
+- **Fast startup**: Typical initial check completes in 2-5 seconds, but of course this will vary with the amount of endpoints you configure.
 
 ## Rate Limit Recovery
 

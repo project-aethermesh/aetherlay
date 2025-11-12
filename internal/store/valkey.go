@@ -43,15 +43,15 @@ type EndpointStatus struct {
 // All health flags are set to false and request counts are initialized to 0.
 func NewEndpointStatus() EndpointStatus {
 	return EndpointStatus{
-		LastHealthCheck:  time.Now(),
-		Requests24h:      0,
-		Requests1Month:   0,
-		RequestsLifetime: 0,
+		BlockNumber:      0,
 		HasHTTP:          false,
 		HasWS:            false,
 		HealthyHTTP:      false,
 		HealthyWS:        false,
-		BlockNumber:      0,
+		LastHealthCheck:  time.Now(),
+		Requests24h:      0,
+		Requests1Month:   0,
+		RequestsLifetime: 0,
 	}
 }
 
@@ -116,13 +116,19 @@ func (r *ValkeyClient) Close() error {
 // UpdateEndpointStatus updates the health status of an endpoint in Valkey.
 // The data is stored as JSON with the key pattern "health:{chain}:{endpoint}".
 // The data has no expiration and persists until explicitly deleted.
+// Uses last-write-wins semantics: concurrent updates may overwrite each other,
+// but this is acceptable for health status where the most recent update is authoritative.
 func (r *ValkeyClient) UpdateEndpointStatus(ctx context.Context, chain, endpoint string, status EndpointStatus) error {
 	key := healthPrefix + chain + ":" + endpoint
-	data, err := json.Marshal(status)
+
+	// Marshal status to JSON
+	jsonBytes, err := json.Marshal(status)
 	if err != nil {
 		return err
 	}
-	cmd := r.client.B().Set().Key(key).Value(string(data)).Build()
+
+	// Simple SET operation, last write wins
+	cmd := r.client.B().Set().Key(key).Value(string(jsonBytes)).Build()
 	return r.client.Do(ctx, cmd).Error()
 }
 
@@ -272,14 +278,20 @@ func (r *ValkeyClient) GetRateLimitState(ctx context.Context, chain, endpoint st
 	return &state, nil
 }
 
-// SetRateLimitState updates the rate limit state for an endpoint in Valkey
+// SetRateLimitState updates the rate limit state for an endpoint in Valkey.
+// Set with 24-hour expiration to prevent indefinite storage of old rate limit states.
+// Uses last-write-wins semantics: concurrent updates may overwrite each other,
+// but this is acceptable for rate limit state where the most recent update is authoritative.
 func (r *ValkeyClient) SetRateLimitState(ctx context.Context, chain, endpoint string, state RateLimitState) error {
 	key := rateLimitPrefix + chain + ":" + endpoint
-	data, err := json.Marshal(state)
+
+	// Marshal state to JSON
+	jsonBytes, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
-	// Set with 24-hour expiration to prevent indefinite storage of old rate limit states
-	cmd := r.client.B().Set().Key(key).Value(string(data)).Ex(24 * time.Hour).Build()
+
+	// Simple SET operation with expiration, last write wins
+	cmd := r.client.B().Set().Key(key).Value(string(jsonBytes)).Ex(24 * time.Hour).Build()
 	return r.client.Do(ctx, cmd).Error()
 }

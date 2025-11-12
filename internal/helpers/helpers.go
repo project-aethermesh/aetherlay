@@ -14,10 +14,14 @@ import (
 type Config struct {
 	ConfigFile                      string
 	CorsHeaders                     string
-	CorsMethods                     string
 	CorsOrigin                      string
+	CorsMethods                     string
+	EndpointFailureThreshold        int
+	EndpointSuccessThreshold        int
 	EphemeralChecksHealthyThreshold int
 	EphemeralChecksInterval         int
+	HealthCacheTTL                  int
+	HealthCheckConcurrency          int
 	HealthCheckInterval             int
 	HealthCheckSyncStatus           bool
 	LogLevel                        string
@@ -28,13 +32,13 @@ type Config struct {
 	ProxyTimeoutPerTry              int
 	PublicFirst                     bool
 	PublicFirstAttempts             int
+	ServerPort                      int
+	StandaloneHealthChecks          bool
 	ValkeyHost                      string
 	ValkeyPass                      string
 	ValkeyPort                      string
 	ValkeySkipTLSCheck              bool
 	ValkeyUseTLS                    bool
-	ServerPort                      int
-	StandaloneHealthChecks          bool
 }
 
 // ParseFlags defines and parses all CLI flags, returning a Config struct
@@ -46,8 +50,12 @@ func ParseFlags() *Config {
 	flag.StringVar(&config.CorsHeaders, "cors-headers", "Accept, Authorization, Content-Type, Origin, X-Requested-With", "CORS allowed headers")
 	flag.StringVar(&config.CorsMethods, "cors-methods", "GET, POST, OPTIONS", "CORS allowed methods")
 	flag.StringVar(&config.CorsOrigin, "cors-origin", "*", "CORS allowed origin")
+	flag.IntVar(&config.EndpointFailureThreshold, "endpoint-failure-threshold", 2, "Number of consecutive failures before marking endpoint unhealthy")
+	flag.IntVar(&config.EndpointSuccessThreshold, "endpoint-success-threshold", 2, "Number of consecutive successes before marking endpoint healthy")
 	flag.IntVar(&config.EphemeralChecksHealthyThreshold, "ephemeral-checks-healthy-threshold", 3, "Ephemeral checks healthy threshold")
 	flag.IntVar(&config.EphemeralChecksInterval, "ephemeral-checks-interval", 30, "Ephemeral checks interval in seconds")
+	flag.IntVar(&config.HealthCacheTTL, "health-cache-ttl", 10, "Health status cache TTL in seconds")
+	flag.IntVar(&config.HealthCheckConcurrency, "health-check-concurrency", 20, "Maximum number of concurrent health checks during startup")
 	flag.IntVar(&config.HealthCheckInterval, "health-check-interval", 30, "Health check interval in seconds")
 	flag.BoolVar(&config.HealthCheckSyncStatus, "health-check-sync-status", true, "Consider the sync status of the endpoints when deciding whether an endpoint is healthy or not.")
 	flag.StringVar(&config.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
@@ -58,13 +66,13 @@ func ParseFlags() *Config {
 	flag.IntVar(&config.ProxyTimeoutPerTry, "proxy-timeout-per-try", 5, "Timeout per individual retry attempt in seconds")
 	flag.BoolVar(&config.PublicFirst, "public-first", false, "Prioritize public endpoints over primary endpoints")
 	flag.IntVar(&config.PublicFirstAttempts, "public-first-attempts", 2, "Number of attempts to make at public endpoints before trying primary/fallback")
+	flag.IntVar(&config.ServerPort, "server-port", 8080, "Server port")
+	flag.BoolVar(&config.StandaloneHealthChecks, "standalone-health-checks", true, "Enable standalone health checks")
 	flag.StringVar(&config.ValkeyHost, "valkey-host", "localhost", "Valkey host")
 	flag.StringVar(&config.ValkeyPass, "valkey-pass", "", "Valkey password")
 	flag.StringVar(&config.ValkeyPort, "valkey-port", "6379", "Valkey port")
 	flag.BoolVar(&config.ValkeySkipTLSCheck, "valkey-skip-tls-check", false, "Skip TLS certificate validation for Valkey")
 	flag.BoolVar(&config.ValkeyUseTLS, "valkey-use-tls", false, "Use TLS for Valkey connection")
-	flag.IntVar(&config.ServerPort, "server-port", 8080, "Server port")
-	flag.BoolVar(&config.StandaloneHealthChecks, "standalone-health-checks", true, "Enable standalone health checks")
 
 	// Parse the flags
 	flag.Parse()
@@ -114,8 +122,12 @@ func (c *Config) LoadConfiguration() *LoadedConfig {
 		CorsHeaders:                     c.GetStringValue("cors-headers", c.CorsHeaders, "CORS_HEADERS", "Accept, Authorization, Content-Type, Origin, X-Requested-With"),
 		CorsMethods:                     c.GetStringValue("cors-methods", c.CorsMethods, "CORS_METHODS", "GET, POST, OPTIONS"),
 		CorsOrigin:                      c.GetStringValue("cors-origin", c.CorsOrigin, "CORS_ORIGIN", "*"),
+		EndpointFailureThreshold:        c.GetIntValue("endpoint-failure-threshold", c.EndpointFailureThreshold, "ENDPOINT_FAILURE_THRESHOLD", 2),
+		EndpointSuccessThreshold:        c.GetIntValue("endpoint-success-threshold", c.EndpointSuccessThreshold, "ENDPOINT_SUCCESS_THRESHOLD", 2),
 		EphemeralChecksHealthyThreshold: c.GetIntValue("ephemeral-checks-healthy-threshold", c.EphemeralChecksHealthyThreshold, "EPHEMERAL_CHECKS_HEALTHY_THRESHOLD", 3),
 		EphemeralChecksInterval:         c.GetIntValue("ephemeral-checks-interval", c.EphemeralChecksInterval, "EPHEMERAL_CHECKS_INTERVAL", 30),
+		HealthCacheTTL:                  c.GetIntValue("health-cache-ttl", c.HealthCacheTTL, "HEALTH_CACHE_TTL", 10),
+		HealthCheckConcurrency:          c.GetIntValue("health-check-concurrency", c.HealthCheckConcurrency, "HEALTH_CHECK_CONCURRENCY", 20),
 		HealthCheckInterval:             c.GetIntValue("health-check-interval", c.HealthCheckInterval, "HEALTH_CHECK_INTERVAL", 30),
 		HealthCheckSyncStatus:           c.GetBoolValue("health-check-sync-status", c.HealthCheckSyncStatus, "HEALTH_CHECK_SYNC_STATUS", true),
 		LogLevel:                        c.GetStringValue("log-level", c.LogLevel, "LOG_LEVEL", "info"),
@@ -126,13 +138,13 @@ func (c *Config) LoadConfiguration() *LoadedConfig {
 		ProxyTimeoutPerTry:              c.GetIntValue("proxy-timeout-per-try", c.ProxyTimeoutPerTry, "PROXY_TIMEOUT_PER_TRY", 5),
 		PublicFirst:                     c.GetBoolValue("public-first", c.PublicFirst, "PUBLIC_FIRST", false),
 		PublicFirstAttempts:             c.GetIntValue("public-first-attempts", c.PublicFirstAttempts, "PUBLIC_FIRST_ATTEMPTS", 2),
+		ServerPort:                      c.GetIntValue("server-port", c.ServerPort, "SERVER_PORT", 8080),
+		StandaloneHealthChecks:          c.GetBoolValue("standalone-health-checks", c.StandaloneHealthChecks, "STANDALONE_HEALTH_CHECKS", true),
 		ValkeyHost:                      c.GetStringValue("valkey-host", c.ValkeyHost, "VALKEY_HOST", "localhost"),
 		ValkeyPass:                      c.GetStringValue("valkey-pass", c.ValkeyPass, "VALKEY_PASS", ""),
 		ValkeyPort:                      c.GetStringValue("valkey-port", c.ValkeyPort, "VALKEY_PORT", "6379"),
 		ValkeySkipTLSCheck:              c.GetBoolValue("valkey-skip-tls-check", c.ValkeySkipTLSCheck, "VALKEY_SKIP_TLS_CHECK", false),
 		ValkeyUseTLS:                    c.GetBoolValue("valkey-use-tls", c.ValkeyUseTLS, "VALKEY_USE_TLS", false),
-		ServerPort:                      c.GetIntValue("server-port", c.ServerPort, "SERVER_PORT", 8080),
-		StandaloneHealthChecks:          c.GetBoolValue("standalone-health-checks", c.StandaloneHealthChecks, "STANDALONE_HEALTH_CHECKS", true),
 	}
 }
 
@@ -142,8 +154,12 @@ type LoadedConfig struct {
 	CorsHeaders                     string
 	CorsMethods                     string
 	CorsOrigin                      string
+	EndpointFailureThreshold        int
+	EndpointSuccessThreshold        int
 	EphemeralChecksHealthyThreshold int
 	EphemeralChecksInterval         int
+	HealthCacheTTL                  int
+	HealthCheckConcurrency          int
 	HealthCheckInterval             int
 	HealthCheckSyncStatus           bool
 	LogLevel                        string
@@ -154,13 +170,13 @@ type LoadedConfig struct {
 	ProxyTimeoutPerTry              int
 	PublicFirst                     bool
 	PublicFirstAttempts             int
+	ServerPort                      int
+	StandaloneHealthChecks          bool
 	ValkeyHost                      string
 	ValkeyPass                      string
 	ValkeyPort                      string
 	ValkeySkipTLSCheck              bool
 	ValkeyUseTLS                    bool
-	ServerPort                      int
-	StandaloneHealthChecks          bool
 }
 
 // Internal helper functions for environment variable processing

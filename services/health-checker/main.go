@@ -72,6 +72,7 @@ func RunHealthChecker(
 	corsOrigin string,
 	ephemeralChecksHealthyThreshold int,
 	ephemeralChecksInterval int,
+	healthCheckConcurrency int,
 	healthCheckInterval int,
 	healthCheckSyncStatus bool,
 	metricsEnabled bool,
@@ -134,7 +135,7 @@ func RunHealthChecker(
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	checker := health.NewChecker(cfg, valkeyClient, time.Duration(healthCheckInterval)*time.Second, time.Duration(ephemeralChecksInterval)*time.Second, ephemeralChecksHealthyThreshold, healthCheckSyncStatus)
+	checker := health.NewChecker(cfg, valkeyClient, time.Duration(healthCheckInterval)*time.Second, time.Duration(ephemeralChecksInterval)*time.Second, ephemeralChecksHealthyThreshold, healthCheckSyncStatus, healthCheckConcurrency)
 
 	// Set up simple rate limit handler for standalone health checker
 	checker.HandleRateLimitFunc = createStandaloneRateLimitHandler(valkeyClient)
@@ -202,6 +203,7 @@ func main() {
 		config.CorsOrigin,
 		config.EphemeralChecksHealthyThreshold,
 		config.EphemeralChecksInterval,
+		config.HealthCheckConcurrency,
 		config.HealthCheckInterval,
 		config.HealthCheckSyncStatus,
 		config.MetricsEnabled,

@@ -19,16 +19,48 @@ type RateLimitScheduler struct {
 	valkeyClient store.ValkeyClientIface
 
 	// Active monitoring tracking
-	activeMonitoring map[string]bool // key: chain:endpoint
+	activeMonitoring map[string]bool           // key: chain:endpoint
+	cancelFuncs      map[string]context.CancelFunc // Cancel functions for active goroutines
 	mu               sync.RWMutex
+	shutdownCtx      context.Context
+	shutdownCancel   context.CancelFunc
+	wg               sync.WaitGroup // Track running goroutines for graceful shutdown
 }
 
 // NewRateLimitScheduler creates a new rate limit scheduler
 func NewRateLimitScheduler(cfg *config.Config, valkeyClient store.ValkeyClientIface) *RateLimitScheduler {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &RateLimitScheduler{
 		config:           cfg,
 		valkeyClient:     valkeyClient,
 		activeMonitoring: make(map[string]bool),
+		cancelFuncs:      make(map[string]context.CancelFunc),
+		shutdownCtx:      ctx,
+		shutdownCancel:   cancel,
+	}
+}
+
+// Shutdown gracefully stops all monitoring goroutines
+func (rls *RateLimitScheduler) Shutdown(timeout time.Duration) error {
+	log.Info().Msg("Shutting down rate limit scheduler...")
+
+	// Signal all goroutines to stop
+	rls.shutdownCancel()
+
+	// Wait for all goroutines to finish with timeout
+	done := make(chan struct{})
+	go func() {
+		rls.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Info().Msg("Rate limit scheduler shutdown completed")
+		return nil
+	case <-time.After(timeout):
+		log.Warn().Msg("Rate limit scheduler shutdown timed out")
+		return context.DeadlineExceeded
 	}
 }
 
@@ -44,22 +76,31 @@ func (rls *RateLimitScheduler) StartMonitoring(chain, endpointID string) {
 		return
 	}
 	rls.activeMonitoring[key] = true
+
+	// Create a cancellable context for this monitoring goroutine
+	ctx, cancel := context.WithCancel(rls.shutdownCtx)
+	rls.cancelFuncs[key] = cancel
 	rls.mu.Unlock()
 
 	log.Info().Str("chain", chain).Str("endpoint", endpointID).Msg("Starting rate limit recovery monitoring")
 
+	// Track goroutine for graceful shutdown
+	rls.wg.Add(1)
+
 	// Start monitoring in a goroutine
-	go rls.monitorEndpoint(chain, endpointID)
+	go rls.monitorEndpoint(ctx, chain, endpointID)
 }
 
 // monitorEndpoint performs periodic recovery checks for a rate-limited endpoint
-func (rls *RateLimitScheduler) monitorEndpoint(chain, endpointID string) {
+func (rls *RateLimitScheduler) monitorEndpoint(ctx context.Context, chain, endpointID string) {
 	key := chain + ":" + endpointID
 
 	// Clean up monitoring flag when done
 	defer func() {
+		rls.wg.Done() // Signal that this goroutine is done
 		rls.mu.Lock()
 		delete(rls.activeMonitoring, key)
+		delete(rls.cancelFuncs, key)
 		rls.mu.Unlock()
 		log.Debug().Str("chain", chain).Str("endpoint", endpointID).Msg("Rate limit monitoring stopped")
 	}()
@@ -103,8 +144,16 @@ func (rls *RateLimitScheduler) monitorEndpoint(chain, endpointID string) {
 
 	// Use dynamic backoff instead of fixed ticker
 	for {
+		// Check for cancellation
+		select {
+		case <-ctx.Done():
+			log.Info().Str("chain", chain).Str("endpoint", endpointID).Msg("Rate limit monitoring cancelled")
+			return
+		default:
+		}
+
 		// Get current state to determine next check time
-		state, err := rls.valkeyClient.GetRateLimitState(context.Background(), chain, endpointID)
+		state, err := rls.valkeyClient.GetRateLimitState(ctx, chain, endpointID)
 		if err != nil {
 			log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get rate limit state for scheduling")
 			return
@@ -117,7 +166,7 @@ func (rls *RateLimitScheduler) monitorEndpoint(chain, endpointID string) {
 			state.CurrentBackoff = 0
 			state.ConsecutiveSuccess = 0
 			state.FirstRateLimited = time.Now()
-			if err := rls.valkeyClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
+			if err := rls.valkeyClient.SetRateLimitState(ctx, chain, endpointID, *state); err != nil {
 				log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to reset rate limit state")
 				return
 			}
@@ -133,11 +182,17 @@ func (rls *RateLimitScheduler) monitorEndpoint(chain, endpointID string) {
 			Int("attempt", state.RecoveryAttempts).
 			Msg("Scheduling next rate limit recovery check")
 
-		// Wait for the calculated backoff time
-		time.Sleep(time.Duration(nextBackoff) * time.Second)
+		// Wait for the calculated backoff time or cancellation
+		select {
+		case <-ctx.Done():
+			log.Info().Str("chain", chain).Str("endpoint", endpointID).Msg("Rate limit monitoring cancelled during backoff")
+			return
+		case <-time.After(time.Duration(nextBackoff) * time.Second):
+			// Continue to recovery check
+		}
 
 		// Check if we should continue monitoring
-		shouldContinue, err := rls.performRecoveryCheck(chain, endpointID, endpoint, rateLimitConfig)
+		shouldContinue, err := rls.performRecoveryCheck(ctx, chain, endpointID, endpoint, rateLimitConfig)
 		if err != nil {
 			log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Error during recovery check")
 			continue
@@ -149,9 +204,9 @@ func (rls *RateLimitScheduler) monitorEndpoint(chain, endpointID string) {
 }
 
 // performRecoveryCheck performs a single recovery check for an endpoint
-func (rls *RateLimitScheduler) performRecoveryCheck(chain, endpointID string, endpoint config.Endpoint, rateLimitConfig config.RateLimitRecovery) (bool, error) {
+func (rls *RateLimitScheduler) performRecoveryCheck(ctx context.Context, chain, endpointID string, endpoint config.Endpoint, rateLimitConfig config.RateLimitRecovery) (bool, error) {
 	// Get current rate limit state
-	state, err := rls.valkeyClient.GetRateLimitState(context.Background(), chain, endpointID)
+	state, err := rls.valkeyClient.GetRateLimitState(ctx, chain, endpointID)
 	if err != nil {
 		return false, err
 	}
@@ -213,7 +268,7 @@ func (rls *RateLimitScheduler) performRecoveryCheck(chain, endpointID string, en
 			state.FirstRateLimited = time.Time{} // Clear the first rate limited time
 
 			// Update endpoint status to healthy
-			endpointStatus, err := rls.valkeyClient.GetEndpointStatus(context.Background(), chain, endpointID)
+			endpointStatus, err := rls.valkeyClient.GetEndpointStatus(ctx, chain, endpointID)
 			if err != nil {
 				log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get endpoint status")
 			} else {
@@ -224,7 +279,7 @@ func (rls *RateLimitScheduler) performRecoveryCheck(chain, endpointID string, en
 					endpointStatus.HealthyWS = true
 				}
 
-				if err := rls.valkeyClient.UpdateEndpointStatus(context.Background(), chain, endpointID, *endpointStatus); err != nil {
+				if err := rls.valkeyClient.UpdateEndpointStatus(ctx, chain, endpointID, *endpointStatus); err != nil {
 					log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to update endpoint status")
 				} else {
 					log.Info().
@@ -236,7 +291,7 @@ func (rls *RateLimitScheduler) performRecoveryCheck(chain, endpointID string, en
 			}
 
 			// Save state and stop monitoring
-			if err := rls.valkeyClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
+			if err := rls.valkeyClient.SetRateLimitState(ctx, chain, endpointID, *state); err != nil {
 				log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to save recovery state")
 			}
 			return false, nil // Stop monitoring
@@ -248,7 +303,7 @@ func (rls *RateLimitScheduler) performRecoveryCheck(chain, endpointID string, en
 	}
 
 	// Save updated state
-	if err := rls.valkeyClient.SetRateLimitState(context.Background(), chain, endpointID, *state); err != nil {
+	if err := rls.valkeyClient.SetRateLimitState(ctx, chain, endpointID, *state); err != nil {
 		log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to save rate limit state")
 		return false, err
 	}

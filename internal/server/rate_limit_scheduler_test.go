@@ -73,7 +73,7 @@ func TestStartMonitoringDoesNotDuplicate(t *testing.T) {
 	}
 	scheduler.mu.RUnlock()
 
-	// Start monitoring again - should not create duplicate
+	// Start monitoring again, should not create duplicate
 	initialCount := len(scheduler.activeMonitoring)
 	scheduler.StartMonitoring("ethereum", "test-endpoint")
 
@@ -178,7 +178,7 @@ func TestPerformRecoveryCheckStopsWhenNotRateLimited(t *testing.T) {
 	endpoint := cfg.Endpoints["ethereum"]["test-endpoint"]
 	rateLimitConfig := config.DefaultRateLimitRecovery()
 
-	shouldContinue, err := scheduler.performRecoveryCheck("ethereum", "test-endpoint", endpoint, rateLimitConfig)
+	shouldContinue, err := scheduler.performRecoveryCheck(context.Background(), "ethereum", "test-endpoint", endpoint, rateLimitConfig)
 
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
@@ -228,7 +228,7 @@ func TestPerformRecoveryCheckStopsAfterMaxRetries(t *testing.T) {
 		ResetAfter:        3600,
 	}
 
-	shouldContinue, err := scheduler.performRecoveryCheck("ethereum", "test-endpoint", endpoint, rateLimitConfig)
+	shouldContinue, err := scheduler.performRecoveryCheck(context.Background(), "ethereum", "test-endpoint", endpoint, rateLimitConfig)
 
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
@@ -291,7 +291,7 @@ func TestPerformRecoveryCheckRecovery(t *testing.T) {
 		ResetAfter:        3600,
 	}
 
-	shouldContinue, err := scheduler.performRecoveryCheck("ethereum", "test-endpoint", endpoint, rateLimitConfig)
+	shouldContinue, err := scheduler.performRecoveryCheck(context.Background(), "ethereum", "test-endpoint", endpoint, rateLimitConfig)
 
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)

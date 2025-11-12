@@ -66,6 +66,7 @@ func TestRunHealthCheckerFromEnv_Standalone(t *testing.T) {
 		"*",                  // corsOrigin
 		3,                    // ephemeralChecksHealthyThreshold
 		30,                   // ephemeralChecksInterval
+		20,                   // healthCheckConcurrency
 		30,                   // healthCheckInterval
 		true,                 // healthCheckSyncStatus
 		false,                // metricsEnabled
@@ -124,6 +125,7 @@ func TestRunHealthCheckerFromEnv_Ephemeral(t *testing.T) {
 		"*",                  // corsOrigin
 		3,                    // ephemeralChecksHealthyThreshold
 		30,                   // ephemeralChecksInterval
+		20,                   // healthCheckConcurrency
 		0,                    // healthCheckInterval (ephemeral mode)
 		true,                 // healthCheckSyncStatus
 		false,                // metricsEnabled
@@ -182,6 +184,7 @@ func TestRunHealthCheckerFromEnv_Disabled(t *testing.T) {
 		"*",                  // corsOrigin
 		3,                    // ephemeralChecksHealthyThreshold
 		30,                   // ephemeralChecksInterval
+		20,                   // healthCheckConcurrency
 		0,                    // healthCheckInterval (doesn't matter)
 		true,                 // healthCheckSyncStatus
 		false,                // metricsEnabled
