@@ -75,6 +75,7 @@ func RunHealthChecker(
 	healthCheckConcurrency int,
 	healthCheckInterval int,
 	healthCheckSyncStatus bool,
+	healthCheckerServerPort int,
 	metricsEnabled bool,
 	metricsPort int,
 	valkeyHost string,
@@ -144,6 +145,19 @@ func RunHealthChecker(
 		testCheckerPatch(checker)
 	}
 
+	// Start HTTP server for health and readiness endpoints
+	httpServer := health.NewHealthCheckerServer(healthCheckerServerPort, checker)
+	if err := httpServer.Start(); err != nil {
+		log.Fatal().Err(err).Msg("Failed to start health checker HTTP server")
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			log.Error().Err(err).Msg("Error shutting down health checker HTTP server")
+		}
+	}()
+
 	if healthCheckInterval == 0 {
 		mode = "ephemeral"
 		if onModeDetected != nil {
@@ -206,6 +220,7 @@ func main() {
 		config.HealthCheckConcurrency,
 		config.HealthCheckInterval,
 		config.HealthCheckSyncStatus,
+		config.HealthCheckerServerPort,
 		config.MetricsEnabled,
 		config.MetricsPort,
 		config.ValkeyHost,

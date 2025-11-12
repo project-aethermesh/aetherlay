@@ -168,21 +168,76 @@ func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleReadinessCheck handles the /ready endpoint for readiness checks
-// This returns 200 only after initial health checks complete
+// Returns 200 only when both LB and health-checker are ready
 func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
-	if s.healthChecker != nil && !s.healthChecker.IsReady() {
+	// Check LB's own readiness (Valkey connection)
+	if err := s.valkeyClient.Ping(r.Context()); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "not_ready",
-			"reason": "initial_health_check_in_progress",
+			"reason": "valkey_connection_failed",
 		})
 		return
+	}
+
+	// Check health-checker readiness
+	if s.appConfig.StandaloneHealthChecks {
+		// In standalone mode, check external health-checker service
+		if !s.checkHealthCheckerServiceReady(r.Context()) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "not_ready",
+				"reason": "health_checker_service_not_ready",
+			})
+			return
+		}
+	} else {
+		// In integrated mode, check integrated health checker
+		if s.healthChecker != nil && !s.healthChecker.IsReady() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "not_ready",
+				"reason": "initial_health_check_in_progress",
+			})
+			return
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "ready",
 	})
+}
+
+// checkHealthCheckerServiceReady checks if the external health-checker service is ready
+func (s *Server) checkHealthCheckerServiceReady(ctx context.Context) bool {
+	if s.appConfig.HealthCheckerServiceURL == "" {
+		// If no URL configured, assume ready (backwards compatibility)
+		return true
+	}
+
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+	}
+
+	// Make request to health-checker's /ready endpoint
+	url := strings.TrimSuffix(s.appConfig.HealthCheckerServiceURL, "/") + "/ready"
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		log.Debug().Err(err).Str("url", url).Msg("Failed to create request to health-checker service")
+		return false
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Debug().Err(err).Str("url", url).Msg("Failed to reach health-checker service")
+		return false
+	}
+	defer resp.Body.Close()
+
+	// Health-checker is ready if it returns 200
+	return resp.StatusCode == http.StatusOK
 }
 
 // handleOptionsRequest handles CORS preflight OPTIONS requests

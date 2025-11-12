@@ -24,6 +24,8 @@ type Config struct {
 	HealthCheckConcurrency          int
 	HealthCheckInterval             int
 	HealthCheckSyncStatus           bool
+	HealthCheckerServerPort         int
+	HealthCheckerServiceURL         string
 	LogLevel                        string
 	MetricsEnabled                  bool
 	MetricsPort                     int
@@ -58,6 +60,8 @@ func ParseFlags() *Config {
 	flag.IntVar(&config.HealthCheckConcurrency, "health-check-concurrency", 20, "Maximum number of concurrent health checks during startup")
 	flag.IntVar(&config.HealthCheckInterval, "health-check-interval", 30, "Health check interval in seconds")
 	flag.BoolVar(&config.HealthCheckSyncStatus, "health-check-sync-status", true, "Consider the sync status of the endpoints when deciding whether an endpoint is healthy or not.")
+	flag.IntVar(&config.HealthCheckerServerPort, "health-checker-server-port", 8080, "Health checker HTTP server port")
+	flag.StringVar(&config.HealthCheckerServiceURL, "health-checker-service-url", "http://aetherlay-hc:8080", "Health checker service URL for readiness checks")
 	flag.StringVar(&config.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	flag.BoolVar(&config.MetricsEnabled, "metrics-enabled", true, "Enable metrics server")
 	flag.IntVar(&config.MetricsPort, "metrics-port", 9090, "Metrics server port")
@@ -130,6 +134,8 @@ func (c *Config) LoadConfiguration() *LoadedConfig {
 		HealthCheckConcurrency:          c.GetIntValue("health-check-concurrency", c.HealthCheckConcurrency, "HEALTH_CHECK_CONCURRENCY", 20),
 		HealthCheckInterval:             c.GetIntValue("health-check-interval", c.HealthCheckInterval, "HEALTH_CHECK_INTERVAL", 30),
 		HealthCheckSyncStatus:           c.GetBoolValue("health-check-sync-status", c.HealthCheckSyncStatus, "HEALTH_CHECK_SYNC_STATUS", true),
+		HealthCheckerServerPort:         c.GetIntValue("health-checker-server-port", c.HealthCheckerServerPort, "HEALTH_CHECKER_SERVER_PORT", 8080),
+		HealthCheckerServiceURL:         c.GetStringValue("health-checker-service-url", c.HealthCheckerServiceURL, "HEALTH_CHECKER_SERVICE_URL", "http://aetherlay-hc:8080"),
 		LogLevel:                        c.GetStringValue("log-level", c.LogLevel, "LOG_LEVEL", "info"),
 		MetricsEnabled:                  c.GetBoolValue("metrics-enabled", c.MetricsEnabled, "METRICS_ENABLED", true),
 		MetricsPort:                     c.GetIntValue("metrics-port", c.MetricsPort, "METRICS_PORT", 9090),
@@ -162,6 +168,8 @@ type LoadedConfig struct {
 	HealthCheckConcurrency          int
 	HealthCheckInterval             int
 	HealthCheckSyncStatus           bool
+	HealthCheckerServerPort         int
+	HealthCheckerServiceURL         string
 	LogLevel                        string
 	MetricsEnabled                  bool
 	MetricsPort                     int

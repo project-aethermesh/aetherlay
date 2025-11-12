@@ -36,8 +36,10 @@ spec:
               value: "true" # Enable standalone health checks
             - name: HEALTH_CHECK_INTERVAL
               value: "0" # Disable integrated health checks
+            - name: HEALTH_CHECKER_SERVICE_URL
+              value: "http://aetherlay-hc:8080"
             - name: METRICS_PORT
-              value: 9090
+              value: "9090"
           volumeMounts:
             - name: config-volume
               mountPath: /app/configs
@@ -56,10 +58,11 @@ spec:
             periodSeconds: 10
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 5
+            timeoutSeconds: 2
       volumes:
         - name: config-volume
           configMap:
