@@ -170,8 +170,12 @@ func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 // handleReadinessCheck handles the /ready endpoint for readiness checks
 // Returns 200 only when both LB and health-checker are ready
 func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
+	log.Debug().Msg("Readiness check started")
+
 	// Check LB's own readiness (Valkey connection)
+	log.Debug().Msg("Checking Valkey connection")
 	if err := s.valkeyClient.Ping(r.Context()); err != nil {
+		log.Warn().Err(err).Msg("Valkey ping failed during readiness check")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "not_ready",
@@ -179,11 +183,14 @@ func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	log.Debug().Msg("Valkey connection check passed")
 
 	// Check health-checker readiness
 	if s.appConfig.StandaloneHealthChecks {
+		log.Info().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Checking external health-checker service readiness")
 		// In standalone mode, check external health-checker service
 		if !s.checkHealthCheckerServiceReady(r.Context()) {
+			log.Warn().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Health-checker service not ready")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"status": "not_ready",
@@ -191,9 +198,12 @@ func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		log.Info().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Health-checker service is ready")
 	} else {
+		log.Debug().Msg("Checking integrated health checker readiness")
 		// In integrated mode, check integrated health checker
 		if s.healthChecker != nil && !s.healthChecker.IsReady() {
+			log.Debug().Msg("Integrated health checker not ready yet")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"status": "not_ready",
@@ -201,8 +211,10 @@ func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		log.Debug().Msg("Integrated health checker readiness check passed")
 	}
 
+	log.Debug().Msg("All readiness checks passed, returning ready")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "ready",
@@ -218,21 +230,41 @@ func (s *Server) checkHealthCheckerServiceReady(ctx context.Context) bool {
 
 	// Make request to health-checker's /ready endpoint
 	url := strings.TrimSuffix(s.appConfig.HealthCheckerServiceURL, "/") + "/ready"
+	log.Debug().Str("url", url).Msg("Making HTTP request to health-checker /ready endpoint")
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		log.Debug().Err(err).Str("url", url).Msg("Failed to create request to health-checker service")
+		log.Error().Err(err).Str("url", url).Msg("Failed to create request to health-checker service")
 		return false
 	}
 
+	startTime := time.Now()
 	resp, err := client.Do(req)
+	duration := time.Since(startTime)
+
 	if err != nil {
-		log.Debug().Err(err).Str("url", url).Msg("Failed to reach health-checker service")
+		log.Warn().Err(err).Str("url", url).Dur("duration", duration).Msg("Failed to reach health-checker service")
 		return false
 	}
 	defer resp.Body.Close()
 
+	log.Debug().Str("url", url).Int("status_code", resp.StatusCode).Dur("duration", duration).Msg("Health-checker service responded")
+
 	// Health-checker is ready if it returns 200
-	return resp.StatusCode == http.StatusOK
+	if resp.StatusCode == http.StatusOK {
+		log.Debug().Str("url", url).Msg("Health-checker service is ready")
+		return true
+	}
+
+	// Read response body for debugging
+	bodyBytes, readErr := io.ReadAll(resp.Body)
+	if readErr == nil {
+		log.Debug().Str("url", url).Int("status_code", resp.StatusCode).Str("response_body", string(bodyBytes)).Msg("Health-checker service returned non-200 status")
+	} else {
+		log.Debug().Str("url", url).Int("status_code", resp.StatusCode).Err(readErr).Msg("Health-checker service returned non-200 status (failed to read body)")
+	}
+
+	return false
 }
 
 // handleOptionsRequest handles CORS preflight OPTIONS requests
