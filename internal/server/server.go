@@ -211,11 +211,6 @@ func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 
 // checkHealthCheckerServiceReady checks if the external health-checker service is ready
 func (s *Server) checkHealthCheckerServiceReady(ctx context.Context) bool {
-	if s.appConfig.HealthCheckerServiceURL == "" {
-		// If no URL configured, assume ready (backwards compatibility)
-		return true
-	}
-
 	// Create HTTP client with timeout
 	client := &http.Client{
 		Timeout: 2 * time.Second,
