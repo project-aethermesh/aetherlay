@@ -307,15 +307,6 @@ Request 4: Success (1/2 successes) -> endpoint stays unhealthy
 Request 5: Success (2/2 successes) -> endpoint is marked healthy
 ```
 
-### Optimistic Locking
-
-Version-based concurrency control prevents conflicting updates across multiple pods:
-
-- **Automatic retry**: Up to 3 retry attempts on version conflicts.
-- **Compare-and-swap**: Ensures only one writer wins on concurrent updates.
-- **Zero data loss**: No updates are lost due to race conditions.
-- **Applied to**: Both endpoint health status and rate limit state.
-
 ### Graceful Shutdown
 
 Ensures proper cleanup during pod termination (e.g., Kubernetes rolling updates, Karpenter node replacements):

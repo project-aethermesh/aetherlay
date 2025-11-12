@@ -44,7 +44,6 @@ func TestHealthCache_GetAndSet(t *testing.T) {
 		HasWS:        false,
 		BlockNumber:  12345,
 		Requests24h:  100,
-		Version:      1,
 	}
 	cache.Set(chain, endpoint, testStatus)
 
@@ -74,7 +73,6 @@ func TestHealthCache_TTL(t *testing.T) {
 		HealthyHTTP: true,
 		HasHTTP:     true,
 		BlockNumber: 12345,
-		Version:     1,
 	}
 	cache.Set(chain, endpoint, testStatus)
 
@@ -108,7 +106,6 @@ func TestHealthCache_Invalidate(t *testing.T) {
 	testStatus := &store.EndpointStatus{
 		HealthyHTTP: true,
 		HasHTTP:     true,
-		Version:     1,
 	}
 	cache.Set(chain, endpoint, testStatus)
 
@@ -137,7 +134,6 @@ func TestHealthCache_Clear(t *testing.T) {
 	testStatus := &store.EndpointStatus{
 		HealthyHTTP: true,
 		HasHTTP:     true,
-		Version:     1,
 	}
 
 	// Set multiple entries
@@ -178,13 +174,11 @@ func TestHealthCache_MultipleChains(t *testing.T) {
 		HealthyHTTP: true,
 		HasHTTP:     true,
 		BlockNumber: 1000,
-		Version:     1,
 	}
 	status2 := &store.EndpointStatus{
 		HealthyHTTP: false,
 		HasHTTP:     true,
 		BlockNumber: 2000,
-		Version:     1,
 	}
 
 	// Set different statuses for different chains
@@ -218,7 +212,6 @@ func TestHealthCache_ConcurrentAccess(t *testing.T) {
 		HealthyHTTP: true,
 		HasHTTP:     true,
 		BlockNumber: 12345,
-		Version:     1,
 	}
 
 	done := make(chan bool)
@@ -230,7 +223,6 @@ func TestHealthCache_ConcurrentAccess(t *testing.T) {
 				HealthyHTTP: true,
 				HasHTTP:     true,
 				BlockNumber: blockNum,
-				Version:     1,
 			}
 			cache.Set(chain, endpoint, status)
 			done <- true
