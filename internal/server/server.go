@@ -346,13 +346,12 @@ func (s *Server) checkHealthCheckerServiceReady(ctx context.Context) bool {
 	}
 	defer resp.Body.Close()
 
-	// Drain response body to enable connection reuse
-	io.Copy(io.Discard, resp.Body)
-
 	log.Debug().Str("url", url).Int("status_code", resp.StatusCode).Dur("duration", duration).Msg("Health-checker service responded")
 
 	// Health-checker is ready if it returns 200
 	if resp.StatusCode == http.StatusOK {
+		// Drain response body to enable connection reuse
+		io.Copy(io.Discard, resp.Body)
 		log.Debug().Str("url", url).Msg("Health-checker service is ready")
 		return true
 	}
@@ -364,6 +363,9 @@ func (s *Server) checkHealthCheckerServiceReady(ctx context.Context) bool {
 	} else {
 		log.Debug().Str("url", url).Int("status_code", resp.StatusCode).Err(readErr).Msg("Health-checker service returned non-200 status (failed to read body)")
 	}
+
+	// Drain response body to enable connection reuse
+	io.Copy(io.Discard, resp.Body)
 
 	return false
 }
