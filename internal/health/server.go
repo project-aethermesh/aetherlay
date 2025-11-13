@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"strconv"
 
@@ -33,15 +34,26 @@ func NewHealthCheckerServer(port int, checker *Checker) *HealthCheckerServer {
 	return server
 }
 
-// Start starts the HTTP server in a goroutine
-func (s *HealthCheckerServer) Start() error {
+// Start starts the HTTP server in a goroutine and reports bind errors via the error channel
+func (s *HealthCheckerServer) Start(startupErrCh chan<- error) {
 	log.Info().Str("addr", s.httpServer.Addr).Msg("Starting health checker HTTP server")
 	go func() {
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		// First attempt to bind to detect immediate errors (port in use, permission denied, etc.)
+		listener, err := net.Listen("tcp", s.httpServer.Addr)
+		if err != nil {
+			log.Error().Err(err).Str("addr", s.httpServer.Addr).Msg("Failed to bind to address")
+			startupErrCh <- err
+			return
+		}
+
+		// Successfully bound, send nil to indicate successful startup
+		startupErrCh <- nil
+
+		// Now serve on the listener
+		if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Fatal().Err(err).Msg("Health checker HTTP server failed")
 		}
 	}()
-	return nil
 }
 
 // Shutdown gracefully shuts down the HTTP server

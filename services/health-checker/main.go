@@ -147,8 +147,19 @@ func RunHealthChecker(
 
 	// Start HTTP server for health and readiness endpoints
 	httpServer := health.NewHealthCheckerServer(healthCheckerServerPort, checker)
-	if err := httpServer.Start(); err != nil {
-		log.Fatal().Err(err).Msg("Failed to start health checker HTTP server")
+	startupErrCh := make(chan error, 1)
+	httpServer.Start(startupErrCh)
+
+	// Wait briefly to detect startup failures (bind errors should be immediate)
+	select {
+	case err := <-startupErrCh:
+		if err != nil {
+			log.Fatal().Err(err).Msg("Health checker HTTP server failed to start")
+		}
+		// Startup successful
+	case <-time.After(100 * time.Millisecond):
+		// No error received within timeout, assume startup successful
+		// Bind errors from net.Listen() should be immediate, so this is safe
 	}
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
