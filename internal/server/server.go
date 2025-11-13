@@ -66,6 +66,11 @@ type Server struct {
 	successThreshold int
 	failureStatesMu  sync.RWMutex
 
+	// Health checker grace period state tracking
+	initialCheckPassed bool
+	hcFailureTimestamp *time.Time
+	hcFailureMu        sync.RWMutex
+
 	forwardRequestWithBody func(w http.ResponseWriter, ctx context.Context, method, targetURL string, bodyBytes []byte, headers http.Header) error
 	proxyWebSocket         func(w http.ResponseWriter, r *http.Request, backendURL string) error
 }
@@ -167,6 +172,17 @@ func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// writeReadinessResponse writes a JSON readiness response with proper error handling
+func (s *Server) writeReadinessResponse(w http.ResponseWriter, statusCode int, status, reason string) {
+	w.WriteHeader(statusCode)
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": status,
+		"reason": reason,
+	}); err != nil {
+		log.Error().Err(err).Msg("Failed to encode readiness response")
+	}
+}
+
 // handleReadinessCheck handles the /ready endpoint for readiness checks
 // Returns 200 only when both LB and health-checker are ready
 func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
@@ -176,49 +192,93 @@ func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 	log.Debug().Msg("Checking Valkey connection")
 	if err := s.valkeyClient.Ping(r.Context()); err != nil {
 		log.Warn().Err(err).Msg("Valkey ping failed during readiness check")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": "not_ready",
-			"reason": "valkey_connection_failed",
-		})
+		s.writeReadinessResponse(w, http.StatusServiceUnavailable, "not_ready", "valkey_connection_failed")
 		return
 	}
 	log.Debug().Msg("Valkey connection check passed")
 
 	// Check health-checker readiness
+	var hcReady bool
 	if s.appConfig.StandaloneHealthChecks {
 		log.Info().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Checking external health-checker service readiness")
-		// In standalone mode, check external health-checker service
-		if !s.checkHealthCheckerServiceReady(r.Context()) {
-			log.Warn().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Health-checker service not ready")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"status": "not_ready",
-				"reason": "health_checker_service_not_ready",
-			})
-			return
-		}
-		log.Info().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Health-checker service is ready")
+		hcReady = s.checkHealthCheckerServiceReady(r.Context())
 	} else {
 		log.Debug().Msg("Checking integrated health checker readiness")
-		// In integrated mode, check integrated health checker
-		if s.healthChecker != nil && !s.healthChecker.IsReady() {
-			log.Debug().Msg("Integrated health checker not ready yet")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"status": "not_ready",
-				"reason": "initial_health_check_in_progress",
-			})
-			return
-		}
-		log.Debug().Msg("Integrated health checker readiness check passed")
+		hcReady = s.healthChecker != nil && s.healthChecker.IsReady()
 	}
 
-	log.Debug().Msg("All readiness checks passed, returning ready")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "ready",
-	})
+	// Handle grace period logic
+	s.hcFailureMu.Lock()
+	defer s.hcFailureMu.Unlock() // Ensure mutex is always unlocked
+
+	if hcReady {
+		// HC is ready, mark initial check as passed and clear failure timestamp
+		if !s.initialCheckPassed {
+			s.initialCheckPassed = true
+			log.Info().Msg("Initial health checker check passed")
+		}
+		if s.hcFailureTimestamp != nil {
+			log.Info().Msg("Health checker recovered, clearing failure timestamp")
+			s.hcFailureTimestamp = nil
+		}
+
+		if s.appConfig.StandaloneHealthChecks {
+			log.Info().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Health-checker service is ready")
+		} else {
+			log.Debug().Msg("Integrated health checker readiness check passed")
+		}
+
+		log.Debug().Msg("All readiness checks passed, returning ready")
+		s.writeReadinessResponse(w, http.StatusOK, "ready", "")
+		return
+	}
+
+	// HC is not ready
+	if !s.initialCheckPassed {
+		// No grace period during initial startup
+		if s.appConfig.StandaloneHealthChecks {
+			log.Warn().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Health-checker service not ready")
+			s.writeReadinessResponse(w, http.StatusServiceUnavailable, "not_ready", "health_checker_service_not_ready")
+		} else {
+			log.Debug().Msg("Integrated health checker not ready yet")
+			s.writeReadinessResponse(w, http.StatusServiceUnavailable, "not_ready", "initial_health_check_in_progress")
+		}
+		return
+	}
+
+	// Initial check has passed, apply grace period
+	gracePeriod := time.Duration(s.appConfig.HealthCheckerGracePeriod) * time.Second
+	now := time.Now()
+
+	// Set failure timestamp if not already set
+	if s.hcFailureTimestamp == nil {
+		s.hcFailureTimestamp = &now
+		log.Info().Dur("grace_period", gracePeriod).Msg("Health checker not ready, starting grace period")
+	}
+
+	elapsed := now.Sub(*s.hcFailureTimestamp)
+
+	if elapsed < gracePeriod {
+		// Still within grace period, report ready
+		log.Debug().
+			Dur("elapsed", elapsed).
+			Dur("grace_period", gracePeriod).
+			Dur("remaining", gracePeriod-elapsed).
+			Msg("Health checker not ready but within grace period, reporting ready")
+		s.writeReadinessResponse(w, http.StatusOK, "ready", "")
+		return
+	}
+
+	// Grace period has expired, report not ready
+	log.Warn().
+		Dur("elapsed", elapsed).
+		Dur("grace_period", gracePeriod).
+		Msg("Health checker not ready and grace period expired, reporting not ready")
+	if s.appConfig.StandaloneHealthChecks {
+		s.writeReadinessResponse(w, http.StatusServiceUnavailable, "not_ready", "health_checker_service_not_ready")
+	} else {
+		s.writeReadinessResponse(w, http.StatusServiceUnavailable, "not_ready", "health_checker_not_ready")
+	}
 }
 
 // checkHealthCheckerServiceReady checks if the external health-checker service is ready
