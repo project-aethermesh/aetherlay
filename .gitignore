@@ -10,6 +10,8 @@
 # Aetherlay's binaries
 bin/aetherlay-hc
 bin/aetherlay-lb
+health-checker
+load-balancer
 
 # Test binary, built with `go test -c`
 *.test
