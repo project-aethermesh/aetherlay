@@ -364,9 +364,6 @@ func (s *Server) checkHealthCheckerServiceReady(ctx context.Context) bool {
 		log.Debug().Str("url", url).Int("status_code", resp.StatusCode).Err(readErr).Msg("Health-checker service returned non-200 status (failed to read body)")
 	}
 
-	// Drain response body to enable connection reuse
-	io.Copy(io.Discard, resp.Body)
-
 	return false
 }
 
