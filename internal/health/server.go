@@ -69,12 +69,13 @@ func (s *HealthCheckerServer) Shutdown(ctx context.Context) error {
 // handleHealth handles the /health endpoint for liveness checks
 // Always returns 200 to indicate the process is alive
 func (s *HealthCheckerServer) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
 	response := map[string]interface{}{
 		"status": "healthy",
 	}
 	body, err := json.Marshal(response)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		errorBody, _ := json.Marshal(map[string]string{"error": "failed to encode response"})
 		w.Write(errorBody)
@@ -82,7 +83,6 @@ func (s *HealthCheckerServer) handleHealth(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(body); err != nil {
 		log.Error().Err(err).Msg("Failed to write health response")
@@ -92,6 +92,8 @@ func (s *HealthCheckerServer) handleHealth(w http.ResponseWriter, r *http.Reques
 // handleReady handles the /ready endpoint for readiness checks
 // Returns 200 only after initial health checks complete, 503 otherwise
 func (s *HealthCheckerServer) handleReady(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
 	var response map[string]interface{}
 	var statusCode int
 
@@ -110,7 +112,6 @@ func (s *HealthCheckerServer) handleReady(w http.ResponseWriter, r *http.Request
 
 	body, err := json.Marshal(response)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		errorBody, _ := json.Marshal(map[string]string{"error": "failed to encode response"})
 		w.Write(errorBody)
@@ -118,7 +119,6 @@ func (s *HealthCheckerServer) handleReady(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	if _, err := w.Write(body); err != nil {
 		log.Error().Err(err).Msg("Failed to write ready response")
