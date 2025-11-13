@@ -71,6 +71,9 @@ type Server struct {
 	hcFailureTimestamp *time.Time
 	hcFailureMu        sync.RWMutex
 
+	// Reusable HTTP client for health checker readiness checks
+	healthCheckClient *http.Client
+
 	forwardRequestWithBody func(w http.ResponseWriter, ctx context.Context, method, targetURL string, bodyBytes []byte, headers http.Header) error
 	proxyWebSocket         func(w http.ResponseWriter, r *http.Request, backendURL string) error
 }
@@ -96,6 +99,17 @@ func NewServer(cfg *config.Config, valkeyClient store.ValkeyClientIface, appConf
 
 	// Initialize rate limit scheduler
 	s.rateLimitScheduler = NewRateLimitScheduler(s.config, valkeyClient)
+
+	// Initialize reusable HTTP client for health checker readiness checks
+	transport := &http.Transport{
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     30 * time.Second,
+	}
+	s.healthCheckClient = &http.Client{
+		Transport: transport,
+		Timeout:   2 * time.Second,
+	}
 
 	s.setupRoutes()
 	return s
@@ -283,11 +297,6 @@ func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 
 // checkHealthCheckerServiceReady checks if the external health-checker service is ready
 func (s *Server) checkHealthCheckerServiceReady(ctx context.Context) bool {
-	// Create HTTP client with timeout
-	client := &http.Client{
-		Timeout: 2 * time.Second,
-	}
-
 	// Make request to health-checker's /ready endpoint
 	url := strings.TrimSuffix(s.appConfig.HealthCheckerServiceURL, "/") + "/ready"
 	log.Debug().Str("url", url).Msg("Making HTTP request to health-checker /ready endpoint")
@@ -299,7 +308,7 @@ func (s *Server) checkHealthCheckerServiceReady(ctx context.Context) bool {
 	}
 
 	startTime := time.Now()
-	resp, err := client.Do(req)
+	resp, err := s.healthCheckClient.Do(req)
 	duration := time.Since(startTime)
 
 	if err != nil {
@@ -307,6 +316,9 @@ func (s *Server) checkHealthCheckerServiceReady(ctx context.Context) bool {
 		return false
 	}
 	defer resp.Body.Close()
+
+	// Drain response body to enable connection reuse
+	io.Copy(io.Discard, resp.Body)
 
 	log.Debug().Str("url", url).Int("status_code", resp.StatusCode).Dur("duration", duration).Msg("Health-checker service responded")
 
