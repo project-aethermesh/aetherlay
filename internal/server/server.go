@@ -266,7 +266,7 @@ func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if s.appConfig.StandaloneHealthChecks {
-			log.Info().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Health-checker service is ready")
+			log.Debug().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Health-checker service is ready")
 		} else {
 			log.Debug().Msg("Integrated health checker readiness check passed")
 		}
