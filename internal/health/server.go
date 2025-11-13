@@ -65,26 +65,58 @@ func (s *HealthCheckerServer) Shutdown(ctx context.Context) error {
 // handleHealth handles the /health endpoint for liveness checks
 // Always returns 200 to indicate the process is alive
 func (s *HealthCheckerServer) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	response := map[string]interface{}{
 		"status": "healthy",
-	})
+	}
+	body, err := json.Marshal(response)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		errorBody, _ := json.Marshal(map[string]string{"error": "failed to encode response"})
+		w.Write(errorBody)
+		log.Error().Err(err).Msg("Failed to marshal health response")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(body); err != nil {
+		log.Error().Err(err).Msg("Failed to write health response")
+	}
 }
 
 // handleReady handles the /ready endpoint for readiness checks
 // Returns 200 only after initial health checks complete, 503 otherwise
 func (s *HealthCheckerServer) handleReady(w http.ResponseWriter, r *http.Request) {
+	var response map[string]interface{}
+	var statusCode int
+
 	if s.checker != nil && !s.checker.IsReady() {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		response = map[string]interface{}{
 			"status": "not_ready",
 			"reason": "initial_health_check_in_progress",
-		})
+		}
+		statusCode = http.StatusServiceUnavailable
+	} else {
+		response = map[string]interface{}{
+			"status": "ready",
+		}
+		statusCode = http.StatusOK
+	}
+
+	body, err := json.Marshal(response)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		errorBody, _ := json.Marshal(map[string]string{"error": "failed to encode response"})
+		w.Write(errorBody)
+		log.Error().Err(err).Msg("Failed to marshal ready response")
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "ready",
-	})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	if _, err := w.Write(body); err != nil {
+		log.Error().Err(err).Msg("Failed to write ready response")
+	}
 }
