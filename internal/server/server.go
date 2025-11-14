@@ -186,28 +186,20 @@ func (s *Server) SetHealthChecker(checker HealthCheckerIface) {
 // handleHealthCheck handles the /health endpoint for liveness checks
 func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
 
 	response := map[string]any{
 		"status": "healthy",
 	}
-	body, err := json.Marshal(response)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		errorBody, _ := json.Marshal(map[string]string{"error": "failed to encode response"})
-		w.Write(errorBody)
-		log.Error().Err(err).Msg("Failed to marshal health response")
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(body); err != nil {
-		log.Error().Err(err).Msg("Failed to write health response")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Error().Err(err).Msg("Failed to encode health response")
 	}
 }
 
 // writeReadinessResponse writes a JSON readiness response with proper error handling
 func (s *Server) writeReadinessResponse(w http.ResponseWriter, statusCode int, status, reason string) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
 
 	response := map[string]any{
 		"status": status,
@@ -216,18 +208,8 @@ func (s *Server) writeReadinessResponse(w http.ResponseWriter, statusCode int, s
 		response["reason"] = reason
 	}
 
-	body, err := json.Marshal(response)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		errorBody, _ := json.Marshal(map[string]string{"error": "failed to encode response"})
-		w.Write(errorBody)
-		log.Error().Err(err).Msg("Failed to marshal readiness response")
-		return
-	}
-
-	w.WriteHeader(statusCode)
-	if _, err := w.Write(body); err != nil {
-		log.Error().Err(err).Msg("Failed to write readiness response")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Error().Err(err).Msg("Failed to encode readiness response")
 	}
 }
 
