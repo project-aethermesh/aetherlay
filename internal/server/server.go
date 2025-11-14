@@ -187,7 +187,7 @@ func (s *Server) SetHealthChecker(checker HealthCheckerIface) {
 func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	response := map[string]interface{}{
+	response := map[string]any{
 		"status": "healthy",
 	}
 	body, err := json.Marshal(response)
@@ -209,7 +209,7 @@ func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 func (s *Server) writeReadinessResponse(w http.ResponseWriter, statusCode int, status, reason string) {
 	w.Header().Set("Content-Type", "application/json")
 
-	response := map[string]interface{}{
+	response := map[string]any{
 		"status": status,
 	}
 	if reason != "" {

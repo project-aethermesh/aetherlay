@@ -72,7 +72,7 @@ func (s *HealthCheckerServer) Shutdown(ctx context.Context) error {
 func (s *HealthCheckerServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	response := map[string]interface{}{
+	response := map[string]any{
 		"status": "healthy",
 	}
 	body, err := json.Marshal(response)
@@ -95,17 +95,17 @@ func (s *HealthCheckerServer) handleHealth(w http.ResponseWriter, r *http.Reques
 func (s *HealthCheckerServer) handleReady(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	var response map[string]interface{}
+	var response map[string]any
 	var statusCode int
 
 	if s.checker != nil && !s.checker.IsReady() {
-		response = map[string]interface{}{
+		response = map[string]any{
 			"status": "not_ready",
 			"reason": "initial_health_check_in_progress",
 		}
 		statusCode = http.StatusServiceUnavailable
 	} else {
-		response = map[string]interface{}{
+		response = map[string]any{
 			"status": "ready",
 		}
 		statusCode = http.StatusOK
