@@ -23,11 +23,12 @@ func NewHealthCheckerServer(port int, checker *Checker) *HealthCheckerServer {
 	server := &HealthCheckerServer{
 		checker: checker,
 		httpServer: &http.Server{
-			Addr:         ":" + strconv.Itoa(port),
-			Handler:      mux,
-			ReadTimeout:  5 * time.Second,
-			WriteTimeout: 10 * time.Second,
-			IdleTimeout:  30 * time.Second,
+			Addr:              ":" + strconv.Itoa(port),
+			Handler:           mux,
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       5 * time.Second,
+			WriteTimeout:      5 * time.Second,
+			IdleTimeout:       10 * time.Second,
 		},
 	}
 

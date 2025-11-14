@@ -137,8 +137,12 @@ func (s *Server) setupRoutes() {
 // Start starts the HTTP server on the specified port
 func (s *Server) Start(port int) error {
 	s.httpServer = &http.Server{
-		Addr:    ":" + strconv.Itoa(port),
-		Handler: s.router,
+		Addr:              ":" + strconv.Itoa(port),
+		Handler:           s.router,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       30 * time.Second,
 	}
 
 	log.Info().Int("port", port).Msg("Starting server")
@@ -1003,6 +1007,8 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 				log.Debug().Str("url", helpers.RedactAPIKey(targetURL)).Int("status_code", resp.StatusCode).Msg("Endpoint returned server error, marked unhealthy")
 			}
 		}
+		// Drain to enable connection reuse
+		io.Copy(io.Discard, resp.Body)
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
