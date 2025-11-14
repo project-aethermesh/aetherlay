@@ -146,6 +146,9 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 | `--health-check-concurrency` | `20` | Maximum number of concurrent health checks during startup |
 | `--health-check-interval` | `30` | Health check interval in seconds |
 | `--health-check-sync-status` | `true` | Consider the sync status of the endpoints when deciding whether an endpoint is healthy or not. When enabled, endpoints that are syncing are considered to be unhealthy. |
+| `--health-checker-grace-period` | `60` | Grace period in seconds for health checker downtime after initial check passes. During this period, the load balancer will remain ready even if the health checker is temporarily unavailable. |
+| `--health-checker-server-port` | `8080` | Health checker HTTP server port |
+| `--health-checker-service-url` | `http://aetherlay-hc:8080` | Health checker service URL for readiness checks (used when `--standalone-health-checks` is enabled) |
 | `--log-level` | `info` | Set the log level. Valid options are: `debug`, `info`, `warn`, `error`, `fatal`, `panic` |
 | `--metrics-enabled` | `true` | Whether to enable Prometheus metrics |
 | `--metrics-port` | `9090` | Port for the Prometheus metrics server |
@@ -182,6 +185,9 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 | `HEALTH_CHECK_CONCURRENCY` | `20` | Maximum number of concurrent health checks during startup |
 | `HEALTH_CHECK_INTERVAL` | `30` | Health check interval in seconds |
 | `HEALTH_CHECK_SYNC_STATUS` | `true` | Consider the sync status of the endpoints when deciding whether an endpoint is healthy or not. When enabled, endpoints that are syncing are considered to be unhealthy. |
+| `HEALTH_CHECKER_GRACE_PERIOD` | `60` | Grace period in seconds for health checker downtime after initial check passes. During this period, the load balancer will remain ready even if the health checker is temporarily unavailable. |
+| `HEALTH_CHECKER_SERVER_PORT` | `8080` | Health checker HTTP server port |
+| `HEALTH_CHECKER_SERVICE_URL` | `http://aetherlay-hc:8080` | Health checker service URL for readiness checks (used when `STANDALONE_HEALTH_CHECKS` is enabled) |
 | `LOG_LEVEL` | `info` | Set the log level |
 | `METRICS_ENABLED` | `true` | Whether to enable Prometheus metrics |
 | `METRICS_PORT` | `9090` | Port for the Prometheus metrics server |
