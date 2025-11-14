@@ -71,22 +71,13 @@ func (s *HealthCheckerServer) Shutdown(ctx context.Context) error {
 // Always returns 200 to indicate the process is alive
 func (s *HealthCheckerServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
 
 	response := map[string]any{
 		"status": "healthy",
 	}
-	body, err := json.Marshal(response)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		errorBody, _ := json.Marshal(map[string]string{"error": "failed to encode response"})
-		w.Write(errorBody)
-		log.Error().Err(err).Msg("Failed to marshal health response")
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(body); err != nil {
-		log.Error().Err(err).Msg("Failed to write health response")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Error().Err(err).Msg("Failed to encode health response")
 	}
 }
 
@@ -98,7 +89,15 @@ func (s *HealthCheckerServer) handleReady(w http.ResponseWriter, r *http.Request
 	var response map[string]any
 	var statusCode int
 
-	if s.checker != nil && !s.checker.IsReady() {
+	// Read ready state under lock, then unlock before I/O
+	var isReady bool
+	if s.checker != nil {
+		isReady = s.checker.IsReady()
+	} else {
+		isReady = false
+	}
+
+	if !isReady {
 		response = map[string]any{
 			"status": "not_ready",
 			"reason": "initial_health_check_in_progress",
@@ -111,17 +110,8 @@ func (s *HealthCheckerServer) handleReady(w http.ResponseWriter, r *http.Request
 		statusCode = http.StatusOK
 	}
 
-	body, err := json.Marshal(response)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		errorBody, _ := json.Marshal(map[string]string{"error": "failed to encode response"})
-		w.Write(errorBody)
-		log.Error().Err(err).Msg("Failed to marshal ready response")
-		return
-	}
-
 	w.WriteHeader(statusCode)
-	if _, err := w.Write(body); err != nil {
-		log.Error().Err(err).Msg("Failed to write ready response")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Error().Err(err).Msg("Failed to encode ready response")
 	}
 }
