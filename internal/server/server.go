@@ -237,9 +237,11 @@ func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 		hcReady = s.healthChecker != nil && s.healthChecker.IsReady()
 	}
 
-	// Handle grace period logic
+	// Handle grace period logic, compute decision under lock, then unlock before I/O
+	var statusCode int
+	var status, reason string
+
 	s.hcFailureMu.Lock()
-	defer s.hcFailureMu.Unlock() // Ensure mutex is always unlocked
 
 	if hcReady {
 		// HC is ready, mark initial check as passed and clear failure timestamp
@@ -259,56 +261,63 @@ func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 		}
 
 		log.Debug().Msg("All readiness checks passed, returning ready")
-		s.writeReadinessResponse(w, http.StatusOK, "ready", "")
-		return
-	}
-
-	// HC is not ready
-	if !s.initialCheckPassed {
-		// No grace period during initial startup
+		statusCode = http.StatusOK
+		status = "ready"
+		reason = ""
+	} else if !s.initialCheckPassed {
+		// HC is not ready and no grace period during initial startup
 		if s.appConfig.StandaloneHealthChecks {
 			log.Warn().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Health-checker service not ready")
-			s.writeReadinessResponse(w, http.StatusServiceUnavailable, "not_ready", "health_checker_service_not_ready")
+			reason = "health_checker_service_not_ready"
 		} else {
 			log.Debug().Msg("Integrated health checker not ready yet")
-			s.writeReadinessResponse(w, http.StatusServiceUnavailable, "not_ready", "initial_health_check_in_progress")
+			reason = "initial_health_check_in_progress"
 		}
-		return
-	}
-
-	// Initial check has passed, apply grace period
-	gracePeriod := time.Duration(s.appConfig.HealthCheckerGracePeriod) * time.Second
-	now := time.Now()
-
-	// Set failure timestamp if not already set
-	if s.hcFailureTimestamp.IsZero() {
-		s.hcFailureTimestamp = now
-		log.Info().Dur("grace_period", gracePeriod).Msg("Health checker not ready, starting grace period")
-	}
-
-	elapsed := now.Sub(s.hcFailureTimestamp)
-
-	if elapsed < gracePeriod {
-		// Still within grace period, report ready
-		log.Debug().
-			Dur("elapsed", elapsed).
-			Dur("grace_period", gracePeriod).
-			Dur("remaining", gracePeriod-elapsed).
-			Msg("Health checker not ready but within grace period, reporting ready")
-		s.writeReadinessResponse(w, http.StatusOK, "ready", "")
-		return
-	}
-
-	// Grace period has expired, report not ready
-	log.Warn().
-		Dur("elapsed", elapsed).
-		Dur("grace_period", gracePeriod).
-		Msg("Health checker not ready and grace period expired, reporting not ready")
-	if s.appConfig.StandaloneHealthChecks {
-		s.writeReadinessResponse(w, http.StatusServiceUnavailable, "not_ready", "health_checker_service_not_ready")
+		statusCode = http.StatusServiceUnavailable
+		status = "not_ready"
 	} else {
-		s.writeReadinessResponse(w, http.StatusServiceUnavailable, "not_ready", "health_checker_not_ready")
+		// Initial check has passed, apply grace period
+		gracePeriod := time.Duration(s.appConfig.HealthCheckerGracePeriod) * time.Second
+		now := time.Now()
+
+		// Set failure timestamp if not already set
+		if s.hcFailureTimestamp.IsZero() {
+			s.hcFailureTimestamp = now
+			log.Info().Dur("grace_period", gracePeriod).Msg("Health checker not ready, starting grace period")
+		}
+
+		elapsed := now.Sub(s.hcFailureTimestamp)
+
+		if elapsed < gracePeriod {
+			// Still within grace period, report ready
+			log.Debug().
+				Dur("elapsed", elapsed).
+				Dur("grace_period", gracePeriod).
+				Dur("remaining", gracePeriod-elapsed).
+				Msg("Health checker not ready but within grace period, reporting ready")
+			statusCode = http.StatusOK
+			status = "ready"
+			reason = ""
+		} else {
+			// Grace period has expired, report not ready
+			log.Warn().
+				Dur("elapsed", elapsed).
+				Dur("grace_period", gracePeriod).
+				Msg("Health checker not ready and grace period expired, reporting not ready")
+			statusCode = http.StatusServiceUnavailable
+			status = "not_ready"
+			if s.appConfig.StandaloneHealthChecks {
+				reason = "health_checker_service_not_ready"
+			} else {
+				reason = "health_checker_not_ready"
+			}
+		}
 	}
+
+	s.hcFailureMu.Unlock()
+
+	// Write response after unlocking mutex to avoid blocking concurrent checks
+	s.writeReadinessResponse(w, statusCode, status, reason)
 }
 
 // checkHealthCheckerServiceReady checks if the external health-checker service is ready
