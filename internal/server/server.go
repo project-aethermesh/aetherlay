@@ -69,8 +69,8 @@ type Server struct {
 
 	// Health checker grace period state tracking
 	initialCheckPassed bool
-	hcFailureTimestamp *time.Time
-	hcFailureMu        sync.RWMutex
+	hcFailureTimestamp time.Time
+	hcFailureMu        sync.Mutex
 
 	// Reusable HTTP client for health checker readiness checks
 	healthCheckClient *http.Client
@@ -265,9 +265,9 @@ func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 			s.initialCheckPassed = true
 			log.Info().Msg("Initial health checker check passed")
 		}
-		if s.hcFailureTimestamp != nil {
+		if !s.hcFailureTimestamp.IsZero() {
 			log.Info().Msg("Health checker recovered, clearing failure timestamp")
-			s.hcFailureTimestamp = nil
+			s.hcFailureTimestamp = time.Time{}
 		}
 
 		if s.appConfig.StandaloneHealthChecks {
@@ -299,12 +299,12 @@ func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 
 	// Set failure timestamp if not already set
-	if s.hcFailureTimestamp == nil {
-		s.hcFailureTimestamp = &now
+	if s.hcFailureTimestamp.IsZero() {
+		s.hcFailureTimestamp = now
 		log.Info().Dur("grace_period", gracePeriod).Msg("Health checker not ready, starting grace period")
 	}
 
-	elapsed := now.Sub(*s.hcFailureTimestamp)
+	elapsed := now.Sub(s.hcFailureTimestamp)
 
 	if elapsed < gracePeriod {
 		// Still within grace period, report ready
