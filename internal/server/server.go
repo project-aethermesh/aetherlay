@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -326,13 +327,18 @@ func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 
 // checkHealthCheckerServiceReady checks if the external health-checker service is ready
 func (s *Server) checkHealthCheckerServiceReady(ctx context.Context) bool {
-	// Make request to health-checker's /ready endpoint
-	url := strings.TrimSuffix(s.appConfig.HealthCheckerServiceURL, "/") + "/ready"
-	log.Debug().Str("url", url).Msg("Making HTTP request to health-checker /ready endpoint")
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	// Parse base URL and construct /ready endpoint URL
+	baseURL, err := url.Parse(s.appConfig.HealthCheckerServiceURL)
 	if err != nil {
-		log.Error().Err(err).Str("url", url).Msg("Failed to create request to health-checker service")
+		log.Error().Err(err).Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Invalid health checker service URL")
+		return false
+	}
+	checkURL := baseURL.JoinPath("ready").String()
+	log.Debug().Str("url", checkURL).Msg("Making HTTP request to health-checker /ready endpoint")
+
+	req, err := http.NewRequestWithContext(ctx, "GET", checkURL, nil)
+	if err != nil {
+		log.Error().Err(err).Str("url", checkURL).Msg("Failed to create request to health-checker service")
 		return false
 	}
 
@@ -341,27 +347,27 @@ func (s *Server) checkHealthCheckerServiceReady(ctx context.Context) bool {
 	duration := time.Since(startTime)
 
 	if err != nil {
-		log.Warn().Err(err).Str("url", url).Dur("duration", duration).Msg("Failed to reach health-checker service")
+		log.Warn().Err(err).Str("url", checkURL).Dur("duration", duration).Msg("Failed to reach health-checker service")
 		return false
 	}
 	defer resp.Body.Close()
 
-	log.Debug().Str("url", url).Int("status_code", resp.StatusCode).Dur("duration", duration).Msg("Health-checker service responded")
+	log.Debug().Str("url", checkURL).Int("status_code", resp.StatusCode).Dur("duration", duration).Msg("Health-checker service responded")
 
 	// Health-checker is ready if it returns 200
 	if resp.StatusCode == http.StatusOK {
 		// Drain response body to enable connection reuse
 		io.Copy(io.Discard, resp.Body)
-		log.Debug().Str("url", url).Msg("Health-checker service is ready")
+		log.Debug().Str("url", checkURL).Msg("Health-checker service is ready")
 		return true
 	}
 
 	// Read response body for debugging
 	bodyBytes, readErr := io.ReadAll(resp.Body)
 	if readErr == nil {
-		log.Debug().Str("url", url).Int("status_code", resp.StatusCode).Str("response_body", string(bodyBytes)).Msg("Health-checker service returned non-200 status")
+		log.Debug().Str("url", checkURL).Int("status_code", resp.StatusCode).Str("response_body", string(bodyBytes)).Msg("Health-checker service returned non-200 status")
 	} else {
-		log.Debug().Str("url", url).Int("status_code", resp.StatusCode).Err(readErr).Msg("Health-checker service returned non-200 status (failed to read body)")
+		log.Debug().Str("url", checkURL).Int("status_code", resp.StatusCode).Err(readErr).Msg("Health-checker service returned non-200 status (failed to read body)")
 	}
 
 	return false
