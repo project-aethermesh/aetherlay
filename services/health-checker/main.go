@@ -107,18 +107,12 @@ func RunHealthChecker(
 	startupErrCh := make(chan error, 1)
 	httpServer.Start(startupErrCh)
 
-	// Wait briefly to detect startup failures (bind errors should be immediate)
-	select {
-	case err := <-startupErrCh:
-		if err != nil {
-			log.Fatal().Err(err).Msg("Health checker HTTP server failed to start")
-		}
-		log.Info().Msg("HTTP server startup successful, proceeding with dependency initialization")
-	case <-time.After(500 * time.Millisecond):
-		// No error received within timeout, assume startup successful
-		// Bind errors from net.Listen() should be immediate
-		log.Info().Msg("HTTP server startup successful (no error within timeout), proceeding with dependency initialization")
+	// Wait for startup result from the HTTP server goroutine (bind errors are immediate)
+	if err := <-startupErrCh; err != nil {
+		log.Fatal().Err(err).Msg("Health checker HTTP server failed to start")
 	}
+	log.Info().Msg("HTTP server startup successful, proceeding with dependency initialization")
+
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()
