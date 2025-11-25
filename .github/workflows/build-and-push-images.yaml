@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Image tag for manual builds. If not set, the branch name is used for non-main branches."
+        description: "Comma-separated list of image tags for manual builds (e.g., 'preprod' or 'latest,v2,v2.1,v2.1.2'). If not set, the branch name is used for non-main branches."
         required: false
         type: string
   push:
@@ -14,6 +14,8 @@ on:
       - "**.go"
       - "**/Dockerfile"
       - ".github/workflows/build-and-push-images.yaml"
+  pull_request:
+    types: [opened, synchronize]
 
 jobs:
   setup:
@@ -52,14 +54,44 @@ jobs:
         run: |
           go test ./...
 
+  parse_tags:
+    name: Parse tags
+    runs-on: ubuntu-latest
+    outputs:
+      tags: ${{ steps.parse_tags.outputs.tags }}
+      has_custom_tags: ${{ steps.parse_tags.outputs.has_custom_tags }}
+    steps:
+      - name: Parse tags
+        id: parse_tags
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag }}" ]; then
+            # Parse comma-separated tags and output as multiline string for docker/metadata-action
+            IFS=',' read -ra TAGS <<< "${{ github.event.inputs.tag }}"
+            TAGS_OUTPUT=""
+            for tag in "${TAGS[@]}"; do
+              tag=$(echo "$tag" | xargs)  # trim whitespace
+              if [ -n "$tag" ]; then
+                TAGS_OUTPUT="${TAGS_OUTPUT}type=raw,value=${tag}"$'\n'
+              fi
+            done
+            echo "tags<<EOF" >> $GITHUB_OUTPUT
+            echo "$TAGS_OUTPUT" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo "has_custom_tags=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_custom_tags=false" >> $GITHUB_OUTPUT
+          fi
+
   health-checker:
     name: Build health-checker image
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     needs:
       - setup
       - test
+      - parse_tags
     steps:
       - name: Checkout code
         id: checkout
@@ -85,10 +117,11 @@ jobs:
         with:
           images: ghcr.io/project-aethermesh/aetherlay/aetherlay-hc
           tags: |
-            type=raw,value=latest,enable=${{ github.ref_name == github.event.repository.default_branch }}
-            type=sha,format=short,enable=${{ github.ref_name == github.event.repository.default_branch }}
-            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
-            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag == '' && github.ref_name != github.event.repository.default_branch }}
+            type=raw,value=latest,enable=${{ github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request' }}
+            type=sha,format=short,enable=${{ github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request' }}
+            type=raw,value=pr-${{ github.event.pull_request.number }},enable=${{ github.event_name == 'pull_request' }}
+            ${{ needs.parse_tags.outputs.tags }}
+            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && needs.parse_tags.outputs.has_custom_tags != 'true' && github.ref_name != github.event.repository.default_branch }}
           labels: |
             org.opencontainers.image.vendor=Project Aethermesh
             org.opencontainers.image.licenses=AGPL-3.0
@@ -106,19 +139,20 @@ jobs:
   load-balancer:
     name: Build load-balancer image
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     needs:
       - setup
       - test
+      - parse_tags
     steps:
       - name: Checkout code
         id: checkout_lb
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
         id: setup_go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.25"
 
@@ -136,17 +170,18 @@ jobs:
         with:
           images: ghcr.io/project-aethermesh/aetherlay/aetherlay-lb
           tags: |
-            type=raw,value=latest,enable=${{ github.ref_name == github.event.repository.default_branch }}
-            type=sha,format=short,enable=${{ github.ref_name == github.event.repository.default_branch }}
-            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
-            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag == '' && github.ref_name != github.event.repository.default_branch }}
+            type=raw,value=latest,enable=${{ github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request' }}
+            type=sha,format=short,enable=${{ github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request' }}
+            type=raw,value=pr-${{ github.event.pull_request.number }},enable=${{ github.event_name == 'pull_request' }}
+            ${{ needs.parse_tags.outputs.tags }}
+            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && needs.parse_tags.outputs.has_custom_tags != 'true' && github.ref_name != github.event.repository.default_branch }}
           labels: |
             org.opencontainers.image.vendor=Project Aethermesh
             org.opencontainers.image.licenses=AGPL-3.0
 
       - name: Build and push load-balancer image
         id: container_image_lb
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./services/load-balancer/Dockerfile
