@@ -46,7 +46,7 @@ func (hc *Checker) updateHealthStatusInValkey(check Check) error {
 		return err
 	}
 	return hc.valkeyClient.(interface {
-		Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error
+		Set(ctx context.Context, key string, value any, expiration time.Duration) error
 	}).Set(ctx, check.EndpointURL, data, 0)
 }
 

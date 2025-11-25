@@ -69,6 +69,7 @@ func TestRunHealthCheckerFromEnv_Standalone(t *testing.T) {
 		20,                   // healthCheckConcurrency
 		30,                   // healthCheckInterval
 		true,                 // healthCheckSyncStatus
+		8080,                 // healthCheckerServerPort
 		false,                // metricsEnabled
 		9090,                 // metricsPort
 		"localhost",          // valkeyHost
@@ -128,6 +129,7 @@ func TestRunHealthCheckerFromEnv_Ephemeral(t *testing.T) {
 		20,                   // healthCheckConcurrency
 		0,                    // healthCheckInterval (ephemeral mode)
 		true,                 // healthCheckSyncStatus
+		8080,                 // healthCheckerServerPort
 		false,                // metricsEnabled
 		9090,                 // metricsPort
 		"localhost",          // valkeyHost
@@ -187,6 +189,7 @@ func TestRunHealthCheckerFromEnv_Disabled(t *testing.T) {
 		20,                   // healthCheckConcurrency
 		0,                    // healthCheckInterval (doesn't matter)
 		true,                 // healthCheckSyncStatus
+		8080,                 // healthCheckerServerPort
 		false,                // metricsEnabled
 		9090,                 // metricsPort
 		"localhost",          // valkeyHost

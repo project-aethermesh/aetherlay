@@ -147,7 +147,7 @@ func (m *MockValkeyClient) Del(_ context.Context, keys ...string) error {
 
 // Set is a helper method used by some components (like health checker) that don't use the full interface.
 // It stores a value as a string in a simple key-value map.
-func (m *MockValkeyClient) Set(_ context.Context, key string, value interface{}, _ time.Duration) error {
+func (m *MockValkeyClient) Set(_ context.Context, key string, value any, _ time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var strVal string

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -66,6 +67,14 @@ type Server struct {
 	successThreshold int
 	failureStatesMu  sync.RWMutex
 
+	// Health checker grace period state tracking
+	initialCheckPassed bool
+	hcFailureTimestamp time.Time
+	hcFailureMu        sync.Mutex
+
+	// Reusable HTTP client for health checker readiness checks
+	healthCheckClient *http.Client
+
 	forwardRequestWithBody func(w http.ResponseWriter, ctx context.Context, method, targetURL string, bodyBytes []byte, headers http.Header) error
 	proxyWebSocket         func(w http.ResponseWriter, r *http.Request, backendURL string) error
 }
@@ -92,6 +101,17 @@ func NewServer(cfg *config.Config, valkeyClient store.ValkeyClientIface, appConf
 	// Initialize rate limit scheduler
 	s.rateLimitScheduler = NewRateLimitScheduler(s.config, valkeyClient)
 
+	// Initialize reusable HTTP client for health checker readiness checks
+	transport := &http.Transport{
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     30 * time.Second,
+	}
+	s.healthCheckClient = &http.Client{
+		Transport: transport,
+		Timeout:   2 * time.Second,
+	}
+
 	s.setupRoutes()
 	return s
 }
@@ -117,8 +137,12 @@ func (s *Server) setupRoutes() {
 // Start starts the HTTP server on the specified port
 func (s *Server) Start(port int) error {
 	s.httpServer = &http.Server{
-		Addr:    ":" + strconv.Itoa(port),
-		Handler: s.router,
+		Addr:              ":" + strconv.Itoa(port),
+		Handler:           s.router,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       30 * time.Second,
 	}
 
 	log.Info().Int("port", port).Msg("Starting server")
@@ -161,28 +185,187 @@ func (s *Server) SetHealthChecker(checker HealthCheckerIface) {
 
 // handleHealthCheck handles the /health endpoint for liveness checks
 func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+
+	response := map[string]any{
 		"status": "healthy",
-	})
+	}
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Error().Err(err).Msg("Failed to encode health response")
+	}
+}
+
+// writeReadinessResponse writes a JSON readiness response with proper error handling
+func (s *Server) writeReadinessResponse(w http.ResponseWriter, statusCode int, status, reason string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+
+	response := map[string]any{
+		"status": status,
+	}
+	if reason != "" {
+		response["reason"] = reason
+	}
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Error().Err(err).Msg("Failed to encode readiness response")
+	}
 }
 
 // handleReadinessCheck handles the /ready endpoint for readiness checks
-// This returns 200 only after initial health checks complete
+// Returns 200 only when both LB and health-checker are ready
 func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
-	if s.healthChecker != nil && !s.healthChecker.IsReady() {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": "not_ready",
-			"reason": "initial_health_check_in_progress",
-		})
+	log.Debug().Msg("Readiness check started")
+
+	// Check LB's own readiness (Valkey connection)
+	log.Debug().Msg("Checking Valkey connection")
+	if err := s.valkeyClient.Ping(r.Context()); err != nil {
+		log.Warn().Err(err).Msg("Valkey ping failed during readiness check")
+		s.writeReadinessResponse(w, http.StatusServiceUnavailable, "not_ready", "valkey_connection_failed")
 		return
 	}
+	log.Debug().Msg("Valkey connection check passed")
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "ready",
-	})
+	// Check health-checker readiness
+	var hcReady bool
+	if s.appConfig.StandaloneHealthChecks {
+		log.Info().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Checking external health-checker service readiness")
+		hcReady = s.checkHealthCheckerServiceReady(r.Context())
+	} else {
+		log.Debug().Msg("Checking integrated health checker readiness")
+		hcReady = s.healthChecker != nil && s.healthChecker.IsReady()
+	}
+
+	// Handle grace period logic, compute decision under lock, then unlock before I/O
+	var statusCode int
+	var status, reason string
+
+	s.hcFailureMu.Lock()
+
+	if hcReady {
+		// HC is ready, mark initial check as passed and clear failure timestamp
+		if !s.initialCheckPassed {
+			s.initialCheckPassed = true
+			log.Info().Msg("Initial health checker check passed")
+		}
+		if !s.hcFailureTimestamp.IsZero() {
+			log.Info().Msg("Health checker recovered, clearing failure timestamp")
+			s.hcFailureTimestamp = time.Time{}
+		}
+
+		if s.appConfig.StandaloneHealthChecks {
+			log.Debug().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Health-checker service is ready")
+		} else {
+			log.Debug().Msg("Integrated health checker readiness check passed")
+		}
+
+		log.Debug().Msg("All readiness checks passed, returning ready")
+		statusCode = http.StatusOK
+		status = "ready"
+		reason = ""
+	} else if !s.initialCheckPassed {
+		// HC is not ready and no grace period during initial startup
+		if s.appConfig.StandaloneHealthChecks {
+			log.Warn().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Health-checker service not ready")
+			reason = "health_checker_service_not_ready"
+		} else {
+			log.Debug().Msg("Integrated health checker not ready yet")
+			reason = "initial_health_check_in_progress"
+		}
+		statusCode = http.StatusServiceUnavailable
+		status = "not_ready"
+	} else {
+		// Initial check has passed, apply grace period
+		gracePeriod := time.Duration(s.appConfig.HealthCheckerGracePeriod) * time.Second
+		now := time.Now()
+
+		// Set failure timestamp if not already set
+		if s.hcFailureTimestamp.IsZero() {
+			s.hcFailureTimestamp = now
+			log.Info().Dur("grace_period", gracePeriod).Msg("Health checker not ready, starting grace period")
+		}
+
+		elapsed := now.Sub(s.hcFailureTimestamp)
+
+		if elapsed < gracePeriod {
+			// Still within grace period, report ready
+			log.Debug().
+				Dur("elapsed", elapsed).
+				Dur("grace_period", gracePeriod).
+				Dur("remaining", gracePeriod-elapsed).
+				Msg("Health checker not ready but within grace period, reporting ready")
+			statusCode = http.StatusOK
+			status = "ready"
+			reason = ""
+		} else {
+			// Grace period has expired, report not ready
+			log.Warn().
+				Dur("elapsed", elapsed).
+				Dur("grace_period", gracePeriod).
+				Msg("Health checker not ready and grace period expired, reporting not ready")
+			statusCode = http.StatusServiceUnavailable
+			status = "not_ready"
+			if s.appConfig.StandaloneHealthChecks {
+				reason = "health_checker_service_not_ready"
+			} else {
+				reason = "health_checker_not_ready"
+			}
+		}
+	}
+
+	s.hcFailureMu.Unlock()
+
+	// Write response after unlocking mutex to avoid blocking concurrent checks
+	s.writeReadinessResponse(w, statusCode, status, reason)
+}
+
+// checkHealthCheckerServiceReady checks if the external health-checker service is ready
+func (s *Server) checkHealthCheckerServiceReady(ctx context.Context) bool {
+	// Parse base URL and construct /ready endpoint URL
+	baseURL, err := url.Parse(s.appConfig.HealthCheckerServiceURL)
+	if err != nil {
+		log.Error().Err(err).Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Invalid health checker service URL")
+		return false
+	}
+	checkURL := baseURL.JoinPath("ready").String()
+	log.Debug().Str("url", checkURL).Msg("Making HTTP request to health-checker /ready endpoint")
+
+	req, err := http.NewRequestWithContext(ctx, "GET", checkURL, nil)
+	if err != nil {
+		log.Error().Err(err).Str("url", checkURL).Msg("Failed to create request to health-checker service")
+		return false
+	}
+
+	startTime := time.Now()
+	resp, err := s.healthCheckClient.Do(req)
+	duration := time.Since(startTime)
+
+	if err != nil {
+		log.Warn().Err(err).Str("url", checkURL).Dur("duration", duration).Msg("Failed to reach health-checker service")
+		return false
+	}
+	defer resp.Body.Close()
+
+	log.Debug().Str("url", checkURL).Int("status_code", resp.StatusCode).Dur("duration", duration).Msg("Health-checker service responded")
+
+	// Health-checker is ready if it returns 200
+	if resp.StatusCode == http.StatusOK {
+		// Drain response body to enable connection reuse
+		io.Copy(io.Discard, resp.Body)
+		log.Debug().Str("url", checkURL).Msg("Health-checker service is ready")
+		return true
+	}
+
+	// Read response body for debugging
+	bodyBytes, readErr := io.ReadAll(resp.Body)
+	if readErr == nil {
+		log.Debug().Str("url", checkURL).Int("status_code", resp.StatusCode).Str("response_body", string(bodyBytes)).Msg("Health-checker service returned non-200 status")
+	} else {
+		log.Debug().Str("url", checkURL).Int("status_code", resp.StatusCode).Err(readErr).Msg("Health-checker service returned non-200 status (failed to read body)")
+	}
+
+	return false
 }
 
 // handleOptionsRequest handles CORS preflight OPTIONS requests
@@ -815,6 +998,8 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 				log.Debug().Str("url", helpers.RedactAPIKey(targetURL)).Int("status_code", resp.StatusCode).Msg("Endpoint returned server error, marked unhealthy")
 			}
 		}
+		// Drain to enable connection reuse
+		io.Copy(io.Discard, resp.Body)
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
