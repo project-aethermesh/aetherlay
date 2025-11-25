@@ -54,6 +54,83 @@ jobs:
         run: |
           go test ./...
 
+  check_version:
+    name: Check VERSION file
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Checkout main branch
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: main-branch
+
+      - name: Check VERSION file exists
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          if [ ! -f "VERSION" ]; then
+            echo "❌ VERSION file not found in repository root"
+            echo "Please create a VERSION file with a semantic version (e.g., v1.0.0)"
+            exit 1
+          fi
+          echo "✅ VERSION file exists"
+
+      - name: Check VERSION file updated
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          if [ -f "main-branch/VERSION" ]; then
+            PR_VERSION=$(cat VERSION | xargs)
+            MAIN_VERSION=$(cat main-branch/VERSION | xargs)
+            if [ "$PR_VERSION" == "$MAIN_VERSION" ]; then
+              echo "❌ VERSION file has not been updated"
+              echo "Current VERSION: $PR_VERSION"
+              echo "Main branch VERSION: $MAIN_VERSION"
+              echo "Please update the VERSION file with a new semantic version"
+              exit 1
+            fi
+            echo "✅ VERSION file has been updated"
+            echo "Main branch: $MAIN_VERSION"
+            echo "PR branch: $PR_VERSION"
+          else
+            echo "✅ VERSION file is new (not present in main branch)"
+          fi
+
+      - name: Validate VERSION format
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          VERSION=$(cat VERSION | xargs)
+
+          # Check that version starts with 'v'
+          if [[ ! "$VERSION" == v* ]]; then
+            echo "❌ Version must start with 'v' prefix"
+            echo "Current version: $VERSION"
+            echo "Expected format: v1.0.0 (semantic versioning with 'v' prefix)"
+            exit 1
+          fi
+
+          # Remove 'v' prefix for validation
+          VERSION_CLEAN=${VERSION#v}
+
+          # Validate semantic versioning format (major.minor.patch)
+          if [[ ! $VERSION_CLEAN =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
+            echo "❌ Invalid version format: $VERSION"
+            echo "Expected format: v1.0.0 (semantic versioning with 'v' prefix)"
+            exit 1
+          fi
+
+          echo "✅ Valid version: $VERSION"
+
+      - name: Skip check for non-PR events
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "⏭️ Skipping VERSION check (not a PR or PR is from a fork)"
+
   parse_tags:
     name: Parse tags
     runs-on: ubuntu-latest
@@ -91,6 +168,7 @@ jobs:
     needs:
       - setup
       - test
+      - check_version
       - parse_tags
     steps:
       - name: Checkout code
@@ -144,6 +222,7 @@ jobs:
     needs:
       - setup
       - test
+      - check_version
       - parse_tags
     steps:
       - name: Checkout code
