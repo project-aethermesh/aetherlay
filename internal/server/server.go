@@ -353,7 +353,6 @@ func (s *Server) checkHealthCheckerServiceReady(ctx context.Context) bool {
 	if resp.StatusCode == http.StatusOK {
 		// Drain response body to enable connection reuse
 		io.Copy(io.Discard, resp.Body)
-		log.Debug().Str("url", checkURL).Msg("Health-checker service is ready")
 		return true
 	}
 
