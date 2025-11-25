@@ -213,11 +213,6 @@ func RunHealthChecker(
 
 // main initializes and starts the health checker service
 func main() {
-	// Defer exit to ensure cleanup runs first
-	defer func() {
-		os.Exit(exitCode)
-	}()
-
 	_ = godotenv.Load()
 
 	// Initialize logger
@@ -256,4 +251,8 @@ func main() {
 		config.ValkeyUseTLS,
 		config.StandaloneHealthChecks,
 	)
+
+	// Exit with the appropriate code after RunHealthChecker returns
+	// This allows defers in RunHealthChecker to run, while not hiding panics
+	os.Exit(exitCode)
 }
