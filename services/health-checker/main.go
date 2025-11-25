@@ -100,6 +100,33 @@ func RunHealthChecker(
 		return
 	}
 
+	// Start HTTP server FIRST, before any dependencies (config, Valkey)
+	// This ensures health probes are able to be used from the start
+	log.Info().Int("port", healthCheckerServerPort).Msg("Starting HTTP server on port (before dependencies)")
+	httpServer := health.NewHealthCheckerServer(healthCheckerServerPort, nil) // Start with nil checker
+	startupErrCh := make(chan error, 1)
+	httpServer.Start(startupErrCh)
+
+	// Wait briefly to detect startup failures (bind errors should be immediate)
+	select {
+	case err := <-startupErrCh:
+		if err != nil {
+			log.Fatal().Err(err).Msg("Health checker HTTP server failed to start")
+		}
+		log.Info().Msg("HTTP server startup successful, proceeding with dependency initialization")
+	case <-time.After(500 * time.Millisecond):
+		// No error received within timeout, assume startup successful
+		// Bind errors from net.Listen() should be immediate
+		log.Info().Msg("HTTP server startup successful (no error within timeout), proceeding with dependency initialization")
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			log.Error().Err(err).Msg("Error shutting down health checker HTTP server")
+		}
+	}()
+
 	// Start the metrics server if enabled
 	if metricsEnabled {
 		log.Info().Int("port", metricsPort).Msg("Prometheus metrics server enabled")
@@ -145,29 +172,9 @@ func RunHealthChecker(
 		testCheckerPatch(checker)
 	}
 
-	// Start HTTP server for health and readiness endpoints
-	httpServer := health.NewHealthCheckerServer(healthCheckerServerPort, checker)
-	startupErrCh := make(chan error, 1)
-	httpServer.Start(startupErrCh)
-
-	// Wait briefly to detect startup failures (bind errors should be immediate)
-	select {
-	case err := <-startupErrCh:
-		if err != nil {
-			log.Fatal().Err(err).Msg("Health checker HTTP server failed to start")
-		}
-		// Startup successful
-	case <-time.After(100 * time.Millisecond):
-		// No error received within timeout, assume startup successful
-		// Bind errors from net.Listen() should be immediate, so this is safe
-	}
-	defer func() {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer shutdownCancel()
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			log.Error().Err(err).Msg("Error shutting down health checker HTTP server")
-		}
-	}()
+	// Update HTTP server with checker instance now that dependencies are loaded
+	log.Info().Msg("Dependencies loaded, updating HTTP server with checker instance")
+	httpServer.SetChecker(checker)
 
 	if healthCheckInterval == 0 {
 		mode = "ephemeral"
