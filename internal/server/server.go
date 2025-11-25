@@ -230,7 +230,7 @@ func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 	// Check health-checker readiness
 	var hcReady bool
 	if s.appConfig.StandaloneHealthChecks {
-		log.Info().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Checking external health-checker service readiness")
+		log.Debug().Str("url", s.appConfig.HealthCheckerServiceURL).Msg("Checking external health-checker service readiness")
 		hcReady = s.checkHealthCheckerServiceReady(r.Context())
 	} else {
 		log.Debug().Msg("Checking integrated health checker readiness")
@@ -247,7 +247,7 @@ func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 		// HC is ready, mark initial check as passed and clear failure timestamp
 		if !s.initialCheckPassed {
 			s.initialCheckPassed = true
-			log.Info().Msg("Initial health checker check passed")
+			log.Info().Msg("Initial health-checker check passed")
 		}
 		if !s.hcFailureTimestamp.IsZero() {
 			log.Info().Msg("Health checker recovered, clearing failure timestamp")
