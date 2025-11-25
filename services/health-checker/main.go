@@ -102,7 +102,7 @@ func RunHealthChecker(
 
 	// Start HTTP server FIRST, before any dependencies (config, Valkey)
 	// This ensures health probes are able to be used from the start
-	log.Info().Int("port", healthCheckerServerPort).Msg("Starting HTTP server on port (before dependencies)")
+	log.Info().Int("port", healthCheckerServerPort).Msg("Starting HTTP server before dependencies")
 	httpServer := health.NewHealthCheckerServer(healthCheckerServerPort, nil) // Start with nil checker
 	startupErrCh := make(chan error, 1)
 	httpServer.Start(startupErrCh)
