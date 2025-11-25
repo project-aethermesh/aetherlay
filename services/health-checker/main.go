@@ -33,6 +33,9 @@ var testCheckerPatch func(*health.Checker)
 // testExitAfterSetup is a test hook to exit main after setup in tests
 var testExitAfterSetup bool
 
+// exitCode is used to track the exit code for the process
+var exitCode int
+
 // createStandaloneRateLimitHandler creates a simple rate limit handler for the standalone health checker
 func createStandaloneRateLimitHandler(valkeyClient store.ValkeyClientIface) func(chain, endpointID, protocol string) {
 	return func(chain, endpointID, protocol string) {
@@ -109,7 +112,9 @@ func RunHealthChecker(
 
 	// Wait for startup result from the HTTP server goroutine (bind errors are immediate)
 	if err := <-startupErrCh; err != nil {
-		log.Fatal().Err(err).Msg("Health checker HTTP server failed to start")
+		log.Error().Err(err).Msg("Health checker HTTP server failed to start")
+		exitCode = 1
+		return
 	}
 	log.Info().Msg("HTTP server startup successful, proceeding with dependency initialization")
 
@@ -129,7 +134,9 @@ func RunHealthChecker(
 
 	cfg, err := loadConfig(configFile)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to load configuration")
+		log.Error().Err(err).Msg("Failed to load configuration")
+		exitCode = 1
+		return
 	}
 
 	log.Info().Msg("Health Checker Service - Loaded configuration:")
@@ -151,7 +158,9 @@ func RunHealthChecker(
 	valkeyAddr := valkeyHost + ":" + valkeyPort
 	valkeyClient := newValkeyClient(valkeyAddr, valkeyPass, valkeySkipTLSCheck, valkeyUseTLS)
 	if err := valkeyClient.Ping(context.Background()); err != nil {
-		log.Fatal().Err(err).Msg("Failed to connect to Valkey")
+		log.Error().Err(err).Msg("Failed to connect to Valkey")
+		exitCode = 1
+		return
 	}
 	defer valkeyClient.Close()
 
@@ -204,6 +213,11 @@ func RunHealthChecker(
 
 // main initializes and starts the health checker service
 func main() {
+	// Defer exit to ensure cleanup runs first
+	defer func() {
+		os.Exit(exitCode)
+	}()
+
 	_ = godotenv.Load()
 
 	// Initialize logger
