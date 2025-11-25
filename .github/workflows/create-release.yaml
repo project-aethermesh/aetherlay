@@ -46,8 +46,6 @@ jobs:
             exit 1
           fi
 
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
           # Remove 'v' prefix for validation
           VERSION_CLEAN=${VERSION#v}
 
@@ -58,6 +56,77 @@ jobs:
             exit 1
           fi
 
+          # Function to compare semantic versions
+          version_compare() {
+            local v1=$1
+            local v2=$2
+
+            # Remove 'v' prefix
+            v1=${v1#v}
+            v2=${v2#v}
+
+            # Remove pre-release and build metadata for comparison
+            v1_clean=${v1%%-*}
+            v1_clean=${v1_clean%%+*}
+            v2_clean=${v2%%-*}
+            v2_clean=${v2_clean%%+*}
+
+            # Split into major.minor.patch
+            IFS='.' read -ra V1_PARTS <<< "$v1_clean"
+            IFS='.' read -ra V2_PARTS <<< "$v2_clean"
+
+            # Compare major
+            if [ "${V1_PARTS[0]}" -gt "${V2_PARTS[0]}" ]; then
+              return 0  # v1 > v2
+            elif [ "${V1_PARTS[0]}" -lt "${V2_PARTS[0]}" ]; then
+              return 1  # v1 < v2
+            fi
+
+            # Compare minor
+            if [ "${V1_PARTS[1]}" -gt "${V2_PARTS[1]}" ]; then
+              return 0  # v1 > v2
+            elif [ "${V1_PARTS[1]}" -lt "${V2_PARTS[1]}" ]; then
+              return 1  # v1 < v2
+            fi
+
+            # Compare patch
+            if [ "${V1_PARTS[2]}" -gt "${V2_PARTS[2]}" ]; then
+              return 0  # v1 > v2
+            elif [ "${V1_PARTS[2]}" -lt "${V2_PARTS[2]}" ]; then
+              return 1  # v1 < v2
+            fi
+
+            return 2  # v1 == v2
+          }
+
+          # Check if version is greater than latest release
+          LATEST_TAG=$(git tag -l 'v*' --sort=-version:refname | head -n 1 || echo "")
+          if [ -n "$LATEST_TAG" ]; then
+            version_compare "$VERSION" "$LATEST_TAG"
+            COMPARE_RESULT=$?
+
+            if [ $COMPARE_RESULT -eq 2 ]; then
+              echo "❌ VERSION is the same as latest release"
+              echo "Current VERSION: $VERSION"
+              echo "Latest release: $LATEST_TAG"
+              echo "Please update the VERSION file with a greater semantic version"
+              exit 1
+            elif [ $COMPARE_RESULT -eq 1 ]; then
+              echo "❌ VERSION is less than latest release"
+              echo "Current VERSION: $VERSION"
+              echo "Latest release: $LATEST_TAG"
+              echo "Please update the VERSION file with a greater semantic version"
+              exit 1
+            fi
+
+            echo "✅ VERSION is greater than latest release"
+            echo "Latest release: $LATEST_TAG"
+            echo "New version: $VERSION"
+          else
+            echo "✅ No previous releases found, this will be the first release"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "✅ Valid version: $VERSION"
 
       - name: Generate tags

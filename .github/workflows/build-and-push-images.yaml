@@ -81,12 +81,57 @@ jobs:
           fi
           echo "✅ VERSION file exists"
 
-      - name: Check VERSION file updated
+      - name: Check VERSION file updated and greater
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         run: |
+          # Function to compare semantic versions
+          version_compare() {
+            local v1=$1
+            local v2=$2
+
+            # Remove 'v' prefix
+            v1=${v1#v}
+            v2=${v2#v}
+
+            # Remove pre-release and build metadata for comparison
+            v1_clean=${v1%%-*}
+            v1_clean=${v1_clean%%+*}
+            v2_clean=${v2%%-*}
+            v2_clean=${v2_clean%%+*}
+
+            # Split into major.minor.patch
+            IFS='.' read -ra V1_PARTS <<< "$v1_clean"
+            IFS='.' read -ra V2_PARTS <<< "$v2_clean"
+
+            # Compare major
+            if [ "${V1_PARTS[0]}" -gt "${V2_PARTS[0]}" ]; then
+              return 0  # v1 > v2
+            elif [ "${V1_PARTS[0]}" -lt "${V2_PARTS[0]}" ]; then
+              return 1  # v1 < v2
+            fi
+
+            # Compare minor
+            if [ "${V1_PARTS[1]}" -gt "${V2_PARTS[1]}" ]; then
+              return 0  # v1 > v2
+            elif [ "${V1_PARTS[1]}" -lt "${V2_PARTS[1]}" ]; then
+              return 1  # v1 < v2
+            fi
+
+            # Compare patch
+            if [ "${V1_PARTS[2]}" -gt "${V2_PARTS[2]}" ]; then
+              return 0  # v1 > v2
+            elif [ "${V1_PARTS[2]}" -lt "${V2_PARTS[2]}" ]; then
+              return 1  # v1 < v2
+            fi
+
+            return 2  # v1 == v2
+          }
+
           if [ -f "main-branch/VERSION" ]; then
             PR_VERSION=$(cat VERSION | xargs)
             MAIN_VERSION=$(cat main-branch/VERSION | xargs)
+
+            # Check if versions are the same
             if [ "$PR_VERSION" == "$MAIN_VERSION" ]; then
               echo "❌ VERSION file has not been updated"
               echo "Current VERSION: $PR_VERSION"
@@ -94,7 +139,26 @@ jobs:
               echo "Please update the VERSION file with a new semantic version"
               exit 1
             fi
-            echo "✅ VERSION file has been updated"
+
+            # Check if PR version is greater than main version
+            version_compare "$PR_VERSION" "$MAIN_VERSION"
+            COMPARE_RESULT=$?
+
+            if [ $COMPARE_RESULT -eq 2 ]; then
+              echo "❌ VERSION is the same as main branch (after removing metadata)"
+              echo "PR VERSION: $PR_VERSION"
+              echo "Main branch VERSION: $MAIN_VERSION"
+              echo "Please update the VERSION file with a greater semantic version"
+              exit 1
+            elif [ $COMPARE_RESULT -eq 1 ]; then
+              echo "❌ VERSION is less than main branch version"
+              echo "PR VERSION: $PR_VERSION"
+              echo "Main branch VERSION: $MAIN_VERSION"
+              echo "Please update the VERSION file with a greater semantic version"
+              exit 1
+            fi
+
+            echo "✅ VERSION file has been updated and is greater"
             echo "Main branch: $MAIN_VERSION"
             echo "PR branch: $PR_VERSION"
           else
