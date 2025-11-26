@@ -198,7 +198,8 @@ jobs:
   health-checker:
     name: Build health-checker image
     runs-on: ubuntu-latest
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # Run for all configured events, but skip pull requests from forks
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     needs:
       - setup
@@ -252,7 +253,8 @@ jobs:
   load-balancer:
     name: Build load-balancer image
     runs-on: ubuntu-latest
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # Run for all configured events, but skip pull requests from forks
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     needs:
       - setup
