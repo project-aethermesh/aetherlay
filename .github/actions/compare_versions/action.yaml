@@ -1,0 +1,93 @@
+name: "Compare semantic versions"
+description: "Compares two semantic versions (with optional v-prefix, pre-release, and build metadata) and returns gt/lt/eq."
+
+inputs:
+  v1:
+    description: "First version to compare (e.g., v1.2.3, 1.2.3-rc1)"
+    required: true
+  v2:
+    description: "Second version to compare (e.g., v1.2.3, 1.2.3-rc1)"
+    required: true
+
+outputs:
+  result:
+    description: "Comparison result: gt (v1 > v2), lt (v1 < v2), eq (v1 == v2)"
+    value: ${{ steps.compare.outputs.result }}
+  exit_code:
+    description: "Numeric comparison code: 0 (v1 > v2), 1 (v1 < v2), 2 (v1 == v2)"
+    value: ${{ steps.compare.outputs.exit_code }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Compare versions
+      id: compare
+      shell: bash
+      run: |
+        v1="${{ inputs.v1 }}"
+        v2="${{ inputs.v2 }}"
+
+        # Function to compare semantic versions
+        version_compare() {
+          local v1=$1
+          local v2=$2
+
+          # Remove 'v' prefix
+          v1=${v1#v}
+          v2=${v2#v}
+
+          # Remove pre-release and build metadata for comparison
+          v1_clean=${v1%%-*}
+          v1_clean=${v1_clean%%+*}
+          v2_clean=${v2%%-*}
+          v2_clean=${v2_clean%%+*}
+
+          # Split into major.minor.patch
+          IFS='.' read -ra V1_PARTS <<< "$v1_clean"
+          IFS='.' read -ra V2_PARTS <<< "$v2_clean"
+
+          # Compare major
+          if [ "${V1_PARTS[0]}" -gt "${V2_PARTS[0]}" ]; then
+            return 0  # v1 > v2
+          elif [ "${V1_PARTS[0]}" -lt "${V2_PARTS[0]}" ]; then
+            return 1  # v1 < v2
+          fi
+
+          # Compare minor
+          if [ "${V1_PARTS[1]}" -gt "${V2_PARTS[1]}" ]; then
+            return 0  # v1 > v2
+          elif [ "${V1_PARTS[1]}" -lt "${V2_PARTS[1]}" ]; then
+            return 1  # v1 < v2
+          fi
+
+          # Compare patch
+          if [ "${V1_PARTS[2]}" -gt "${V2_PARTS[2]}" ]; then
+            return 0  # v1 > v2
+          elif [ "${V1_PARTS[2]}" -lt "${V2_PARTS[2]}" ]; then
+            return 1  # v1 < v2
+          fi
+
+          return 2  # v1 == v2
+        }
+
+        version_compare "$v1" "$v2"
+        compare_rc=$?
+
+        case "$compare_rc" in
+          0)
+            result="gt"
+            ;;
+          1)
+            result="lt"
+            ;;
+          2)
+            result="eq"
+            ;;
+          *)
+            echo "Unexpected comparison result code: $compare_rc"
+            exit 1
+            ;;
+        esac
+
+        echo "result=$result" >> "$GITHUB_OUTPUT"
+        echo "exit_code=$compare_rc" >> "$GITHUB_OUTPUT"

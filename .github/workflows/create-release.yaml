@@ -37,7 +37,6 @@ jobs:
         shell: bash
         run: |
           VERSION=$(cat VERSION | xargs)
-
           # Check that version starts with 'v'
           if [[ ! "$VERSION" == v* ]]; then
             echo "❌ Version must start with 'v' prefix"
@@ -50,84 +49,56 @@ jobs:
           VERSION_CLEAN=${VERSION#v}
 
           # Validate semantic versioning format (major.minor.patch)
-          if [[ ! $VERSION_CLEAN =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
+          if [[ ! "$VERSION_CLEAN" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
             echo "❌ Invalid version format: $VERSION"
             echo "Expected format: v1.0.0 (semantic versioning with 'v' prefix)"
             exit 1
           fi
 
-          # Function to compare semantic versions
-          version_compare() {
-            local v1=$1
-            local v2=$2
-
-            # Remove 'v' prefix
-            v1=${v1#v}
-            v2=${v2#v}
-
-            # Remove pre-release and build metadata for comparison
-            v1_clean=${v1%%-*}
-            v1_clean=${v1_clean%%+*}
-            v2_clean=${v2%%-*}
-            v2_clean=${v2_clean%%+*}
-
-            # Split into major.minor.patch
-            IFS='.' read -ra V1_PARTS <<< "$v1_clean"
-            IFS='.' read -ra V2_PARTS <<< "$v2_clean"
-
-            # Compare major
-            if [ "${V1_PARTS[0]}" -gt "${V2_PARTS[0]}" ]; then
-              return 0  # v1 > v2
-            elif [ "${V1_PARTS[0]}" -lt "${V2_PARTS[0]}" ]; then
-              return 1  # v1 < v2
-            fi
-
-            # Compare minor
-            if [ "${V1_PARTS[1]}" -gt "${V2_PARTS[1]}" ]; then
-              return 0  # v1 > v2
-            elif [ "${V1_PARTS[1]}" -lt "${V2_PARTS[1]}" ]; then
-              return 1  # v1 < v2
-            fi
-
-            # Compare patch
-            if [ "${V1_PARTS[2]}" -gt "${V2_PARTS[2]}" ]; then
-              return 0  # v1 > v2
-            elif [ "${V1_PARTS[2]}" -lt "${V2_PARTS[2]}" ]; then
-              return 1  # v1 < v2
-            fi
-
-            return 2  # v1 == v2
-          }
-
-          # Check if version is greater than latest release
+          # Find the latest existing release tag (if any) for comparison
           LATEST_TAG=$(git tag -l 'v*' --sort=-version:refname | head -n 1 || echo "")
-          if [ -n "$LATEST_TAG" ]; then
-            version_compare "$VERSION" "$LATEST_TAG"
-            COMPARE_RESULT=$?
-
-            if [ $COMPARE_RESULT -eq 2 ]; then
-              echo "❌ VERSION is the same as latest release"
-              echo "Current VERSION: $VERSION"
-              echo "Latest release: $LATEST_TAG"
-              echo "Please update the VERSION file with a greater semantic version"
-              exit 1
-            elif [ $COMPARE_RESULT -eq 1 ]; then
-              echo "❌ VERSION is less than latest release"
-              echo "Current VERSION: $VERSION"
-              echo "Latest release: $LATEST_TAG"
-              echo "Please update the VERSION file with a greater semantic version"
-              exit 1
-            fi
-
-            echo "✅ VERSION is greater than latest release"
-            echo "Latest release: $LATEST_TAG"
-            echo "New version: $VERSION"
-          else
-            echo "✅ No previous releases found, this will be the first release"
-          fi
-
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "✅ Valid version: $VERSION"
+
+      - name: Compare VERSION with latest release using shared action
+        id: compare_with_latest
+        if: steps.read_version.outputs.latest_tag != ''
+        uses: ./.github/actions/compare_versions
+        with:
+          v1: ${{ steps.read_version.outputs.version }}
+          v2: ${{ steps.read_version.outputs.latest_tag }}
+
+      - name: Enforce VERSION is greater than latest release
+        if: steps.read_version.outputs.latest_tag != ''
+        shell: bash
+        run: |
+          VERSION="${{ steps.read_version.outputs.version }}"
+          LATEST_TAG="${{ steps.read_version.outputs.latest_tag }}"
+          RESULT="${{ steps.compare_with_latest.outputs.result }}"
+
+          if [ "$RESULT" = "eq" ]; then
+            echo "❌ VERSION is the same as latest release"
+            echo "Current VERSION: $VERSION"
+            echo "Latest release: $LATEST_TAG"
+            echo "Please update the VERSION file with a greater semantic version"
+            exit 1
+          elif [ "$RESULT" = "lt" ]; then
+            echo "❌ VERSION is less than latest release"
+            echo "Current VERSION: $VERSION"
+            echo "Latest release: $LATEST_TAG"
+            echo "Please update the VERSION file with a greater semantic version"
+            exit 1
+          fi
+
+          echo "✅ VERSION is greater than latest release"
+          echo "Latest release: $LATEST_TAG"
+          echo "New version: $VERSION"
+
+      - name: Note when no previous releases exist
+        if: steps.read_version.outputs.latest_tag == ''
+        run: |
+          echo "✅ No previous releases found, this will be the first release"
 
       - name: Generate tags
         id: generate_tags
