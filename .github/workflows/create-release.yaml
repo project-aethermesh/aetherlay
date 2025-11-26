@@ -11,7 +11,7 @@ on:
       - ".github/workflows/**"
 
 jobs:
-  validate-version:
+  validate_version:
     name: Validate VERSION file
     runs-on: ubuntu-latest
     outputs:
@@ -137,25 +137,33 @@ jobs:
           # Remove 'v' prefix for parsing (we know it exists from validation)
           VERSION_CLEAN=${VERSION#v}
 
-          # Extract major, minor, patch
+          # Extract major and minor version numbers
           IFS='.' read -ra VERSION_PARTS <<< "$VERSION_CLEAN"
           MAJOR=${VERSION_PARTS[0]}
           MINOR=${VERSION_PARTS[1]}
-          PATCH=${VERSION_PARTS[2]%%-*}  # Remove pre-release suffix if present
-          PATCH=${PATCH%%+*}  # Remove build metadata if present
 
           VERSION_TAG="$VERSION"
 
-          # Generate tags: latest, v{major}, v{major}.{minor}, v{full}
-          TAGS="latest,v${MAJOR},v${MAJOR}.${MINOR},${VERSION_TAG}"
+          # Detect if this is a pre-release (presence of a '-' in the version string)
+          IS_PRERELEASE=false
+          if [[ "$VERSION_CLEAN" == *-* ]]; then
+            IS_PRERELEASE=true
+          fi
+
+          # Generate tags:
+          if [ "$IS_PRERELEASE" = true ]; then
+            TAGS="${VERSION_TAG}"
+          else
+            TAGS="latest,v${MAJOR},v${MAJOR}.${MINOR},${VERSION_TAG}"
+          fi
 
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
           echo "Generated tags: $TAGS"
 
-  create-release:
+  create_release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: validate-version
+    needs: validate_version
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -166,17 +174,17 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          VERSION="${{ needs.validate-version.outputs.version }}"
+          VERSION="${{ needs.validate_version.outputs.version }}"
           git tag -a "$VERSION" -m "Release $VERSION"
           git push origin "$VERSION"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.validate-version.outputs.version }}
-          name: Release ${{ needs.validate-version.outputs.version }}
+          tag_name: ${{ needs.validate_version.outputs.version }}
+          name: Release ${{ needs.validate_version.outputs.version }}
           body: |
-            Release ${{ needs.validate-version.outputs.version }}
+            Release ${{ needs.validate_version.outputs.version }}
           draft: false
           prerelease: false
         env:
@@ -186,7 +194,7 @@ jobs:
         uses: actions/github-script@v8
         with:
           script: |
-            const tags = '${{ needs.validate-version.outputs.tags }}';
+            const tags = '${{ needs.validate_version.outputs.tags }}';
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
