@@ -1,0 +1,189 @@
+name: Create Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "VERSION"
+      - "**.go"
+      - "**/Dockerfile"
+      - ".github/workflows/**"
+
+jobs:
+  validate_version:
+    name: Validate VERSION file
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read_version.outputs.version }}
+      tags: ${{ steps.generate_tags.outputs.tags }}
+      is_prerelease: ${{ steps.generate_tags.outputs.is_prerelease }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check VERSION file exists
+        id: check_version_file
+        run: |
+          if [ ! -f "VERSION" ]; then
+            echo "❌ VERSION file not found in repository root"
+            exit 1
+          fi
+          echo "✅ VERSION file exists"
+
+      - name: Read and validate VERSION
+        id: read_version
+        shell: bash
+        run: |
+          VERSION=$(cat VERSION | xargs)
+          # Check that version starts with 'v'
+          if [[ ! "$VERSION" == v* ]]; then
+            echo "❌ Version must start with 'v' prefix"
+            echo "Current version: $VERSION"
+            echo "Expected format: v1.0.0 (semantic versioning with 'v' prefix)"
+            exit 1
+          fi
+
+          # Remove 'v' prefix for validation
+          VERSION_CLEAN=${VERSION#v}
+
+          # Validate semantic versioning format (major.minor.patch)
+          if [[ ! "$VERSION_CLEAN" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
+            echo "❌ Invalid version format: $VERSION"
+            echo "Expected format: v1.0.0 (semantic versioning with 'v' prefix)"
+            exit 1
+          fi
+
+          # Find the latest existing release tag (if any) for comparison
+          LATEST_TAG=$(git tag -l 'v*' --sort=-version:refname | head -n 1 || echo "")
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "✅ Valid version: $VERSION"
+
+      - name: Compare VERSION with latest release using shared action
+        id: compare_with_latest
+        if: steps.read_version.outputs.latest_tag != ''
+        uses: ./.github/actions/compare_versions
+        with:
+          v1: ${{ steps.read_version.outputs.version }}
+          v2: ${{ steps.read_version.outputs.latest_tag }}
+
+      - name: Enforce VERSION is greater than latest release
+        if: steps.read_version.outputs.latest_tag != ''
+        shell: bash
+        run: |
+          VERSION="${{ steps.read_version.outputs.version }}"
+          LATEST_TAG="${{ steps.read_version.outputs.latest_tag }}"
+          RESULT="${{ steps.compare_with_latest.outputs.result }}"
+
+          if [ "$RESULT" = "eq" ]; then
+            echo "❌ VERSION is the same as latest release"
+            echo "Current VERSION: $VERSION"
+            echo "Latest release: $LATEST_TAG"
+            echo "Please update the VERSION file with a greater semantic version"
+            exit 1
+          elif [ "$RESULT" = "lt" ]; then
+            echo "❌ VERSION is less than latest release"
+            echo "Current VERSION: $VERSION"
+            echo "Latest release: $LATEST_TAG"
+            echo "Please update the VERSION file with a greater semantic version"
+            exit 1
+          fi
+
+          echo "✅ VERSION is greater than latest release"
+          echo "Latest release: $LATEST_TAG"
+          echo "New version: $VERSION"
+
+      - name: Note when no previous releases exist
+        if: steps.read_version.outputs.latest_tag == ''
+        run: |
+          echo "✅ No previous releases found, this will be the first release"
+
+      - name: Generate tags
+        id: generate_tags
+        shell: bash
+        run: |
+          VERSION="${{ steps.read_version.outputs.version }}"
+          # Remove 'v' prefix for parsing (we know it exists from validation)
+          VERSION_CLEAN=${VERSION#v}
+
+          # Extract major and minor version numbers
+          IFS='.' read -ra VERSION_PARTS <<< "$VERSION_CLEAN"
+          MAJOR=${VERSION_PARTS[0]}
+          MINOR=${VERSION_PARTS[1]}
+
+          VERSION_TAG="$VERSION"
+
+          # Detect if this is a pre-release (presence of a '-' in the version string)
+          IS_PRERELEASE=false
+          if [[ "$VERSION_CLEAN" == *-* ]]; then
+            IS_PRERELEASE=true
+          fi
+
+          # Generate tags:
+          if [ "$IS_PRERELEASE" = true ]; then
+            TAGS="${VERSION_TAG}"
+          else
+            TAGS="latest,v${MAJOR},v${MAJOR}.${MINOR},${VERSION_TAG}"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "Generated tags: $TAGS"
+          # Expose a literal \"true\"/\"false\" string for prerelease detection
+          if [ "$IS_PRERELEASE" = true ]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+  create_release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: validate_version
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create Git Tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          VERSION="${{ needs.validate_version.outputs.version }}"
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "❌ Tag $VERSION already exists"
+            exit 1
+          fi
+          git tag -a "$VERSION" -m "Release $VERSION"
+          git push origin "$VERSION" || { echo "❌ Failed to push tag"; exit 1; }
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate_version.outputs.version }}
+          name: Release ${{ needs.validate_version.outputs.version }}
+          body: |
+            Release ${{ needs.validate_version.outputs.version }}
+          draft: false
+          prerelease: ${{ needs.validate_version.outputs.is_prerelease == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger build workflow
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const tags = '${{ needs.validate_version.outputs.tags }}';
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'build-and-push-images.yaml',
+              ref: 'main',
+              inputs: {
+                tag: tags
+              }
+            });
+            console.log(`Triggered build workflow with tags: ${tags}`);
