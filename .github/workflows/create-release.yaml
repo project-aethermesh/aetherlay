@@ -142,11 +142,15 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: validate_version
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          token: ${{ secrets.AETHERLAY_GITHUB_TOKEN }}
+          persist-credentials: true
 
       - name: Create Git Tag
         run: |
@@ -170,7 +174,7 @@ jobs:
           draft: false
           prerelease: ${{ needs.validate_version.outputs.is_prerelease == 'true' }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.AETHERLAY_GITHUB_TOKEN }}
 
       - name: Trigger build workflow
         uses: actions/github-script@v8
