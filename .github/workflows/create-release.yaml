@@ -17,6 +17,7 @@ jobs:
     outputs:
       version: ${{ steps.read_version.outputs.version }}
       tags: ${{ steps.generate_tags.outputs.tags }}
+      is_prerelease: ${{ steps.generate_tags.outputs.is_prerelease }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -130,6 +131,12 @@ jobs:
 
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
           echo "Generated tags: $TAGS"
+          # Expose a literal \"true\"/\"false\" string for prerelease detection
+          if [ "$IS_PRERELEASE" = true ]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
 
   create_release:
     name: Create GitHub Release
@@ -161,7 +168,7 @@ jobs:
           body: |
             Release ${{ needs.validate_version.outputs.version }}
           draft: false
-          prerelease: false
+          prerelease: ${{ needs.validate_version.outputs.is_prerelease == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
