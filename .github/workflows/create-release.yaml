@@ -150,15 +150,15 @@ jobs:
 
       - name: Create Git Tag
         run: |
-         git config user.name "github-actions[bot]"
-         git config user.email "github-actions[bot]@users.noreply.github.com"
-         VERSION="${{ needs.validate_version.outputs.version }}"
-         if git rev-parse "$VERSION" >/dev/null 2>&1; then
-           echo "❌ Tag $VERSION already exists"
-           exit 1
-         fi
-         git tag -a "$VERSION" -m "Release $VERSION"
-         git push origin "$VERSION" || { echo "❌ Failed to push tag"; exit 1; }
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          VERSION="${{ needs.validate_version.outputs.version }}"
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "❌ Tag $VERSION already exists"
+            exit 1
+          fi
+          git tag -a "$VERSION" -m "Release $VERSION"
+          git push origin "$VERSION" || { echo "❌ Failed to push tag"; exit 1; }
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
