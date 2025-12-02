@@ -14,6 +14,7 @@ jobs:
   validate_version:
     name: Validate VERSION file
     runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     outputs:
       version: ${{ steps.read_version.outputs.version }}
       tags: ${{ steps.generate_tags.outputs.tags }}
@@ -142,6 +143,7 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: validate_version
+    environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     permissions:
       contents: write
     steps:
