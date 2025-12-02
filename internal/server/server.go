@@ -483,7 +483,9 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 							}
 						}
 						w.WriteHeader(badReqErr.StatusCode)
-						w.Write(badReqErr.Body)
+						if _, err := w.Write(badReqErr.Body); err != nil {
+							log.Debug().Err(err).Msg("Failed to write 400 response body to client")
+						}
 						return
 					}
 				}
@@ -545,7 +547,9 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 				}
 			}
 			w.WriteHeader(first400Error.StatusCode)
-			w.Write(first400Error.Body)
+			if _, err := w.Write(first400Error.Body); err != nil {
+				log.Debug().Err(err).Msg("Failed to write cached 400 response body to client")
+			}
 			return
 		}
 
@@ -1061,9 +1065,9 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 		chain, endpointID, found := s.findChainAndEndpointByURL(targetURL)
 
 		// Read response body for logging and potential passing through
-		bodyBytes, readErr := io.ReadAll(resp.Body)
+		respBodyBytes, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
-			bodyBytes = []byte{}
+			respBodyBytes = []byte{}
 		}
 
 		// Mark endpoint as unhealthy for any non-2xx response
@@ -1084,7 +1088,7 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 			return &BadRequestError{
 				StatusCode: resp.StatusCode,
 				Message:    fmt.Sprintf("HTTP %d: %s", resp.StatusCode, resp.Status),
-				Body:       bodyBytes,
+				Body:       respBodyBytes,
 				Headers:    resp.Header,
 			}
 		}
