@@ -486,15 +486,6 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 						w.Write(badReqErr.Body)
 						return
 					}
-				} else {
-					// If we had a first 400 error but this endpoint succeeded or returned different error,
-					// mark the first endpoint as unhealthy
-					if first400Error != nil {
-						log.Debug().Str("endpoint", first400EndpointID).Msg("Second endpoint succeeded or returned different error, marking first endpoint (that returned 400) as unhealthy")
-						s.markEndpointUnhealthyProtocol(chain, first400EndpointID, "http")
-						first400Error = nil
-						first400EndpointID = ""
-					}
 				}
 
 				log.Debug().Str("error", helpers.RedactAPIKey(err.Error())).Str("endpoint", endpoint.ID).Str("endpoint_url", helpers.RedactAPIKey(endpoint.Endpoint.HTTPURL)).Int("retry", retryCount).Msg("HTTP request failed, will retry with different endpoint")
