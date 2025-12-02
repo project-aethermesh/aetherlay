@@ -75,11 +75,11 @@ jobs:
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         run: |
           if [ ! -f "VERSION" ]; then
-            echo "❌ VERSION file not found in repository root"
+            echo "VERSION file not found in repository root"
             echo "Please create a VERSION file with a semantic version (e.g., v1.0.0)"
             exit 1
           fi
-          echo "✅ VERSION file exists"
+          echo "VERSION file exists"
 
       - name: Check VERSION file updated and greater
         id: check_version_file_updated_and_greater
@@ -91,7 +91,7 @@ jobs:
 
             # Check if versions are the same
             if [ "$PR_VERSION" == "$MAIN_VERSION" ]; then
-              echo "❌ VERSION file has not been updated"
+              echo "VERSION file has not been updated"
               echo "Current VERSION: $PR_VERSION"
               echo "Main branch VERSION: $MAIN_VERSION"
               echo "Please update the VERSION file with a new semantic version"
@@ -101,7 +101,7 @@ jobs:
             echo "PR_VERSION=$PR_VERSION" >> "$GITHUB_OUTPUT"
             echo "MAIN_VERSION=$MAIN_VERSION" >> "$GITHUB_OUTPUT"
           else
-            echo "✅ VERSION file is new (not present in main branch)"
+            echo "VERSION file is new (not present in main branch)"
           fi
 
       - name: Compare PR and main VERSION using shared action
@@ -120,20 +120,20 @@ jobs:
           RESULT="${{ steps.compare_pr_main_version.outputs.result }}"
 
           if [ "$RESULT" = "eq" ]; then
-            echo "❌ VERSION is the same as main branch (after removing metadata)"
+            echo "VERSION is the same as main branch (after removing metadata)"
             echo "PR VERSION: $PR_VERSION"
             echo "Main branch VERSION: $MAIN_VERSION"
             echo "Please update the VERSION file with a greater semantic version"
             exit 1
           elif [ "$RESULT" = "lt" ]; then
-            echo "❌ VERSION is less than main branch version"
+            echo "VERSION is less than main branch version"
             echo "PR VERSION: $PR_VERSION"
             echo "Main branch VERSION: $MAIN_VERSION"
             echo "Please update the VERSION file with a greater semantic version"
             exit 1
           fi
 
-          echo "✅ VERSION file has been updated and is greater"
+          echo "VERSION file has been updated and is greater"
           echo "Main branch: $MAIN_VERSION"
           echo "PR branch: $PR_VERSION"
 
@@ -144,7 +144,7 @@ jobs:
 
           # Check that version starts with 'v'
           if [[ ! "$VERSION" == v* ]]; then
-            echo "❌ Version must start with 'v' prefix"
+            echo "Version must start with 'v' prefix"
             echo "Current version: $VERSION"
             echo "Expected format: v1.0.0 (semantic versioning with 'v' prefix)"
             exit 1
@@ -155,17 +155,17 @@ jobs:
 
           # Validate semantic versioning format (major.minor.patch)
           if [[ ! $VERSION_CLEAN =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
-            echo "❌ Invalid version format: $VERSION"
+            echo "Invalid version format: $VERSION"
             echo "Expected format: v1.0.0 (semantic versioning with 'v' prefix)"
             exit 1
           fi
 
-          echo "✅ Valid version: $VERSION"
+          echo "Valid version: $VERSION"
 
       - name: Skip check for non-PR events
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
         run: |
-          echo "⏭️ Skipping VERSION check (not a PR or PR is from a fork)"
+          echo "Skipping VERSION check (not a PR or PR is from a fork)"
 
   parse_tags:
     name: Parse tags
@@ -174,11 +174,25 @@ jobs:
       tags: ${{ steps.parse_tags.outputs.tags }}
       has_custom_tags: ${{ steps.parse_tags.outputs.has_custom_tags }}
     steps:
+      - name: Debug - Show received tags
+        run: |
+          echo "Event name: ${{ github.event_name }}"
+          echo "Received tag input: '${{ github.event.inputs.tag }}'"
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "Tags breakdown:"
+            TAGS="${{ github.event.inputs.tag }}"
+            IFS=',' read -ra TAG_ARRAY <<< "$TAGS"
+            for tag in "${TAG_ARRAY[@]}"; do
+              echo "  - $tag"
+            done
+          fi
+
       - name: Parse tags
         id: parse_tags
         shell: bash
         run: |
           if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "Parsing tags from input: '${{ github.event.inputs.tag }}'"
             # Parse comma-separated tags and output as multiline string for docker/metadata-action
             IFS=',' read -ra TAGS <<< "${{ github.event.inputs.tag }}"
             TAGS_OUTPUT=""
@@ -186,14 +200,17 @@ jobs:
               tag=$(echo "$tag" | xargs)  # trim whitespace
               if [ -n "$tag" ]; then
                 TAGS_OUTPUT="${TAGS_OUTPUT}type=raw,value=${tag}"$'\n'
+                echo "Added tag: ${tag}"
               fi
             done
             echo "tags<<EOF" >> $GITHUB_OUTPUT
             echo "$TAGS_OUTPUT" >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
             echo "has_custom_tags=true" >> $GITHUB_OUTPUT
+            echo "Parsed tags successfully"
           else
             echo "has_custom_tags=false" >> $GITHUB_OUTPUT
+            echo "No custom tags provided (event: ${{ github.event_name }}, has tag input: $([ -n '${{ github.event.inputs.tag }}' ] && echo 'yes' || echo 'no'))"
           fi
 
   health-checker:
@@ -226,13 +243,23 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.AETHERLAY_GITHUB_TOKEN }}
 
+      - name: Debug - Show tags for health-checker
+        run: |
+          echo "Tags from parse_tags job:"
+          echo "${{ needs.parse_tags.outputs.tags }}"
+          echo ""
+          echo "Has custom tags: ${{ needs.parse_tags.outputs.has_custom_tags }}"
+          echo "Event name: ${{ github.event_name }}"
+          echo "Ref name: ${{ github.ref_name }}"
+          echo "Default branch: ${{ github.event.repository.default_branch }}"
+
       - name: Docker meta for health-checker
         id: meta_hc
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/project-aethermesh/aetherlay/aetherlay-hc
           tags: |
-            type=raw,value=latest,enable=${{ github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request' }}
+            type=raw,value=latest,enable=${{ github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request' && needs.parse_tags.outputs.has_custom_tags != 'true' }}
             type=sha,format=short,enable=${{ github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request' }}
             type=raw,value=pr-${{ github.event.pull_request.number }},enable=${{ github.event_name == 'pull_request' }}
             ${{ needs.parse_tags.outputs.tags }}
@@ -240,6 +267,11 @@ jobs:
           labels: |
             org.opencontainers.image.vendor=Project Aethermesh
             org.opencontainers.image.licenses=AGPL-3.0
+
+      - name: Debug - Show final tags for health-checker
+        run: |
+          echo "Final tags that will be applied:"
+          echo "${{ steps.meta_hc.outputs.tags }}"
 
       - name: Build and push health-checker image
         id: container_image_hc
@@ -281,13 +313,23 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.AETHERLAY_GITHUB_TOKEN }}
 
+      - name: Debug - Show tags for load-balancer
+        run: |
+          echo "Tags from parse_tags job:"
+          echo "${{ needs.parse_tags.outputs.tags }}"
+          echo ""
+          echo "Has custom tags: ${{ needs.parse_tags.outputs.has_custom_tags }}"
+          echo "Event name: ${{ github.event_name }}"
+          echo "Ref name: ${{ github.ref_name }}"
+          echo "Default branch: ${{ github.event.repository.default_branch }}"
+
       - name: Docker meta for load-balancer
         id: meta_lb
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/project-aethermesh/aetherlay/aetherlay-lb
           tags: |
-            type=raw,value=latest,enable=${{ github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request' }}
+            type=raw,value=latest,enable=${{ github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request' && needs.parse_tags.outputs.has_custom_tags != 'true' }}
             type=sha,format=short,enable=${{ github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request' }}
             type=raw,value=pr-${{ github.event.pull_request.number }},enable=${{ github.event_name == 'pull_request' }}
             ${{ needs.parse_tags.outputs.tags }}
@@ -295,6 +337,11 @@ jobs:
           labels: |
             org.opencontainers.image.vendor=Project Aethermesh
             org.opencontainers.image.licenses=AGPL-3.0
+
+      - name: Debug - Show final tags for load-balancer
+        run: |
+          echo "Final tags that will be applied:"
+          echo "${{ steps.meta_lb.outputs.tags }}"
 
       - name: Build and push load-balancer image
         id: container_image_lb

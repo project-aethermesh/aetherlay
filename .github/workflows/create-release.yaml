@@ -28,10 +28,10 @@ jobs:
         id: check_version_file
         run: |
           if [ ! -f "VERSION" ]; then
-            echo "❌ VERSION file not found in repository root"
+            echo "VERSION file not found in repository root"
             exit 1
           fi
-          echo "✅ VERSION file exists"
+          echo "VERSION file exists"
 
       - name: Read and validate VERSION
         id: read_version
@@ -40,7 +40,7 @@ jobs:
           VERSION=$(cat VERSION | xargs)
           # Check that version starts with 'v'
           if [[ ! "$VERSION" == v* ]]; then
-            echo "❌ Version must start with 'v' prefix"
+            echo "Version must start with 'v' prefix"
             echo "Current version: $VERSION"
             echo "Expected format: v1.0.0 (semantic versioning with 'v' prefix)"
             exit 1
@@ -51,7 +51,7 @@ jobs:
 
           # Validate semantic versioning format (major.minor.patch)
           if [[ ! "$VERSION_CLEAN" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
-            echo "❌ Invalid version format: $VERSION"
+            echo "Invalid version format: $VERSION"
             echo "Expected format: v1.0.0 (semantic versioning with 'v' prefix)"
             exit 1
           fi
@@ -60,7 +60,7 @@ jobs:
           LATEST_TAG=$(git tag -l 'v*' --sort=-version:refname | head -n 1 || echo "")
           echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "✅ Valid version: $VERSION"
+          echo "Valid version: $VERSION"
 
       - name: Compare VERSION with latest release using shared action
         id: compare_with_latest
@@ -79,27 +79,27 @@ jobs:
           RESULT="${{ steps.compare_with_latest.outputs.result }}"
 
           if [ "$RESULT" = "eq" ]; then
-            echo "❌ VERSION is the same as latest release"
+            echo "VERSION is the same as latest release"
             echo "Current VERSION: $VERSION"
             echo "Latest release: $LATEST_TAG"
             echo "Please update the VERSION file with a greater semantic version"
             exit 1
           elif [ "$RESULT" = "lt" ]; then
-            echo "❌ VERSION is less than latest release"
+            echo "VERSION is less than latest release"
             echo "Current VERSION: $VERSION"
             echo "Latest release: $LATEST_TAG"
             echo "Please update the VERSION file with a greater semantic version"
             exit 1
           fi
 
-          echo "✅ VERSION is greater than latest release"
+          echo "VERSION is greater than latest release"
           echo "Latest release: $LATEST_TAG"
           echo "New version: $VERSION"
 
       - name: Note when no previous releases exist
         if: steps.read_version.outputs.latest_tag == ''
         run: |
-          echo "✅ No previous releases found, this will be the first release"
+          echo "No previous releases found, this will be the first release"
 
       - name: Generate tags
         id: generate_tags
@@ -158,11 +158,11 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           VERSION="${{ needs.validate_version.outputs.version }}"
           if git rev-parse "$VERSION" >/dev/null 2>&1; then
-            echo "❌ Tag $VERSION already exists"
+            echo "Tag $VERSION already exists"
             exit 1
           fi
           git tag -a "$VERSION" -m "Release $VERSION"
-          git push origin "$VERSION" || { echo "❌ Failed to push tag"; exit 1; }
+          git push origin "$VERSION" || { echo "Failed to push tag"; exit 1; }
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -176,11 +176,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.AETHERLAY_GITHUB_TOKEN }}
 
+      - name: Debug - Output tags for build workflow
+        run: |
+          echo "Tags to be passed to build workflow:"
+          echo "${{ needs.validate_version.outputs.tags }}"
+          echo ""
+          echo "Tags breakdown:"
+          TAGS="${{ needs.validate_version.outputs.tags }}"
+          IFS=',' read -ra TAG_ARRAY <<< "$TAGS"
+          for tag in "${TAG_ARRAY[@]}"; do
+            echo "  - $tag"
+          done
+
       - name: Trigger build workflow
         uses: actions/github-script@v8
         with:
           script: |
             const tags = '${{ needs.validate_version.outputs.tags }}';
+            console.log(`Triggering build workflow with tags: ${tags}`);
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -190,4 +203,4 @@ jobs:
                 tag: tags
               }
             });
-            console.log(`Triggered build workflow with tags: ${tags}`);
+            console.log(`Build workflow triggered successfully with tags: ${tags}`);
