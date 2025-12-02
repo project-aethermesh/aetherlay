@@ -4,23 +4,22 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Comma-separated list of image tags for manual builds (e.g., 'preprod' or 'latest,v2,v2.1,v2.1.2'). If not set, the branch name is used for non-main branches."
-        required: false
+        description: "Comma-separated list of image tags for manual builds (e.g., 'preprod' or 'latest,v2,v2.1,v2.1.2')."
+        required: true
         type: string
-  push:
+  pull_request:
+    types: [opened, synchronize]
     branches:
-      - main
+      - '!misc/**'
     paths:
       - "**.go"
       - "**/Dockerfile"
-      - ".github/workflows/build-and-push-images.yaml"
-  pull_request:
-    types: [opened, synchronize]
 
 jobs:
   setup:
     name: Setup workflow
     runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     outputs:
       short_sha: ${{ steps.set_outputs.outputs.short_sha }}
 
@@ -38,6 +37,7 @@ jobs:
   test:
     name: Run Go tests
     runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     steps:
       - name: Checkout code
         id: checkout
@@ -54,122 +54,10 @@ jobs:
         run: |
           go test ./...
 
-  check_version:
-    name: Check VERSION file
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout PR branch
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-
-      - name: Checkout main branch
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/checkout@v6
-        with:
-          ref: main
-          path: main-branch
-
-      - name: Check VERSION file exists
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          if [ ! -f "VERSION" ]; then
-            echo "VERSION file not found in repository root"
-            echo "Please create a VERSION file with a semantic version (e.g., v1.0.0)"
-            exit 1
-          fi
-          echo "VERSION file exists"
-
-      - name: Check VERSION file updated and greater
-        id: check_version_file_updated_and_greater
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          if [ -f "main-branch/VERSION" ]; then
-            PR_VERSION=$(cat VERSION | xargs)
-            MAIN_VERSION=$(cat main-branch/VERSION | xargs)
-
-            # Check if versions are the same
-            if [ "$PR_VERSION" == "$MAIN_VERSION" ]; then
-              echo "VERSION file has not been updated"
-              echo "Current VERSION: $PR_VERSION"
-              echo "Main branch VERSION: $MAIN_VERSION"
-              echo "Please update the VERSION file with a new semantic version"
-              exit 1
-            fi
-
-            echo "PR_VERSION=$PR_VERSION" >> "$GITHUB_OUTPUT"
-            echo "MAIN_VERSION=$MAIN_VERSION" >> "$GITHUB_OUTPUT"
-          else
-            echo "VERSION file is new (not present in main branch)"
-          fi
-
-      - name: Compare PR and main VERSION using shared action
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.check_version_file_updated_and_greater.outcome == 'success' && steps.check_version_file_updated_and_greater.outputs.PR_VERSION != ''
-        id: compare_pr_main_version
-        uses: ./.github/actions/compare_versions
-        with:
-          v1: ${{ steps.check_version_file_updated_and_greater.outputs.PR_VERSION }}
-          v2: ${{ steps.check_version_file_updated_and_greater.outputs.MAIN_VERSION }}
-
-      - name: Enforce PR VERSION is greater than main VERSION
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.compare_pr_main_version.outputs.result != ''
-        run: |
-          PR_VERSION="${{ steps.check_version_file_updated_and_greater.outputs.PR_VERSION }}"
-          MAIN_VERSION="${{ steps.check_version_file_updated_and_greater.outputs.MAIN_VERSION }}"
-          RESULT="${{ steps.compare_pr_main_version.outputs.result }}"
-
-          if [ "$RESULT" = "eq" ]; then
-            echo "VERSION is the same as main branch (after removing metadata)"
-            echo "PR VERSION: $PR_VERSION"
-            echo "Main branch VERSION: $MAIN_VERSION"
-            echo "Please update the VERSION file with a greater semantic version"
-            exit 1
-          elif [ "$RESULT" = "lt" ]; then
-            echo "VERSION is less than main branch version"
-            echo "PR VERSION: $PR_VERSION"
-            echo "Main branch VERSION: $MAIN_VERSION"
-            echo "Please update the VERSION file with a greater semantic version"
-            exit 1
-          fi
-
-          echo "VERSION file has been updated and is greater"
-          echo "Main branch: $MAIN_VERSION"
-          echo "PR branch: $PR_VERSION"
-
-      - name: Validate VERSION format
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          VERSION=$(cat VERSION | xargs)
-
-          # Check that version starts with 'v'
-          if [[ ! "$VERSION" == v* ]]; then
-            echo "Version must start with 'v' prefix"
-            echo "Current version: $VERSION"
-            echo "Expected format: v1.0.0 (semantic versioning with 'v' prefix)"
-            exit 1
-          fi
-
-          # Remove 'v' prefix for validation
-          VERSION_CLEAN=${VERSION#v}
-
-          # Validate semantic versioning format (major.minor.patch)
-          if [[ ! $VERSION_CLEAN =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
-            echo "Invalid version format: $VERSION"
-            echo "Expected format: v1.0.0 (semantic versioning with 'v' prefix)"
-            exit 1
-          fi
-
-          echo "Valid version: $VERSION"
-
-      - name: Skip check for non-PR events
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
-        run: |
-          echo "Skipping VERSION check (not a PR or PR is from a fork)"
-
   parse_tags:
     name: Parse tags
     runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     outputs:
       tags: ${{ steps.parse_tags.outputs.tags }}
       has_custom_tags: ${{ steps.parse_tags.outputs.has_custom_tags }}
@@ -222,7 +110,6 @@ jobs:
     needs:
       - setup
       - test
-      - check_version
       - parse_tags
     steps:
       - name: Checkout code
@@ -263,7 +150,6 @@ jobs:
             type=sha,format=short,enable=${{ github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request' }}
             type=raw,value=pr-${{ github.event.pull_request.number }},enable=${{ github.event_name == 'pull_request' }}
             ${{ needs.parse_tags.outputs.tags }}
-            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && needs.parse_tags.outputs.has_custom_tags != 'true' && github.ref_name != github.event.repository.default_branch }}
           labels: |
             org.opencontainers.image.vendor=Project Aethermesh
             org.opencontainers.image.licenses=AGPL-3.0
@@ -292,7 +178,6 @@ jobs:
     needs:
       - setup
       - test
-      - check_version
       - parse_tags
     steps:
       - name: Checkout code
@@ -333,7 +218,6 @@ jobs:
             type=sha,format=short,enable=${{ github.ref_name == github.event.repository.default_branch && github.event_name != 'pull_request' }}
             type=raw,value=pr-${{ github.event.pull_request.number }},enable=${{ github.event_name == 'pull_request' }}
             ${{ needs.parse_tags.outputs.tags }}
-            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && needs.parse_tags.outputs.has_custom_tags != 'true' && github.ref_name != github.event.repository.default_branch }}
           labels: |
             org.opencontainers.image.vendor=Project Aethermesh
             org.opencontainers.image.licenses=AGPL-3.0
