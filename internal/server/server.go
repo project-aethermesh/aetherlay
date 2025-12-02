@@ -1064,12 +1064,6 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		chain, endpointID, found := s.findChainAndEndpointByURL(targetURL)
 
-		// Read response body for logging and potential passing through
-		respBodyBytes, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			respBodyBytes = []byte{}
-		}
-
 		// Mark endpoint as unhealthy for any non-2xx response
 		if found {
 			if resp.StatusCode == 429 {
@@ -1085,6 +1079,11 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 
 		// Special handling for 400 Bad Request
 		if resp.StatusCode == 400 {
+			// Read response body for logging and passing through
+			respBodyBytes, readErr := io.ReadAll(resp.Body)
+			if readErr != nil {
+				respBodyBytes = []byte{}
+			}
 			return &BadRequestError{
 				StatusCode: resp.StatusCode,
 				Message:    fmt.Sprintf("HTTP %d: %s", resp.StatusCode, resp.Status),
