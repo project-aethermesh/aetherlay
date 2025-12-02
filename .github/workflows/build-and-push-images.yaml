@@ -57,26 +57,11 @@ jobs:
   parse_tags:
     name: Parse tags
     runs-on: ubuntu-latest
-    # Skip parsing tags for pull requests
-    if: github.event_name != 'pull_request'
     environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     outputs:
       tags: ${{ steps.parse_tags.outputs.tags }}
       has_custom_tags: ${{ steps.parse_tags.outputs.has_custom_tags }}
     steps:
-      - name: Debug - Show received tags
-        run: |
-          echo "Event name: ${{ github.event_name }}"
-          echo "Received tag input: '${{ github.event.inputs.tag }}'"
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            echo "Tags breakdown:"
-            TAGS="${{ github.event.inputs.tag }}"
-            IFS=',' read -ra TAG_ARRAY <<< "$TAGS"
-            for tag in "${TAG_ARRAY[@]}"; do
-              echo "  - $tag"
-            done
-          fi
-
       - name: Parse tags
         id: parse_tags
         shell: bash
@@ -99,6 +84,7 @@ jobs:
             echo "has_custom_tags=true" >> $GITHUB_OUTPUT
             echo "Parsed tags successfully"
           else
+            echo "tags=" >> $GITHUB_OUTPUT
             echo "has_custom_tags=false" >> $GITHUB_OUTPUT
             echo "No custom tags provided (event: ${{ github.event_name }}, has tag input: $([ -n '${{ github.event.inputs.tag }}' ] && echo 'yes' || echo 'no'))"
           fi
