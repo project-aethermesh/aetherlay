@@ -110,7 +110,6 @@ jobs:
     needs:
       - setup
       - test
-      - check_version
       - parse_tags
     steps:
       - name: Checkout code
@@ -179,7 +178,6 @@ jobs:
     needs:
       - setup
       - test
-      - check_version
       - parse_tags
     steps:
       - name: Checkout code
