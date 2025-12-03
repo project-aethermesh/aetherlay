@@ -533,26 +533,6 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 			}
 		}
 
-		// If we have a cached 400 error and ran out of endpoints, pass it through
-		if first400Error != nil {
-			log.Debug().Str("endpoint", first400EndpointID).Msg("Ran out of endpoints after first 400, passing through to user")
-			// Copy response headers from the error
-			for key, values := range first400Error.Headers {
-				// Skip CORS headers to avoid duplication (we set our own)
-				if strings.HasPrefix(key, "Access-Control-") {
-					continue
-				}
-				for _, value := range values {
-					w.Header().Add(key, value)
-				}
-			}
-			w.WriteHeader(first400Error.StatusCode)
-			if _, err := w.Write(first400Error.Body); err != nil {
-				log.Debug().Err(err).Msg("Failed to write cached 400 response body to client")
-			}
-			return
-		}
-
 		// If we get here, all retries failed
 		if retryCount >= s.maxRetries {
 			log.Error().Str("chain", chain).Strs("tried_endpoints", triedEndpoints).Int("max_retries", s.maxRetries).Msg("Max retries reached")
@@ -593,6 +573,8 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 			var triedEndpoints []string
 			retryCount := 0
 			publicAttemptCount := 0
+			var first400Error *BadRequestError
+			var first400EndpointID string
 
 			for retryCount < s.maxRetries && len(allEndpoints) > 0 {
 				select {
@@ -632,6 +614,53 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 				tryCancel() // Always cancel the per-try context
 
 				if err != nil {
+					// Check if this is a 400 Bad Request error
+					if badReqErr, ok := err.(*BadRequestError); ok {
+						if first400Error == nil {
+							// First 400 response. Cache it and retry with next endpoint.
+							first400Error = badReqErr
+							first400EndpointID = endpoint.ID
+							log.Debug().Str("endpoint", endpoint.ID).Msg("First WebSocket endpoint returned 400, will retry with next endpoint")
+						} else {
+							// Second endpoint also returned 400. This is the user's fault, pass it through.
+							log.Debug().Str("first_endpoint", first400EndpointID).Str("second_endpoint", endpoint.ID).Msg("Both WebSocket endpoints returned 400, passing through to the user.")
+
+							// Copy response headers from the error
+							for key, values := range badReqErr.Headers {
+								// Skip CORS headers to avoid duplication (we set our own)
+								if strings.HasPrefix(key, "Access-Control-") {
+									continue
+								}
+								for _, value := range values {
+									w.Header().Add(key, value)
+								}
+							}
+							w.WriteHeader(badReqErr.StatusCode)
+							if _, err := w.Write(badReqErr.Body); err != nil {
+								log.Debug().Err(err).Msg("Failed to write 400 response body to client")
+							}
+							return
+						}
+
+						// Remove the failed endpoint from the list
+						var remainingEndpoints []EndpointWithID
+						for _, ep := range allEndpoints {
+							if ep.ID != endpoint.ID {
+								remainingEndpoints = append(remainingEndpoints, ep)
+							}
+						}
+						allEndpoints = remainingEndpoints
+						retryCount++
+
+						// If we got a 400 from first endpoint, continue retrying
+						if len(allEndpoints) > 0 && retryCount < s.maxRetries {
+							log.Debug().Str("chain", chain).Str("failed_endpoint", endpoint.ID).Int("public_attempt_count", publicAttemptCount).Int("remaining_endpoints", len(allEndpoints)).Int("retry", retryCount).Msg("Retrying WebSocket with different endpoint after 400")
+							continue
+						}
+						// If no more endpoints, break and handle cached 400 error
+						break
+					}
+
 					// Check if this is a 429 rate limiting error during handshake
 					if _, ok := err.(*RateLimitError); ok {
 						log.Debug().Str("chain", chain).Str("endpoint", endpoint.ID).Int("retry", retryCount).Msg("WebSocket handshake rate limited")
@@ -694,7 +723,15 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 						continue
 					}
 				} else {
-					// Success. Increment the request count and track success for debouncing.
+					// Success. If we had a cached 400 error, mark that endpoint as unhealthy (confirmed it's actually unhealthy)
+					if first400Error != nil {
+						log.Debug().Str("endpoint", first400EndpointID).Msg("Second WebSocket endpoint succeeded, marking first endpoint (that returned 400) as unhealthy")
+						s.markEndpointUnhealthyProtocol(chain, first400EndpointID, "ws")
+						first400Error = nil
+						first400EndpointID = ""
+					}
+
+					// Increment the request count and track success for debouncing.
 					log.Debug().Str("chain", chain).Str("endpoint", endpoint.ID).Str("endpoint_url", helpers.RedactAPIKey(endpoint.Endpoint.WSURL)).Int("retry", retryCount).Msg("WebSocket connection succeeded")
 					if err := s.valkeyClient.IncrementRequestCount(ctx, chain, endpoint.ID, "proxy_requests"); err != nil {
 						log.Error().Err(err).Str("endpoint", endpoint.ID).Msg("Failed to increment WebSocket request count")
@@ -1064,20 +1101,11 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		chain, endpointID, found := s.findChainAndEndpointByURL(targetURL)
 
-		// Mark endpoint as unhealthy for any non-2xx response
-		if found {
-			if resp.StatusCode == 429 {
-				// For 429 (Too Many Requests), use the rate limit handler
-				s.markEndpointUnhealthyProtocol(chain, endpointID, "http")
-				s.handleRateLimit(chain, endpointID, "http")
-				log.Debug().Str("url", helpers.RedactAPIKey(targetURL)).Int("status_code", resp.StatusCode).Msg("Endpoint returned 429 (Too Many Requests), handling rate limit")
-			} else {
-				s.markEndpointUnhealthyProtocol(chain, endpointID, "http")
-				log.Debug().Str("url", helpers.RedactAPIKey(targetURL)).Int("status_code", resp.StatusCode).Msg("Endpoint returned non-2xx status, marked unhealthy")
-			}
-		}
-
-		// Special handling for 400 Bad Request
+		// Special handling for 400 Bad Request - defer health decision to caller's retry logic.
+		// The HTTP handler caches the first 400 and retries with another endpoint. Only if the
+		// second endpoint succeeds will it mark the first endpoint as unhealthy. This prevents
+		// marking endpoints unhealthy due to client errors (bad requests) rather than endpoint failures.
+		// We return early here to avoid any health marking, allowing the caller to make the decision.
 		if resp.StatusCode == 400 {
 			// Read response body for logging and passing through
 			respBodyBytes, readErr := io.ReadAll(resp.Body)
@@ -1092,7 +1120,20 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 			}
 		}
 
-		// For all other non-2xx errors, return a generic error
+		// For all other non-2xx responses (400 already handled above), mark endpoint as unhealthy
+		if found {
+			if resp.StatusCode == 429 {
+				// For 429 (Too Many Requests), use the rate limit handler
+				s.markEndpointUnhealthyProtocol(chain, endpointID, "http")
+				s.handleRateLimit(chain, endpointID, "http")
+				log.Debug().Str("url", helpers.RedactAPIKey(targetURL)).Int("status_code", resp.StatusCode).Msg("Endpoint returned 429 (Too Many Requests), handling rate limit")
+			} else {
+				s.markEndpointUnhealthyProtocol(chain, endpointID, "http")
+				log.Debug().Str("url", helpers.RedactAPIKey(targetURL)).Int("status_code", resp.StatusCode).Msg("Endpoint returned non-2xx status, marked unhealthy")
+			}
+		}
+
+		// Return error for all non-2xx responses (400 already handled above)
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
@@ -1155,10 +1196,9 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 		// Check for non-2xx status codes during handshake
 		if resp != nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
 			if resp.StatusCode == 429 {
-				// For 429 (Too Many Requests), use the rate limit handler
+				// For 429 (Too Many Requests), mark unhealthy and return RateLimitError as signal
 				if found {
 					s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")
-					s.handleRateLimit(chain, endpointID, "ws")
 				}
 				log.Debug().Str("url", helpers.RedactAPIKey(backendURL)).Int("status_code", resp.StatusCode).Msg("WebSocket handshake rate limited")
 				return &RateLimitError{
@@ -1167,7 +1207,30 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 				}
 			}
 
-			// Mark endpoint as unhealthy for any other non-2xx status code
+			// Special handling for 400 Bad Request - defer health decision to caller's retry logic.
+			// The WebSocket handler caches the first 400 and retries with another endpoint. Only if the
+			// second endpoint succeeds will it mark the first endpoint as unhealthy. This prevents
+			// marking endpoints unhealthy due to client errors (bad requests) rather than endpoint failures.
+			// We return early here to avoid any health marking, allowing the caller to make the decision.
+			if resp.StatusCode == 400 {
+				// Read response body for logging and passing through
+				respBodyBytes := []byte{}
+				if resp.Body != nil {
+					bodyBytes, readErr := io.ReadAll(resp.Body)
+					if readErr == nil {
+						respBodyBytes = bodyBytes
+					}
+				}
+				log.Debug().Str("url", helpers.RedactAPIKey(backendURL)).Int("status_code", resp.StatusCode).Msg("WebSocket handshake returned 400 Bad Request")
+				return &BadRequestError{
+					StatusCode: resp.StatusCode,
+					Message:    fmt.Sprintf("WebSocket handshake was rejected: HTTP %d", resp.StatusCode),
+					Body:       respBodyBytes,
+					Headers:    resp.Header,
+				}
+			}
+
+			// Mark endpoint as unhealthy for any other non-2xx status code (skip 400)
 			if found {
 				s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")
 				log.Debug().Str("url", helpers.RedactAPIKey(backendURL)).Int("status_code", resp.StatusCode).Msg("WebSocket handshake returned non-2xx status, marked unhealthy")
