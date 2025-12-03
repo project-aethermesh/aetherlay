@@ -422,7 +422,7 @@ func (c *Checker) makeRPCCall(ctx context.Context, url, method, chain, endpointI
 			Int("status_code", resp.StatusCode).
 			Str("body", string(bodyBytes[:n])).
 			Msg("RPC call failed: endpoint returned non-2xx status")
-		return nil, err
+		return nil, errors.New("HTTP " + strconv.Itoa(resp.StatusCode) + ": " + resp.Status)
 	}
 
 	// Read response

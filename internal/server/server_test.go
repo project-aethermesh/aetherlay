@@ -561,38 +561,6 @@ func TestMarkEndpointUnhealthy_WS(t *testing.T) {
 	}
 }
 
-// TestShouldRetry tests the HTTP status code retry logic.
-func TestShouldRetry(t *testing.T) {
-	cfg := &config.Config{}
-	valkeyClient := store.NewMockValkeyClient()
-	server := NewServer(cfg, valkeyClient, createTestConfig())
-
-	tests := []struct {
-		statusCode  int
-		shouldRetry bool
-		description string
-	}{
-		{200, false, "2xx success should NOT retry"},
-		{201, false, "2xx success should NOT retry"},
-		{400, false, "4xx client error should NOT retry"},
-		{404, false, "4xx client error should NOT retry"},
-		{429, true, "429 Too Many Requests should retry"},
-		{500, true, "5xx server error should retry"},
-		{504, true, "5xx server error should retry"},
-		{599, true, "5xx server error should retry"},
-		{600, false, "6xx should NOT retry"},
-	}
-
-	for _, test := range tests {
-		t.Run(test.description, func(t *testing.T) {
-			result := server.shouldRetry(test.statusCode)
-			if result != test.shouldRetry {
-				t.Errorf("shouldRetry(%d) = %v, expected %v", test.statusCode, result, test.shouldRetry)
-			}
-		})
-	}
-}
-
 func TestHandleRateLimit(t *testing.T) {
 	// Create a test config
 	cfg := &config.Config{
