@@ -1208,12 +1208,9 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 			// We return early here to avoid any health marking, allowing the caller to make the decision.
 			if resp.StatusCode == 400 {
 				// Read response body for logging and passing through
-				respBodyBytes := []byte{}
+				var respBodyBytes []byte
 				if resp.Body != nil {
-					bodyBytes, readErr := io.ReadAll(resp.Body)
-					if readErr == nil {
-						respBodyBytes = bodyBytes
-					}
+					respBodyBytes, _ = io.ReadAll(resp.Body)
 				}
 				log.Debug().Str("url", helpers.RedactAPIKey(backendURL)).Int("status_code", resp.StatusCode).Msg("WebSocket handshake returned 400 Bad Request")
 				return &BadRequestError{
