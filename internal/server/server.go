@@ -1156,12 +1156,6 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 	return err
 }
 
-// shouldRetry returns true if the HTTP status code should trigger a retry
-func (s *Server) shouldRetry(statusCode int) bool {
-	// Retry on all non-2xx status codes
-	return statusCode < 200 || statusCode >= 300
-}
-
 // proxyWebSocketCopy copies messages from src to dst
 func proxyWebSocketCopy(src, dst *websocket.Conn) error {
 	for {
