@@ -62,19 +62,6 @@ jobs:
       tags: ${{ steps.parse_tags.outputs.tags }}
       has_custom_tags: ${{ steps.parse_tags.outputs.has_custom_tags }}
     steps:
-      - name: Debug - Show received tags
-        run: |
-          echo "Event name: ${{ github.event_name }}"
-          echo "Received tag input: '${{ github.event.inputs.tag }}'"
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            echo "Tags breakdown:"
-            TAGS="${{ github.event.inputs.tag }}"
-            IFS=',' read -ra TAG_ARRAY <<< "$TAGS"
-            for tag in "${TAG_ARRAY[@]}"; do
-              echo "  - $tag"
-            done
-          fi
-
       - name: Parse tags
         id: parse_tags
         shell: bash
@@ -97,6 +84,7 @@ jobs:
             echo "has_custom_tags=true" >> $GITHUB_OUTPUT
             echo "Parsed tags successfully"
           else
+            echo "tags=" >> $GITHUB_OUTPUT
             echo "has_custom_tags=false" >> $GITHUB_OUTPUT
             echo "No custom tags provided (event: ${{ github.event_name }}, has tag input: $([ -n '${{ github.event.inputs.tag }}' ] && echo 'yes' || echo 'no'))"
           fi
@@ -129,16 +117,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.AETHERLAY_GITHUB_TOKEN }}
-
-      - name: Debug - Show tags for health-checker
-        run: |
-          echo "Tags from parse_tags job:"
-          echo "${{ needs.parse_tags.outputs.tags }}"
-          echo ""
-          echo "Has custom tags: ${{ needs.parse_tags.outputs.has_custom_tags }}"
-          echo "Event name: ${{ github.event_name }}"
-          echo "Ref name: ${{ github.ref_name }}"
-          echo "Default branch: ${{ github.event.repository.default_branch }}"
 
       - name: Docker meta for health-checker
         id: meta_hc
@@ -197,16 +175,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.AETHERLAY_GITHUB_TOKEN }}
-
-      - name: Debug - Show tags for load-balancer
-        run: |
-          echo "Tags from parse_tags job:"
-          echo "${{ needs.parse_tags.outputs.tags }}"
-          echo ""
-          echo "Has custom tags: ${{ needs.parse_tags.outputs.has_custom_tags }}"
-          echo "Event name: ${{ github.event_name }}"
-          echo "Ref name: ${{ github.ref_name }}"
-          echo "Default branch: ${{ github.event.repository.default_branch }}"
 
       - name: Docker meta for load-balancer
         id: meta_lb
