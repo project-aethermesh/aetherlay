@@ -146,7 +146,7 @@ func TestResponseWriter(t *testing.T) {
 			}
 
 			assert.Equal(t, tt.expectedStatusCode, rw.statusCode)
-			assert.False(t, rw.wRotten)
+			assert.False(t, rw.hijacked)
 		})
 	}
 }
@@ -156,7 +156,7 @@ func TestResponseWriterHijack(t *testing.T) {
 	rw := newResponseWriter(w)
 
 	// Initially not rotten
-	assert.False(t, rw.wRotten)
+	assert.False(t, rw.hijacked)
 
 	// Test that hijack is not supported by httptest.ResponseRecorder
 	_, _, err := rw.Hijack()
@@ -164,7 +164,7 @@ func TestResponseWriterHijack(t *testing.T) {
 	assert.Contains(t, err.Error(), "http.Hijacker is not implemented")
 
 	// After failed hijack attempt, it should NOT be marked as rotten (only on success)
-	assert.False(t, rw.wRotten)
+	assert.False(t, rw.hijacked)
 }
 
 func TestInFlightRequestsGauge(t *testing.T) {
