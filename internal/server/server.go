@@ -579,8 +579,7 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 			for retryCount < s.maxRetries && len(allEndpoints) > 0 {
 				select {
 				case <-ctx.Done():
-					log.Error().Str("chain", chain).Msg("WebSocket request timeout reached")
-					http.Error(w, "WebSocket request timeout", http.StatusGatewayTimeout)
+					log.Debug().Str("chain", chain).Msg("WebSocket context done, ending handler without marking failure")
 					return
 				default:
 				}
@@ -612,6 +611,28 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 
 				err := s.proxyWebSocket(w, reqWithCtx, endpoint.Endpoint.WSURL)
 				tryCancel() // Always cancel the per-try context
+
+				// Handle normal/idle closes and timeouts: do not retry or mark as failure
+				if err != nil {
+					// Normal or expected WebSocket closure, do not retry or mark unhealthy
+					if closeErr, ok := err.(*websocket.CloseError); ok {
+						if closeErr.Code == websocket.CloseNormalClosure ||
+							closeErr.Code == websocket.CloseGoingAway {
+							log.Debug().
+								Int("close_code", closeErr.Code).
+								Str("endpoint", endpoint.ID).
+								Msg("WebSocket closed normally, not counting as failure")
+							return
+						}
+					}
+					// Idle or timeout errors should not count as endpoint failures
+					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+						log.Debug().
+							Str("endpoint", endpoint.ID).
+							Msg("WebSocket timeout or idle, not counting as failure")
+						return
+					}
+				}
 
 				if err != nil {
 					// Check if this is a 400 Bad Request error
@@ -1259,8 +1280,8 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 		}
 		// Do not mark as unhealthy for timeouts
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			log.Debug().Err(err).Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket timeout, not marking endpoint as unhealthy")
-			return err
+			log.Debug().Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket timeout or idle, not marking endpoint as unhealthy")
+			return nil
 		}
 		if chain, endpointID, found := s.findChainAndEndpointByURL(backendURL); found {
 			s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")
