@@ -1192,18 +1192,9 @@ func proxyWebSocketCopy(src, dst *websocket.Conn) error {
 
 // defaultProxyWebSocket proxies a WebSocket connection between the client and the backend
 func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, backendURL string) error {
-	// Upgrade the incoming request to a WebSocket
-	var upgrader = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
-	}
-	clientConn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Error().Err(err).Msg("WebSocket upgrade failed")
-		return err
-	}
-	defer clientConn.Close()
-
-	// Connect to the backend WebSocket
+	// IMPORTANT: Connect to backend FIRST before upgrading client connection.
+	// This allows us to return HTTP error responses if the backend connection fails,
+	// since the client connection hasn't been hijacked yet.
 	backendConn, resp, err := websocket.DefaultDialer.Dial(backendURL, nil)
 	if err != nil {
 		chain, endpointID, found := s.findChainAndEndpointByURL(backendURL)
@@ -1256,6 +1247,20 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 		return err
 	}
 	defer backendConn.Close()
+
+	// Only upgrade client connection after backend connection succeeds.
+	// This ensures we can still send HTTP error responses if backend connection fails.
+	var upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Error().Err(err).Msg("WebSocket upgrade failed")
+		// Close backend connection since we couldn't upgrade the client
+		backendConn.Close()
+		return err
+	}
+	defer clientConn.Close()
 
 	// Proxy messages in both directions
 	errc := make(chan error, 2)
