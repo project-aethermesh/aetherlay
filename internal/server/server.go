@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -613,25 +614,12 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 				tryCancel() // Always cancel the per-try context
 
 				// Handle normal/idle closes and timeouts: do not retry or mark as failure
-				if err != nil {
-					// Normal or expected WebSocket closure, do not retry or mark unhealthy
-					if closeErr, ok := err.(*websocket.CloseError); ok {
-						if closeErr.Code == websocket.CloseNormalClosure ||
-							closeErr.Code == websocket.CloseGoingAway {
-							log.Debug().
-								Int("close_code", closeErr.Code).
-								Str("endpoint", endpoint.ID).
-								Msg("WebSocket closed normally, not counting as failure")
-							return
-						}
-					}
-					// Idle or timeout errors should not count as endpoint failures
-					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-						log.Debug().
-							Str("endpoint", endpoint.ID).
-							Msg("WebSocket timeout or idle, not counting as failure")
-						return
-					}
+				if err != nil && isExpectedWSClose(err) {
+					log.Debug().
+						Err(err).
+						Str("endpoint", endpoint.ID).
+						Msg("WebSocket closed normally, not counting as failure")
+					return
 				}
 
 				if err != nil {
@@ -711,18 +699,14 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 							return
 						}
 					}
-					// Check if this is a normal WebSocket closure
-					if closeErr, ok := err.(*websocket.CloseError); ok {
-						if closeErr.Code == websocket.CloseNormalClosure || closeErr.Code == websocket.CloseGoingAway {
-							// Normal closure
-							log.Debug().
-								Int("close_code", closeErr.Code).
-								Str("close_text", closeErr.Text).
-								Str("endpoint", helpers.RedactAPIKey(endpoint.Endpoint.WSURL)).
-								Str("chain", chain).
-								Msg("WebSocket connection closed normally")
-							return
-						}
+					// Check if this is an expected WebSocket closure
+					if isExpectedWSClose(err) {
+						log.Debug().
+							Err(err).
+							Str("endpoint", helpers.RedactAPIKey(endpoint.Endpoint.WSURL)).
+							Str("chain", chain).
+							Msg("WebSocket connection closed normally")
+						return
 					}
 
 					log.Debug().Err(err).Str("endpoint", endpoint.ID).Str("endpoint_url", helpers.RedactAPIKey(endpoint.Endpoint.WSURL)).Int("retry", retryCount).Msg("WebSocket connection failed, will retry with different endpoint")
@@ -1190,6 +1174,33 @@ func proxyWebSocketCopy(src, dst *websocket.Conn) error {
 	}
 }
 
+// isExpectedWSClose returns true for WebSocket close codes and errors that
+// represent normal or benign disconnects and should NOT count as endpoint
+// failures. This includes graceful closes, client-side disconnects, and
+// EOF conditions at the TCP level.
+func isExpectedWSClose(err error) bool {
+	if err == nil {
+		return false
+	}
+	if closeErr, ok := err.(*websocket.CloseError); ok {
+		switch closeErr.Code {
+		case websocket.CloseNormalClosure,
+			websocket.CloseGoingAway,
+			websocket.CloseNoStatusReceived,
+			websocket.CloseAbnormalClosure:
+			return true
+		}
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return true
+	}
+	return false
+}
+
 // defaultProxyWebSocket proxies a WebSocket connection between the client and the backend
 func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, backendURL string) error {
 	// IMPORTANT: Connect to backend FIRST before upgrading client connection.
@@ -1277,15 +1288,8 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 
 	// Mark endpoint as unhealthy for WS if error is not a normal closure
 	if err != nil {
-		if closeErr, ok := err.(*websocket.CloseError); ok {
-			if closeErr.Code == websocket.CloseNormalClosure || closeErr.Code == websocket.CloseGoingAway {
-				log.Debug().Int("close_code", closeErr.Code).Str("close_text", closeErr.Text).Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket connection closed normally")
-				return nil
-			}
-		}
-		// Do not mark as unhealthy for timeouts
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			log.Debug().Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket timeout or idle, not marking endpoint as unhealthy")
+		if isExpectedWSClose(err) {
+			log.Debug().Err(err).Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket connection closed normally")
 			return nil
 		}
 		if chain, endpointID, found := s.findChainAndEndpointByURL(backendURL); found {

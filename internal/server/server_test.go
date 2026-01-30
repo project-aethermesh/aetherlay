@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -470,42 +471,31 @@ func TestWSRetryLoop_AllFail(t *testing.T) {
 	}
 }
 
-// TestWebSocketNormalClosureHandling tests normal WebSocket closure handling.
-func TestWebSocketNormalClosureHandling(t *testing.T) {
-	// Test that normal WebSocket closures don't result in errors
-	normalClosureErr := &websocket.CloseError{Code: websocket.CloseNormalClosure}
-	goingAwayErr := &websocket.CloseError{Code: websocket.CloseGoingAway}
-	protocolErr := &websocket.CloseError{Code: websocket.CloseProtocolError}
-
-	// These should be treated as normal closures (no error)
-	if !isNormalWebSocketClosure(normalClosureErr) {
-		t.Error("CloseNormalClosure should be treated as normal closure")
-	}
-	if !isNormalWebSocketClosure(goingAwayErr) {
-		t.Error("CloseGoingAway should be treated as normal closure")
-	}
-
-	// This should be treated as an error
-	if isNormalWebSocketClosure(protocolErr) {
-		t.Error("CloseProtocolError should not be treated as normal closure")
+// TestIsExpectedWSClose tests the isExpectedWSClose helper for WebSocket closure handling.
+func TestIsExpectedWSClose(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{"nil error", nil, false},
+		{"CloseNormalClosure", &websocket.CloseError{Code: websocket.CloseNormalClosure}, true},
+		{"CloseGoingAway", &websocket.CloseError{Code: websocket.CloseGoingAway}, true},
+		{"CloseNoStatusReceived", &websocket.CloseError{Code: websocket.CloseNoStatusReceived}, true},
+		{"CloseAbnormalClosure", &websocket.CloseError{Code: websocket.CloseAbnormalClosure}, true},
+		{"CloseProtocolError", &websocket.CloseError{Code: websocket.CloseProtocolError}, false},
+		{"io.EOF", io.EOF, true},
+		{"io.ErrUnexpectedEOF", io.ErrUnexpectedEOF, true},
+		{"generic error", fmt.Errorf("some other error"), false},
 	}
 
-	// Non-WebSocket errors should not be treated as normal closures
-	otherErr := fmt.Errorf("some other error")
-	if isNormalWebSocketClosure(otherErr) {
-		t.Error("Non-WebSocket errors should not be treated as normal closure")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isExpectedWSClose(tt.err); got != tt.expected {
+				t.Errorf("isExpectedWSClose(%v) = %v, want %v", tt.err, got, tt.expected)
+			}
+		})
 	}
-}
-
-// isNormalWebSocketClosure is a helper to test normal closure logic.
-func isNormalWebSocketClosure(err error) bool {
-	if err == nil {
-		return false
-	}
-	if closeErr, ok := err.(*websocket.CloseError); ok {
-		return closeErr.Code == websocket.CloseNormalClosure || closeErr.Code == websocket.CloseGoingAway
-	}
-	return false
 }
 
 // TestMarkEndpointUnhealthy_HTTP tests marking an endpoint unhealthy for HTTP.
