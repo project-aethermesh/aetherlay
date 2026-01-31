@@ -81,6 +81,7 @@ func containsMethodNotFound(message string) bool {
 type Checker struct {
 	config                *config.Config
 	concurrency           int
+	ephemeralChecksEnabled bool
 	healthCheckSyncStatus bool
 	interval              time.Duration
 	valkeyClient          store.ValkeyClientIface
@@ -108,10 +109,11 @@ type ephemeralState struct {
 }
 
 // NewChecker creates a new health checker
-func NewChecker(cfg *config.Config, valkeyClient store.ValkeyClientIface, interval time.Duration, ephemeralChecksInterval time.Duration, ephemeralChecksThreshold int, healthCheckSyncStatus bool, concurrency int) *Checker {
+func NewChecker(cfg *config.Config, valkeyClient store.ValkeyClientIface, interval time.Duration, ephemeralChecksInterval time.Duration, ephemeralChecksThreshold int, healthCheckSyncStatus bool, concurrency int, ephemeralChecksEnabled bool) *Checker {
 	c := &Checker{
 		config:                   cfg,
 		concurrency:              concurrency,
+		ephemeralChecksEnabled:   ephemeralChecksEnabled,
 		healthCheckSyncStatus:    healthCheckSyncStatus,
 		interval:                 interval,
 		valkeyClient:             valkeyClient,
@@ -166,6 +168,11 @@ func (c *Checker) RunOnce(ctx context.Context) {
 
 // StartEphemeralChecks starts ephemeral health checks for unhealthy endpoints.
 func (c *Checker) StartEphemeralChecks(ctx context.Context) {
+	if !c.ephemeralChecksEnabled {
+		log.Info().Msg("Ephemeral checks disabled (EPHEMERAL_CHECKS_ENABLED=false), skipping ephemeral check manager")
+		return
+	}
+
 	log.Info().Msg("Ephemeral check manager started")
 
 	// Run a one-time health check for all endpoints at startup

@@ -140,6 +140,7 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 | `--cors-origin` | `*` | Allowed origin for CORS requests |
 | `--endpoint-failure-threshold` | `2` | Number of consecutive failures before marking endpoint unhealthy |
 | `--endpoint-success-threshold` | `2` | Number of consecutive successes before marking endpoint healthy |
+| `--ephemeral-checks-enabled` | `true` | Enable on-the-fly (ephemeral) health state updates during request proxying. Set to `false` to rely solely on the scheduled health checker. |
 | `--ephemeral-checks-healthy-threshold` | `3` | Amount of consecutive successful responses required to consider endpoint healthy again |
 | `--ephemeral-checks-interval` | `30` | Interval in seconds for ephemeral health checks |
 | `--health-cache-ttl` | `10` | Health status cache TTL in seconds |
@@ -179,6 +180,7 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 | `CORS_ORIGIN` | `*` | Allowed origin for CORS requests |
 | `ENDPOINT_FAILURE_THRESHOLD` | `2` | Number of consecutive failures before marking endpoint unhealthy |
 | `ENDPOINT_SUCCESS_THRESHOLD` | `2` | Number of consecutive successes before marking endpoint healthy |
+| `EPHEMERAL_CHECKS_ENABLED` | `true` | Enable on-the-fly (ephemeral) health state updates during request proxying. Set to `false` to rely solely on the scheduled health checker. |
 | `EPHEMERAL_CHECKS_HEALTHY_THRESHOLD` | `3` | Amount of consecutive successful responses from the endpoint required to consider it as being healthy again |
 | `EPHEMERAL_CHECKS_INTERVAL` | `30` | Interval in seconds for ephemeral health checks |
 | `HEALTH_CACHE_TTL` | `10` | Health status cache TTL in seconds |
@@ -230,6 +232,7 @@ You can also disable health checks altogether by setting `HEALTH_CHECK_INTERVAL`
 - **Trigger**: Only when a request to an endpoint fails and health checks are otherwise disabled. The server marks the endpoint as unhealthy for the specific protocol (HTTP or WS) that failed.
 - **Interval**: Controlled by the `EPHEMERAL_CHECKS_INTERVAL` environment variable (in seconds).
 - **Behavior**: The health checker service observes the unhealthy status and starts ephemeral checks for the affected protocol. The system will monitor the failed endpoint at the specified interval and automatically start routing traffic to it as soon as it becomes healthy again.
+- **Kill switch**: Set `EPHEMERAL_CHECKS_ENABLED=false` to disable all proxy-driven health state updates (both marking endpoints unhealthy on failure and marking them healthy on success) as well as the ephemeral health checker loop. When disabled, only the scheduled health checker service controls endpoint health status. This is useful if on-the-fly health updates are causing cascading failures (e.g., transient WebSocket close codes incorrectly marking endpoints unhealthy).
 
 #### Per-Protocol Unhealthy Marking
 

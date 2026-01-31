@@ -62,17 +62,18 @@ type endpointFailureState struct {
 
 // Server represents the RPC load balancer server
 type Server struct {
-	appConfig            *helpers.LoadedConfig
-	config               *config.Config
-	healthCache          *cache.HealthCache
-	healthChecker        HealthCheckerIface
-	httpServer           *http.Server
-	maxRetries           int
-	rateLimitScheduler   *RateLimitScheduler
-	valkeyClient         store.ValkeyClientIface
-	requestTimeout       time.Duration
-	requestTimeoutPerTry time.Duration
-	router               *mux.Router
+	appConfig              *helpers.LoadedConfig
+	config                 *config.Config
+	ephemeralChecksEnabled bool
+	healthCache            *cache.HealthCache
+	healthChecker          HealthCheckerIface
+	httpServer             *http.Server
+	maxRetries             int
+	rateLimitScheduler     *RateLimitScheduler
+	valkeyClient           store.ValkeyClientIface
+	requestTimeout         time.Duration
+	requestTimeoutPerTry   time.Duration
+	router                 *mux.Router
 
 	// Debouncing state tracking
 	failureStates    map[string]*endpointFailureState
@@ -95,17 +96,18 @@ type Server struct {
 // NewServer creates a new server instance
 func NewServer(cfg *config.Config, valkeyClient store.ValkeyClientIface, appConfig *helpers.LoadedConfig) *Server {
 	s := &Server{
-		appConfig:            appConfig,
-		config:               cfg,
-		failureStates:        make(map[string]*endpointFailureState),
-		failureThreshold:     appConfig.EndpointFailureThreshold,
-		healthCache:          cache.NewHealthCache(time.Duration(appConfig.HealthCacheTTL) * time.Second),
-		maxRetries:           appConfig.ProxyMaxRetries,
-		requestTimeout:       time.Duration(appConfig.ProxyTimeout) * time.Second,
-		requestTimeoutPerTry: time.Duration(appConfig.ProxyTimeoutPerTry) * time.Second,
-		router:               mux.NewRouter(),
-		successThreshold:     appConfig.EndpointSuccessThreshold,
-		valkeyClient:         valkeyClient,
+		appConfig:              appConfig,
+		config:                 cfg,
+		ephemeralChecksEnabled: appConfig.EphemeralChecksEnabled,
+		failureStates:          make(map[string]*endpointFailureState),
+		failureThreshold:       appConfig.EndpointFailureThreshold,
+		healthCache:            cache.NewHealthCache(time.Duration(appConfig.HealthCacheTTL) * time.Second),
+		maxRetries:             appConfig.ProxyMaxRetries,
+		requestTimeout:         time.Duration(appConfig.ProxyTimeout) * time.Second,
+		requestTimeoutPerTry:   time.Duration(appConfig.ProxyTimeoutPerTry) * time.Second,
+		router:                 mux.NewRouter(),
+		successThreshold:       appConfig.EndpointSuccessThreshold,
+		valkeyClient:           valkeyClient,
 	}
 
 	s.forwardRequestWithBody = s.defaultForwardRequestWithBodyFunc
@@ -933,6 +935,10 @@ func removeEndpointByID(endpoints []EndpointWithID, id string) []EndpointWithID 
 
 // updateEndpointHealthState tracks consecutive successes/failures and updates endpoint health status when thresholds are reached
 func (s *Server) updateEndpointHealthState(chain, endpointID, protocol string, isSuccess bool) {
+	if !s.ephemeralChecksEnabled {
+		return
+	}
+
 	// Get or create failure state for this endpoint:protocol
 	key := chain + ":" + endpointID + ":" + protocol
 

@@ -37,9 +37,10 @@ func failingForwardRequestWithBody(w http.ResponseWriter, ctx context.Context, m
 // createTestConfig creates a default LoadedConfig for testing.
 func createTestConfig() *helpers.LoadedConfig {
 	return &helpers.LoadedConfig{
-		ProxyMaxRetries:    3,
-		ProxyTimeout:       15,
-		ProxyTimeoutPerTry: 5,
+		EphemeralChecksEnabled: true,
+		ProxyMaxRetries:        3,
+		ProxyTimeout:           15,
+		ProxyTimeoutPerTry:     5,
 	}
 }
 
@@ -742,4 +743,71 @@ func TestServerGetRateLimitHandler(t *testing.T) {
 	if !state.RateLimited {
 		t.Error("Expected endpoint to be marked as rate limited")
 	}
+}
+
+// TestEphemeralChecksEnabled tests that updateEndpointHealthState is gated by the ephemeralChecksEnabled flag.
+func TestEphemeralChecksEnabled(t *testing.T) {
+	t.Run("Enabled", func(t *testing.T) {
+		cfg := &config.Config{
+			Endpoints: map[string]config.ChainEndpoints{
+				"chainA": {
+					"ep1": config.Endpoint{Provider: "ep1", HTTPURL: "http://a", Role: "primary", Type: "full"},
+				},
+			},
+		}
+		valkeyClient := store.NewMockValkeyClient()
+		valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
+			"chainA:ep1": {HasHTTP: true, HealthyHTTP: true},
+		})
+		appConfig := &helpers.LoadedConfig{
+			EphemeralChecksEnabled:   true,
+			EndpointFailureThreshold: 1,
+			EndpointSuccessThreshold: 1,
+			ProxyMaxRetries:          3,
+			ProxyTimeout:             15,
+			ProxyTimeoutPerTry:       5,
+		}
+		srv := NewServer(cfg, valkeyClient, appConfig)
+
+		// Call updateEndpointHealthState with a failure
+		srv.updateEndpointHealthState("chainA", "ep1", "http", false)
+
+		// With threshold=1, the endpoint should be marked unhealthy
+		status, _ := valkeyClient.GetEndpointStatus(context.Background(), "chainA", "ep1")
+		if status.HealthyHTTP {
+			t.Error("Expected HealthyHTTP to be false when ephemeral checks are enabled")
+		}
+	})
+
+	t.Run("Disabled", func(t *testing.T) {
+		cfg := &config.Config{
+			Endpoints: map[string]config.ChainEndpoints{
+				"chainA": {
+					"ep1": config.Endpoint{Provider: "ep1", HTTPURL: "http://a", Role: "primary", Type: "full"},
+				},
+			},
+		}
+		valkeyClient := store.NewMockValkeyClient()
+		valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
+			"chainA:ep1": {HasHTTP: true, HealthyHTTP: true},
+		})
+		appConfig := &helpers.LoadedConfig{
+			EphemeralChecksEnabled:   false,
+			EndpointFailureThreshold: 1,
+			EndpointSuccessThreshold: 1,
+			ProxyMaxRetries:          3,
+			ProxyTimeout:             15,
+			ProxyTimeoutPerTry:       5,
+		}
+		srv := NewServer(cfg, valkeyClient, appConfig)
+
+		// Call updateEndpointHealthState with a failure
+		srv.updateEndpointHealthState("chainA", "ep1", "http", false)
+
+		// The function should be a no-op; endpoint stays healthy
+		status, _ := valkeyClient.GetEndpointStatus(context.Background(), "chainA", "ep1")
+		if !status.HealthyHTTP {
+			t.Error("Expected HealthyHTTP to remain true when ephemeral checks are disabled")
+		}
+	})
 }

@@ -18,6 +18,7 @@ type Config struct {
 	CorsMethods                     string
 	EndpointFailureThreshold        int
 	EndpointSuccessThreshold        int
+	EphemeralChecksEnabled          bool
 	EphemeralChecksHealthyThreshold int
 	EphemeralChecksInterval         int
 	HealthCacheTTL                  int
@@ -55,6 +56,7 @@ func ParseFlags() *Config {
 	flag.StringVar(&config.CorsOrigin, "cors-origin", "*", "CORS allowed origin")
 	flag.IntVar(&config.EndpointFailureThreshold, "endpoint-failure-threshold", 2, "Number of consecutive failures before marking endpoint unhealthy")
 	flag.IntVar(&config.EndpointSuccessThreshold, "endpoint-success-threshold", 2, "Number of consecutive successes before marking endpoint healthy")
+	flag.BoolVar(&config.EphemeralChecksEnabled, "ephemeral-checks-enabled", true, "Enable on-the-fly health state updates during request proxying and ephemeral health checks")
 	flag.IntVar(&config.EphemeralChecksHealthyThreshold, "ephemeral-checks-healthy-threshold", 3, "Ephemeral checks healthy threshold")
 	flag.IntVar(&config.EphemeralChecksInterval, "ephemeral-checks-interval", 30, "Ephemeral checks interval in seconds")
 	flag.IntVar(&config.HealthCacheTTL, "health-cache-ttl", 10, "Health status cache TTL in seconds")
@@ -123,13 +125,14 @@ func (c *Config) GetBoolValue(flagName string, flagValue bool, envKey string, de
 
 // LoadConfiguration loads all configuration values with proper precedence
 func (c *Config) LoadConfiguration() *LoadedConfig {
-	return &LoadedConfig{
+	cfg := &LoadedConfig{
 		ConfigFile:                      c.GetStringValue("config-file", c.ConfigFile, "CONFIG_FILE", "configs/endpoints.json"),
 		CorsHeaders:                     c.GetStringValue("cors-headers", c.CorsHeaders, "CORS_HEADERS", "Accept, Authorization, Content-Type, Origin, X-Requested-With"),
 		CorsMethods:                     c.GetStringValue("cors-methods", c.CorsMethods, "CORS_METHODS", "GET, POST, OPTIONS"),
 		CorsOrigin:                      c.GetStringValue("cors-origin", c.CorsOrigin, "CORS_ORIGIN", "*"),
 		EndpointFailureThreshold:        c.GetIntValue("endpoint-failure-threshold", c.EndpointFailureThreshold, "ENDPOINT_FAILURE_THRESHOLD", 2),
 		EndpointSuccessThreshold:        c.GetIntValue("endpoint-success-threshold", c.EndpointSuccessThreshold, "ENDPOINT_SUCCESS_THRESHOLD", 2),
+		EphemeralChecksEnabled:          c.GetBoolValue("ephemeral-checks-enabled", c.EphemeralChecksEnabled, "EPHEMERAL_CHECKS_ENABLED", true),
 		EphemeralChecksHealthyThreshold: c.GetIntValue("ephemeral-checks-healthy-threshold", c.EphemeralChecksHealthyThreshold, "EPHEMERAL_CHECKS_HEALTHY_THRESHOLD", 3),
 		EphemeralChecksInterval:         c.GetIntValue("ephemeral-checks-interval", c.EphemeralChecksInterval, "EPHEMERAL_CHECKS_INTERVAL", 30),
 		HealthCacheTTL:                  c.GetIntValue("health-cache-ttl", c.HealthCacheTTL, "HEALTH_CACHE_TTL", 10),
@@ -155,6 +158,15 @@ func (c *Config) LoadConfiguration() *LoadedConfig {
 		ValkeySkipTLSCheck:              c.GetBoolValue("valkey-skip-tls-check", c.ValkeySkipTLSCheck, "VALKEY_SKIP_TLS_CHECK", false),
 		ValkeyUseTLS:                    c.GetBoolValue("valkey-use-tls", c.ValkeyUseTLS, "VALKEY_USE_TLS", false),
 	}
+
+	// If ephemeral checks have been disabled and EPHEMERAL_CHECKS_INTERVAL=0, warn and set it to 30.
+	// Otherwise, we risk leaving failed endpoints in that state permanently.
+	if !cfg.EphemeralChecksEnabled && cfg.EphemeralChecksInterval == 0 {
+		log.Warn().Msg("EPHEMERAL_CHECKS_INTERVAL cannot be 0 when EPHEMERAL_CHECKS_ENABLED=false, defaulting to 30")
+		cfg.EphemeralChecksInterval = 30
+	}
+
+	return cfg
 }
 
 // LoadedConfig contains the final resolved configuration values
@@ -165,6 +177,7 @@ type LoadedConfig struct {
 	CorsOrigin                      string
 	EndpointFailureThreshold        int
 	EndpointSuccessThreshold        int
+	EphemeralChecksEnabled          bool
 	EphemeralChecksHealthyThreshold int
 	EphemeralChecksInterval         int
 	HealthCacheTTL                  int
