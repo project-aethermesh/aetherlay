@@ -63,7 +63,7 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 }
 
 // Hijack implements the http.Hijacker interface to allow for WebSocket upgrades.
-// It marks the writer as "rotten" to prevent metrics from being recorded
+// It marks the writer as "hijacked" to prevent metrics from being recorded
 // for the hijacked connection, as the lifecycle is no longer standard HTTP.
 func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	h, ok := rw.ResponseWriter.(http.Hijacker)

@@ -155,7 +155,7 @@ func TestResponseWriterHijack(t *testing.T) {
 	w := httptest.NewRecorder()
 	rw := newResponseWriter(w)
 
-	// Initially not rotten
+	// Initially not hijacked
 	assert.False(t, rw.hijacked)
 
 	// Test that hijack is not supported by httptest.ResponseRecorder
@@ -163,7 +163,7 @@ func TestResponseWriterHijack(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "http.Hijacker is not implemented")
 
-	// After failed hijack attempt, it should NOT be marked as rotten (only on success)
+	// After failed hijack attempt, it should NOT be marked as hijacked (only on success)
 	assert.False(t, rw.hijacked)
 }
 
