@@ -703,15 +703,6 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 							return
 						}
 					}
-					// Check if this is an expected WebSocket closure
-					if isExpectedWSClose(err) {
-						log.Debug().
-							Err(err).
-							Str("endpoint", helpers.RedactAPIKey(endpoint.Endpoint.WSURL)).
-							Str("chain", chain).
-							Msg("WebSocket connection closed normally")
-						return
-					}
 
 					log.Debug().Err(err).Str("endpoint", endpoint.ID).Str("endpoint_url", helpers.RedactAPIKey(endpoint.Endpoint.WSURL)).Int("retry", retryCount).Msg("WebSocket connection failed, will retry with different endpoint")
 					triedEndpoints = append(triedEndpoints, endpoint.ID)
