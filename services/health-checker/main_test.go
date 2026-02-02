@@ -64,6 +64,7 @@ func TestRunHealthCheckerFromEnv_Standalone(t *testing.T) {
 		"Accept, Authorization, Content-Type, Origin, X-Requested-With", // corsHeaders
 		"GET, POST, OPTIONS", // corsMethods
 		"*",                  // corsOrigin
+		true,                 // ephemeralChecksEnabled
 		3,                    // ephemeralChecksHealthyThreshold
 		30,                   // ephemeralChecksInterval
 		20,                   // healthCheckConcurrency
@@ -124,6 +125,7 @@ func TestRunHealthCheckerFromEnv_Ephemeral(t *testing.T) {
 		"Accept, Authorization, Content-Type, Origin, X-Requested-With", // corsHeaders
 		"GET, POST, OPTIONS", // corsMethods
 		"*",                  // corsOrigin
+		true,                 // ephemeralChecksEnabled
 		3,                    // ephemeralChecksHealthyThreshold
 		30,                   // ephemeralChecksInterval
 		20,                   // healthCheckConcurrency
@@ -184,6 +186,7 @@ func TestRunHealthCheckerFromEnv_Disabled(t *testing.T) {
 		"Accept, Authorization, Content-Type, Origin, X-Requested-With", // corsHeaders
 		"GET, POST, OPTIONS", // corsMethods
 		"*",                  // corsOrigin
+		true,                 // ephemeralChecksEnabled
 		3,                    // ephemeralChecksHealthyThreshold
 		30,                   // ephemeralChecksInterval
 		20,                   // healthCheckConcurrency

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -36,9 +37,10 @@ func failingForwardRequestWithBody(w http.ResponseWriter, ctx context.Context, m
 // createTestConfig creates a default LoadedConfig for testing.
 func createTestConfig() *helpers.LoadedConfig {
 	return &helpers.LoadedConfig{
-		ProxyMaxRetries:    3,
-		ProxyTimeout:       15,
-		ProxyTimeoutPerTry: 5,
+		EphemeralChecksEnabled: true,
+		ProxyMaxRetries:        3,
+		ProxyTimeout:           15,
+		ProxyTimeoutPerTry:     5,
 	}
 }
 
@@ -470,42 +472,31 @@ func TestWSRetryLoop_AllFail(t *testing.T) {
 	}
 }
 
-// TestWebSocketNormalClosureHandling tests normal WebSocket closure handling.
-func TestWebSocketNormalClosureHandling(t *testing.T) {
-	// Test that normal WebSocket closures don't result in errors
-	normalClosureErr := &websocket.CloseError{Code: websocket.CloseNormalClosure}
-	goingAwayErr := &websocket.CloseError{Code: websocket.CloseGoingAway}
-	protocolErr := &websocket.CloseError{Code: websocket.CloseProtocolError}
-
-	// These should be treated as normal closures (no error)
-	if !isNormalWebSocketClosure(normalClosureErr) {
-		t.Error("CloseNormalClosure should be treated as normal closure")
-	}
-	if !isNormalWebSocketClosure(goingAwayErr) {
-		t.Error("CloseGoingAway should be treated as normal closure")
-	}
-
-	// This should be treated as an error
-	if isNormalWebSocketClosure(protocolErr) {
-		t.Error("CloseProtocolError should not be treated as normal closure")
+// TestIsExpectedWSClose tests the isExpectedWSClose helper for WebSocket closure handling.
+func TestIsExpectedWSClose(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{"nil error", nil, false},
+		{"CloseNormalClosure", &websocket.CloseError{Code: websocket.CloseNormalClosure}, true},
+		{"CloseGoingAway", &websocket.CloseError{Code: websocket.CloseGoingAway}, true},
+		{"CloseNoStatusReceived", &websocket.CloseError{Code: websocket.CloseNoStatusReceived}, true},
+		{"CloseAbnormalClosure", &websocket.CloseError{Code: websocket.CloseAbnormalClosure}, true},
+		{"CloseProtocolError", &websocket.CloseError{Code: websocket.CloseProtocolError}, false},
+		{"io.EOF", io.EOF, true},
+		{"io.ErrUnexpectedEOF", io.ErrUnexpectedEOF, true},
+		{"generic error", fmt.Errorf("some other error"), false},
 	}
 
-	// Non-WebSocket errors should not be treated as normal closures
-	otherErr := fmt.Errorf("some other error")
-	if isNormalWebSocketClosure(otherErr) {
-		t.Error("Non-WebSocket errors should not be treated as normal closure")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isExpectedWSClose(tt.err); got != tt.expected {
+				t.Errorf("isExpectedWSClose(%v) = %v, want %v", tt.err, got, tt.expected)
+			}
+		})
 	}
-}
-
-// isNormalWebSocketClosure is a helper to test normal closure logic.
-func isNormalWebSocketClosure(err error) bool {
-	if err == nil {
-		return false
-	}
-	if closeErr, ok := err.(*websocket.CloseError); ok {
-		return closeErr.Code == websocket.CloseNormalClosure || closeErr.Code == websocket.CloseGoingAway
-	}
-	return false
 }
 
 // TestMarkEndpointUnhealthy_HTTP tests marking an endpoint unhealthy for HTTP.
@@ -752,4 +743,71 @@ func TestServerGetRateLimitHandler(t *testing.T) {
 	if !state.RateLimited {
 		t.Error("Expected endpoint to be marked as rate limited")
 	}
+}
+
+// TestEphemeralChecksEnabled tests that updateEndpointHealthState is gated by the ephemeralChecksEnabled flag.
+func TestEphemeralChecksEnabled(t *testing.T) {
+	t.Run("Enabled", func(t *testing.T) {
+		cfg := &config.Config{
+			Endpoints: map[string]config.ChainEndpoints{
+				"chainA": {
+					"ep1": config.Endpoint{Provider: "ep1", HTTPURL: "http://a", Role: "primary", Type: "full"},
+				},
+			},
+		}
+		valkeyClient := store.NewMockValkeyClient()
+		valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
+			"chainA:ep1": {HasHTTP: true, HealthyHTTP: true},
+		})
+		appConfig := &helpers.LoadedConfig{
+			EphemeralChecksEnabled:   true,
+			EndpointFailureThreshold: 1,
+			EndpointSuccessThreshold: 1,
+			ProxyMaxRetries:          3,
+			ProxyTimeout:             15,
+			ProxyTimeoutPerTry:       5,
+		}
+		srv := NewServer(cfg, valkeyClient, appConfig)
+
+		// Call updateEndpointHealthState with a failure
+		srv.updateEndpointHealthState("chainA", "ep1", "http", false)
+
+		// With threshold=1, the endpoint should be marked unhealthy
+		status, _ := valkeyClient.GetEndpointStatus(context.Background(), "chainA", "ep1")
+		if status.HealthyHTTP {
+			t.Error("Expected HealthyHTTP to be false when ephemeral checks are enabled")
+		}
+	})
+
+	t.Run("Disabled", func(t *testing.T) {
+		cfg := &config.Config{
+			Endpoints: map[string]config.ChainEndpoints{
+				"chainA": {
+					"ep1": config.Endpoint{Provider: "ep1", HTTPURL: "http://a", Role: "primary", Type: "full"},
+				},
+			},
+		}
+		valkeyClient := store.NewMockValkeyClient()
+		valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
+			"chainA:ep1": {HasHTTP: true, HealthyHTTP: true},
+		})
+		appConfig := &helpers.LoadedConfig{
+			EphemeralChecksEnabled:   false,
+			EndpointFailureThreshold: 1,
+			EndpointSuccessThreshold: 1,
+			ProxyMaxRetries:          3,
+			ProxyTimeout:             15,
+			ProxyTimeoutPerTry:       5,
+		}
+		srv := NewServer(cfg, valkeyClient, appConfig)
+
+		// Call updateEndpointHealthState with a failure
+		srv.updateEndpointHealthState("chainA", "ep1", "http", false)
+
+		// The function should be a no-op; endpoint stays healthy
+		status, _ := valkeyClient.GetEndpointStatus(context.Background(), "chainA", "ep1")
+		if !status.HealthyHTTP {
+			t.Error("Expected HealthyHTTP to remain true when ephemeral checks are disabled")
+		}
+	})
 }

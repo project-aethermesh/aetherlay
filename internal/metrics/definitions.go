@@ -8,16 +8,22 @@ import (
 
 // HTTP Metrics for the Load Balancer
 var (
-	HTTPRequestDuration  *prometheus.HistogramVec
+	// HTTPRequestDuration tracks the duration of HTTP requests in seconds, labeled by status code, method, and route.
+	HTTPRequestDuration *prometheus.HistogramVec
+	// HTTPRequestsInFlight tracks the current number of in-flight HTTP requests.
 	HTTPRequestsInFlight prometheus.Gauge
-	HTTPRequestsTotal    *prometheus.CounterVec
+	// HTTPRequestsTotal counts the total number of HTTP requests, labeled by status code, method, and route.
+	HTTPRequestsTotal *prometheus.CounterVec
 )
 
 // Health Checker Metrics
 var (
+	// EndpointHealthStatus tracks the current health status of each endpoint (1 = healthy, 0 = unhealthy).
 	EndpointHealthStatus *prometheus.GaugeVec
-	HealthCheckDuration  *prometheus.HistogramVec
-	HealthCheckTotal     *prometheus.CounterVec
+	// HealthCheckDuration tracks the duration of health checks in seconds, labeled by chain and endpoint.
+	HealthCheckDuration *prometheus.HistogramVec
+	// HealthCheckTotal counts the total number of health checks, labeled by chain, endpoint, and status.
+	HealthCheckTotal *prometheus.CounterVec
 )
 
 // init initializes all metrics with error handling

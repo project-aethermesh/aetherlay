@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -30,6 +31,7 @@ type RateLimitError struct {
 	Message    string
 }
 
+// Error returns the rate limit error message.
 func (e *RateLimitError) Error() string {
 	return e.Message
 }
@@ -42,6 +44,7 @@ type BadRequestError struct {
 	Headers    http.Header
 }
 
+// Error returns the bad request error message.
 func (e *BadRequestError) Error() string {
 	return e.Message
 }
@@ -61,17 +64,18 @@ type endpointFailureState struct {
 
 // Server represents the RPC load balancer server
 type Server struct {
-	appConfig            *helpers.LoadedConfig
-	config               *config.Config
-	healthCache          *cache.HealthCache
-	healthChecker        HealthCheckerIface
-	httpServer           *http.Server
-	maxRetries           int
-	rateLimitScheduler   *RateLimitScheduler
-	valkeyClient         store.ValkeyClientIface
-	requestTimeout       time.Duration
-	requestTimeoutPerTry time.Duration
-	router               *mux.Router
+	appConfig              *helpers.LoadedConfig
+	config                 *config.Config
+	ephemeralChecksEnabled bool
+	healthCache            *cache.HealthCache
+	healthChecker          HealthCheckerIface
+	httpServer             *http.Server
+	maxRetries             int
+	rateLimitScheduler     *RateLimitScheduler
+	valkeyClient           store.ValkeyClientIface
+	requestTimeout         time.Duration
+	requestTimeoutPerTry   time.Duration
+	router                 *mux.Router
 
 	// Debouncing state tracking
 	failureStates    map[string]*endpointFailureState
@@ -94,17 +98,18 @@ type Server struct {
 // NewServer creates a new server instance
 func NewServer(cfg *config.Config, valkeyClient store.ValkeyClientIface, appConfig *helpers.LoadedConfig) *Server {
 	s := &Server{
-		appConfig:            appConfig,
-		config:               cfg,
-		failureStates:        make(map[string]*endpointFailureState),
-		failureThreshold:     appConfig.EndpointFailureThreshold,
-		healthCache:          cache.NewHealthCache(time.Duration(appConfig.HealthCacheTTL) * time.Second),
-		maxRetries:           appConfig.ProxyMaxRetries,
-		requestTimeout:       time.Duration(appConfig.ProxyTimeout) * time.Second,
-		requestTimeoutPerTry: time.Duration(appConfig.ProxyTimeoutPerTry) * time.Second,
-		router:               mux.NewRouter(),
-		successThreshold:     appConfig.EndpointSuccessThreshold,
-		valkeyClient:         valkeyClient,
+		appConfig:              appConfig,
+		config:                 cfg,
+		ephemeralChecksEnabled: appConfig.EphemeralChecksEnabled,
+		failureStates:          make(map[string]*endpointFailureState),
+		failureThreshold:       appConfig.EndpointFailureThreshold,
+		healthCache:            cache.NewHealthCache(time.Duration(appConfig.HealthCacheTTL) * time.Second),
+		maxRetries:             appConfig.ProxyMaxRetries,
+		requestTimeout:         time.Duration(appConfig.ProxyTimeout) * time.Second,
+		requestTimeoutPerTry:   time.Duration(appConfig.ProxyTimeoutPerTry) * time.Second,
+		router:                 mux.NewRouter(),
+		successThreshold:       appConfig.EndpointSuccessThreshold,
+		valkeyClient:           valkeyClient,
 	}
 
 	s.forwardRequestWithBody = s.defaultForwardRequestWithBodyFunc
@@ -579,8 +584,7 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 			for retryCount < s.maxRetries && len(allEndpoints) > 0 {
 				select {
 				case <-ctx.Done():
-					log.Error().Str("chain", chain).Msg("WebSocket request timeout reached")
-					http.Error(w, "WebSocket request timeout", http.StatusGatewayTimeout)
+					log.Debug().Str("chain", chain).Msg("WebSocket context done, ending handler without marking failure")
 					return
 				default:
 				}
@@ -612,6 +616,15 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 
 				err := s.proxyWebSocket(w, reqWithCtx, endpoint.Endpoint.WSURL)
 				tryCancel() // Always cancel the per-try context
+
+				// Handle normal/idle closes and timeouts: do not retry or mark as failure
+				if err != nil && isExpectedWSClose(err) {
+					log.Debug().
+						Err(err).
+						Str("endpoint", endpoint.ID).
+						Msg("WebSocket closed normally, not counting as failure")
+					return
+				}
 
 				if err != nil {
 					// Check if this is a 400 Bad Request error
@@ -687,19 +700,6 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 								log.Error().Str("chain", chain).Strs("tried_endpoints", triedEndpoints).Msg("All WebSocket endpoints rate limited")
 								http.Error(w, "All WebSocket endpoints rate limited", http.StatusTooManyRequests)
 							}
-							return
-						}
-					}
-					// Check if this is a normal WebSocket closure
-					if closeErr, ok := err.(*websocket.CloseError); ok {
-						if closeErr.Code == websocket.CloseNormalClosure || closeErr.Code == websocket.CloseGoingAway {
-							// Normal closure
-							log.Debug().
-								Int("close_code", closeErr.Code).
-								Str("close_text", closeErr.Text).
-								Str("endpoint", helpers.RedactAPIKey(endpoint.Endpoint.WSURL)).
-								Str("chain", chain).
-								Msg("WebSocket connection closed normally")
 							return
 						}
 					}
@@ -928,6 +928,10 @@ func removeEndpointByID(endpoints []EndpointWithID, id string) []EndpointWithID 
 
 // updateEndpointHealthState tracks consecutive successes/failures and updates endpoint health status when thresholds are reached
 func (s *Server) updateEndpointHealthState(chain, endpointID, protocol string, isSuccess bool) {
+	if !s.ephemeralChecksEnabled {
+		return
+	}
+
 	// Get or create failure state for this endpoint:protocol
 	key := chain + ":" + endpointID + ":" + protocol
 
@@ -1169,20 +1173,38 @@ func proxyWebSocketCopy(src, dst *websocket.Conn) error {
 	}
 }
 
+// isExpectedWSClose returns true for WebSocket close codes and errors that
+// represent normal or benign disconnects and should NOT count as endpoint
+// failures. This includes graceful closes, client-side disconnects, and
+// EOF conditions at the TCP level.
+func isExpectedWSClose(err error) bool {
+	if err == nil {
+		return false
+	}
+	if closeErr, ok := err.(*websocket.CloseError); ok {
+		switch closeErr.Code {
+		case websocket.CloseNormalClosure,
+			websocket.CloseGoingAway,
+			websocket.CloseNoStatusReceived,
+			websocket.CloseAbnormalClosure:
+			return true
+		}
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return true
+	}
+	return false
+}
+
 // defaultProxyWebSocket proxies a WebSocket connection between the client and the backend
 func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, backendURL string) error {
-	// Upgrade the incoming request to a WebSocket
-	var upgrader = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
-	}
-	clientConn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Error().Err(err).Msg("WebSocket upgrade failed")
-		return err
-	}
-	defer clientConn.Close()
-
-	// Connect to the backend WebSocket
+	// IMPORTANT: Connect to backend FIRST before upgrading client connection.
+	// This allows us to return HTTP error responses if the backend connection fails,
+	// since the client connection hasn't been hijacked yet.
 	backendConn, resp, err := websocket.DefaultDialer.Dial(backendURL, nil)
 	if err != nil {
 		chain, endpointID, found := s.findChainAndEndpointByURL(backendURL)
@@ -1236,6 +1258,20 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 	}
 	defer backendConn.Close()
 
+	// Only upgrade client connection after backend connection succeeds.
+	// This ensures we can still send HTTP error responses if backend connection fails.
+	var upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+	clientConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Error().Err(err).Msg("WebSocket upgrade failed")
+		// Close backend connection since we couldn't upgrade the client
+		backendConn.Close()
+		return err
+	}
+	defer clientConn.Close()
+
 	// Proxy messages in both directions
 	errc := make(chan error, 2)
 	go func() {
@@ -1251,16 +1287,9 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 
 	// Mark endpoint as unhealthy for WS if error is not a normal closure
 	if err != nil {
-		if closeErr, ok := err.(*websocket.CloseError); ok {
-			if closeErr.Code == websocket.CloseNormalClosure || closeErr.Code == websocket.CloseGoingAway {
-				log.Debug().Int("close_code", closeErr.Code).Str("close_text", closeErr.Text).Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket connection closed normally")
-				return nil
-			}
-		}
-		// Do not mark as unhealthy for timeouts
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			log.Debug().Err(err).Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket timeout, not marking endpoint as unhealthy")
-			return err
+		if isExpectedWSClose(err) {
+			log.Debug().Err(err).Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket connection closed normally")
+			return nil
 		}
 		if chain, endpointID, found := s.findChainAndEndpointByURL(backendURL); found {
 			s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")

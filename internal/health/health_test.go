@@ -1,6 +1,7 @@
 package health
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -160,5 +161,29 @@ func TestCheckHealthWithTimeout(t *testing.T) {
 	err := checker.CheckHealth(server.URL)
 	if err != nil {
 		t.Errorf("Health check should not error for slow endpoint within timeout: %v", err)
+	}
+}
+
+func TestStartEphemeralChecksDisabled(t *testing.T) {
+	checker := &Checker{
+		ephemeralChecksEnabled: false,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// StartEphemeralChecks should return immediately when disabled.
+	// If it blocks (enters the ticker loop), the test will hang and timeout.
+	done := make(chan struct{})
+	go func() {
+		checker.StartEphemeralChecks(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success: returned immediately
+	case <-time.After(2 * time.Second):
+		t.Fatal("StartEphemeralChecks did not return immediately when disabled")
 	}
 }

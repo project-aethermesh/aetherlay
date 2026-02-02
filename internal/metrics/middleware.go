@@ -39,21 +39,33 @@ func Middleware(next http.Handler) http.Handler {
 type responseWriter struct {
 	http.ResponseWriter
 	statusCode int
-	wRotten    bool // Track if the ResponseWriter has been hijacked
+	hijacked   bool // Track if the ResponseWriter has been hijacked
 }
 
+// newResponseWriter wraps an http.ResponseWriter to capture the status code for metrics recording.
 func newResponseWriter(w http.ResponseWriter) *responseWriter {
 	return &responseWriter{w, http.StatusOK, false}
 }
 
 // WriteHeader captures the status code and calls the original WriteHeader
 func (rw *responseWriter) WriteHeader(code int) {
+	if rw.hijacked {
+		return
+	}
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+// Write writes the response body, returning early if the connection has been hijacked.
+func (rw *responseWriter) Write(b []byte) (int, error) {
+	if rw.hijacked {
+		return len(b), nil
+	}
+	return rw.ResponseWriter.Write(b)
+}
+
 // Hijack implements the http.Hijacker interface to allow for WebSocket upgrades.
-// It marks the writer as "rotten" to prevent metrics from being recorded
+// It marks the writer as "hijacked" to prevent metrics from being recorded
 // for the hijacked connection, as the lifecycle is no longer standard HTTP.
 func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	h, ok := rw.ResponseWriter.(http.Hijacker)
@@ -62,7 +74,7 @@ func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	}
 	conn, buf, err := h.Hijack()
 	if err == nil {
-		rw.wRotten = true
+		rw.hijacked = true
 	}
 	return conn, buf, err
 }
@@ -84,7 +96,7 @@ func instrumentHandler(handler http.Handler, w *responseWriter, route string) ht
 				HTTPRequestsInFlight.Dec()
 			}
 			// Only record metrics if the connection was not hijacked
-			if !w.wRotten {
+			if !w.hijacked {
 				statusCode := fmt.Sprintf("%d", w.statusCode)
 				method := strings.ToUpper(r.Method)
 
