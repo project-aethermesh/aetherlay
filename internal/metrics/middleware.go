@@ -42,6 +42,7 @@ type responseWriter struct {
 	hijacked   bool // Track if the ResponseWriter has been hijacked
 }
 
+// newResponseWriter wraps an http.ResponseWriter to capture the status code for metrics recording.
 func newResponseWriter(w http.ResponseWriter) *responseWriter {
 	return &responseWriter{w, http.StatusOK, false}
 }
@@ -55,6 +56,7 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+// Write writes the response body, returning early if the connection has been hijacked.
 func (rw *responseWriter) Write(b []byte) (int, error) {
 	if rw.hijacked {
 		return len(b), nil

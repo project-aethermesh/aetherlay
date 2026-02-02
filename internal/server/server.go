@@ -31,6 +31,7 @@ type RateLimitError struct {
 	Message    string
 }
 
+// Error returns the rate limit error message.
 func (e *RateLimitError) Error() string {
 	return e.Message
 }
@@ -43,6 +44,7 @@ type BadRequestError struct {
 	Headers    http.Header
 }
 
+// Error returns the bad request error message.
 func (e *BadRequestError) Error() string {
 	return e.Message
 }
