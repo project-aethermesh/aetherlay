@@ -527,11 +527,15 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 					first400EndpointID = ""
 				}
 
-				// Increment the request count and track success for debouncing
+				// Increment the request count and track success for debouncing.
+				// Use a fresh context to ensure metrics are recorded even if the
+				// request context is close to expiring.
 				log.Debug().Str("chain", chain).Str("endpoint", endpoint.ID).Str("endpoint_url", helpers.RedactAPIKey(endpoint.Endpoint.HTTPURL)).Int("retry", retryCount).Msg("HTTP request succeeded")
-				if err := s.valkeyClient.IncrementRequestCount(ctx, chain, endpoint.ID, "proxy_requests"); err != nil {
+				metricsCtx, metricsCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := s.valkeyClient.IncrementRequestCount(metricsCtx, chain, endpoint.ID, "proxy_requests"); err != nil {
 					log.Error().Err(err).Str("endpoint", endpoint.ID).Msg("Failed to increment request count")
 				}
+				metricsCancel()
 				// Track success for health debouncing
 				s.markEndpointHealthyAttempt(chain, endpoint.ID, "http")
 				return
@@ -732,10 +736,14 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 					}
 
 					// Increment the request count and track success for debouncing.
+					// Use a fresh context since WebSocket connections are long-lived and
+					// the original request context may have expired.
 					log.Debug().Str("chain", chain).Str("endpoint", endpoint.ID).Str("endpoint_url", helpers.RedactAPIKey(endpoint.Endpoint.WSURL)).Int("retry", retryCount).Msg("WebSocket connection succeeded")
-					if err := s.valkeyClient.IncrementRequestCount(ctx, chain, endpoint.ID, "proxy_requests"); err != nil {
+					metricsCtx, metricsCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					if err := s.valkeyClient.IncrementRequestCount(metricsCtx, chain, endpoint.ID, "proxy_requests"); err != nil {
 						log.Error().Err(err).Str("endpoint", endpoint.ID).Msg("Failed to increment WebSocket request count")
 					}
+					metricsCancel()
 					// Track success for health debouncing
 					s.markEndpointHealthyAttempt(chain, endpoint.ID, "ws")
 					return
