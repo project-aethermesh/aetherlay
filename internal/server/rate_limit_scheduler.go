@@ -17,7 +17,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-
 // RateLimitScheduler manages recovery checks for rate-limited endpoints
 type RateLimitScheduler struct {
 	config       *config.Config
@@ -372,16 +371,26 @@ func (rls *RateLimitScheduler) checkEndpointHealth(endpoint config.Endpoint) boo
 
 	// Check for JSON-RPC errors (rate limits could come as JSON-RPC errors with 200 HTTP status)
 	if rpcResp.Error != nil {
-		log.Debug().
+		evt := log.Debug().
 			Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).
 			Int("code", rpcResp.Error.Code).
-			Str("message", rpcResp.Error.Message).
-			Msg("Recovery check received JSON-RPC error, still rate limited")
+			Str("message", rpcResp.Error.Message)
+		if isJSONRPCRateLimitCode(rpcResp.Error.Code) {
+			evt.Msg("Recovery check received JSON-RPC rate-limit error")
+		} else {
+			evt.Msg("Recovery check received JSON-RPC error")
+		}
 		return false
 	}
 
 	log.Debug().Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Recovery check successful")
 	return true
+}
+
+// isJSONRPCRateLimitCode reports whether a JSON-RPC error code indicates rate limiting.
+// -32005 is the standard "Request limit exceeded" code used by Infura, Alchemy, and others.
+func isJSONRPCRateLimitCode(code int) bool {
+	return code == -32005
 }
 
 // shouldResetBackoff determines if the backoff cycle should be reset
