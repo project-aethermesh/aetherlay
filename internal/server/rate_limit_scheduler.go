@@ -10,20 +10,13 @@ import (
 	"time"
 
 	"aetherlay/internal/config"
+	"aetherlay/internal/health"
 	"aetherlay/internal/helpers"
 	"aetherlay/internal/store"
 
 	"github.com/rs/zerolog/log"
 )
 
-// rpcResponse represents a JSON-RPC response for recovery checks
-type rpcResponse struct {
-	Result any `json:"result"`
-	Error  *struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
-}
 
 // RateLimitScheduler manages recovery checks for rate-limited endpoints
 type RateLimitScheduler struct {
@@ -371,7 +364,7 @@ func (rls *RateLimitScheduler) checkEndpointHealth(endpoint config.Endpoint) boo
 		return false
 	}
 
-	var rpcResp rpcResponse
+	var rpcResp health.RpcResponse
 	if err := json.Unmarshal(body, &rpcResp); err != nil {
 		log.Debug().Err(err).Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Recovery check failed to parse JSON-RPC response")
 		return false

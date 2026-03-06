@@ -25,8 +25,8 @@ import (
 // ErrMethodNotFound indicates that the RPC method is not supported by the endpoint
 var ErrMethodNotFound = errors.New("method not found")
 
-// rpcResponse represents a JSON-RPC 2.0 response
-type rpcResponse struct {
+// RpcResponse represents a JSON-RPC response
+type RpcResponse struct {
 	Result any `json:"result"`
 	Error  *struct {
 		Code    int    `json:"code"`
@@ -35,7 +35,7 @@ type rpcResponse struct {
 }
 
 // checkRPCError checks for errors in an RPC response and handles method-not-found errors specially
-func checkRPCError(response *rpcResponse, method, protocol, chain, endpointID, url string) error {
+func checkRPCError(response *RpcResponse, method, protocol, chain, endpointID, url string) error {
 	if response.Error == nil {
 		return nil
 	}
@@ -79,12 +79,12 @@ func containsMethodNotFound(message string) bool {
 
 // Checker represents a health checker
 type Checker struct {
-	config                *config.Config
-	concurrency           int
+	config                 *config.Config
+	concurrency            int
 	ephemeralChecksEnabled bool
-	healthCheckSyncStatus bool
-	interval              time.Duration
-	valkeyClient          store.ValkeyClientIface
+	healthCheckSyncStatus  bool
+	interval               time.Duration
+	valkeyClient           store.ValkeyClientIface
 
 	ephemeralChecks          map[string]*ephemeralState // key: chain|endpointID|protocol
 	ephemeralChecksInterval  time.Duration
@@ -446,7 +446,7 @@ func (c *Checker) makeRPCCall(ctx context.Context, url, method, chain, endpointI
 	}
 
 	// Define the structure of the response
-	var response rpcResponse
+	var response RpcResponse
 
 	// Parse the response
 	if err := json.Unmarshal(body, &response); err != nil {
@@ -502,7 +502,7 @@ func (c *Checker) makeWSRPCCall(url, method, chain, endpointID string) (any, err
 	wsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
 
 	// Read the response
-	var response rpcResponse
+	var response RpcResponse
 
 	if err := wsConn.ReadJSON(&response); err != nil {
 		log.Error().
