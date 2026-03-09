@@ -383,6 +383,13 @@ func (rls *RateLimitScheduler) checkEndpointHealth(ctx context.Context, endpoint
 		return false
 	}
 
+	// Validate the eth_blockNumber result
+	_, isHealthy := health.ParseBlockNumber(rpcResp.Result)
+	if !isHealthy {
+		log.Debug().Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Recovery check received null or unparseable block number")
+		return false
+	}
+
 	log.Debug().Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Recovery check successful")
 	return true
 }

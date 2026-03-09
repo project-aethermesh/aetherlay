@@ -523,8 +523,8 @@ func (c *Checker) makeWSRPCCall(url, method, chain, endpointID string) (any, err
 	return response.Result, nil
 }
 
-// parseBlockNumber parses a hex string block number and validates it's > 0
-func parseBlockNumber(blockResult any) (blockNumber int64, isHealthy bool) {
+// ParseBlockNumber parses a hex string block number and validates it's > 0
+func ParseBlockNumber(blockResult any) (blockNumber int64, isHealthy bool) {
 	blockStr, ok := blockResult.(string)
 	if !ok {
 		return 0, false
@@ -558,7 +558,7 @@ func parseSyncStatus(syncResult any) bool {
 // checkHealthParams checks all health parameters and logs detailed info
 func (c *Checker) checkHealthParams(chain, endpointID, url, protocol string, syncResult, blockResult any) (healthy bool, blockNumber int64) {
 	// Parse results
-	blockNumber, blockHealthy := parseBlockNumber(blockResult)
+	blockNumber, blockHealthy := ParseBlockNumber(blockResult)
 
 	// Block number check is always required
 	healthy = blockHealthy
