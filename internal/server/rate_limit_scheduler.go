@@ -1,12 +1,16 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"sync"
 	"time"
 
 	"aetherlay/internal/config"
+	"aetherlay/internal/health"
 	"aetherlay/internal/helpers"
 	"aetherlay/internal/store"
 
@@ -19,7 +23,7 @@ type RateLimitScheduler struct {
 	valkeyClient store.ValkeyClientIface
 
 	// Active monitoring tracking
-	activeMonitoring map[string]bool           // key: chain:endpoint
+	activeMonitoring map[string]bool               // key: chain:endpoint
 	cancelFuncs      map[string]context.CancelFunc // Cancel functions for active goroutines
 	mu               sync.RWMutex
 	shutdownCtx      context.Context
@@ -243,7 +247,7 @@ func (rls *RateLimitScheduler) performRecoveryCheck(ctx context.Context, chain, 
 	}
 
 	// Perform the health check
-	success := rls.checkEndpointHealth(endpoint)
+	success := rls.checkEndpointHealth(ctx, endpoint)
 
 	if success {
 		state.ConsecutiveSuccess++
@@ -312,7 +316,7 @@ func (rls *RateLimitScheduler) performRecoveryCheck(ctx context.Context, chain, 
 }
 
 // checkEndpointHealth performs a simple HTTP health check on the endpoint
-func (rls *RateLimitScheduler) checkEndpointHealth(endpoint config.Endpoint) bool {
+func (rls *RateLimitScheduler) checkEndpointHealth(ctx context.Context, endpoint config.Endpoint) bool {
 	if endpoint.HTTPURL == "" {
 		return false
 	}
@@ -322,8 +326,9 @@ func (rls *RateLimitScheduler) checkEndpointHealth(endpoint config.Endpoint) boo
 		Timeout: 10 * time.Second,
 	}
 
-	// Create a simple POST request (similar to what the proxy would do)
-	req, err := http.NewRequest("POST", endpoint.HTTPURL, http.NoBody)
+	// Create a proper JSON-RPC request (same as regular health checks)
+	payload := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint.HTTPURL, bytes.NewBuffer(payload))
 	if err != nil {
 		log.Debug().Err(err).Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Failed to create recovery check request")
 		return false
@@ -339,19 +344,60 @@ func (rls *RateLimitScheduler) checkEndpointHealth(endpoint config.Endpoint) boo
 	}
 	defer resp.Body.Close()
 
-	// Consider 2xx responses as success, 429 as still rate limited, others as failure
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		log.Debug().Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Int("status", resp.StatusCode).Msg("Recovery check successful")
-		return true
-	}
-
+	// Check HTTP status code first
 	if resp.StatusCode == 429 {
-		log.Debug().Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Recovery check still rate limited")
-	} else {
-		log.Debug().Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Int("status", resp.StatusCode).Msg("Recovery check failed with error status")
+		log.Debug().Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Recovery check still rate limited (HTTP 429)")
+		return false
 	}
 
-	return false
+	// Successful response to the eth_blockNumber call should always be 200
+	if resp.StatusCode != 200 {
+		log.Debug().Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Int("status", resp.StatusCode).Msg("Recovery check failed with error status")
+		return false
+	}
+
+	// Parse the JSON-RPC response to check for rate limit errors in the body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Debug().Err(err).Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Recovery check failed to read response body")
+		return false
+	}
+
+	var rpcResp health.RpcResponse
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		log.Debug().Err(err).Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Recovery check failed to parse JSON-RPC response")
+		return false
+	}
+
+	// Check for JSON-RPC errors (rate limits could come as JSON-RPC errors with 200 HTTP status)
+	if rpcResp.Error != nil {
+		evt := log.Debug().
+			Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).
+			Int("code", rpcResp.Error.Code).
+			Str("message", rpcResp.Error.Message)
+		if isJSONRPCRateLimitCode(rpcResp.Error.Code) {
+			evt.Msg("Recovery check received JSON-RPC rate-limit error")
+		} else {
+			evt.Msg("Recovery check received JSON-RPC error")
+		}
+		return false
+	}
+
+	// Validate the eth_blockNumber result
+	_, isHealthy := health.ParseBlockNumber(rpcResp.Result)
+	if !isHealthy {
+		log.Debug().Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Recovery check received null or unparseable block number")
+		return false
+	}
+
+	log.Debug().Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Recovery check successful")
+	return true
+}
+
+// isJSONRPCRateLimitCode reports whether a JSON-RPC error code indicates rate limiting.
+// -32005 is the standard "Request limit exceeded" code used by Infura, Alchemy, and others.
+func isJSONRPCRateLimitCode(code int) bool {
+	return code == -32005
 }
 
 // shouldResetBackoff determines if the backoff cycle should be reset

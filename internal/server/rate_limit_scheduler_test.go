@@ -87,9 +87,11 @@ func TestStartMonitoringDoesNotDuplicate(t *testing.T) {
 }
 
 func TestCheckEndpointHealthSuccess(t *testing.T) {
-	// Create a test HTTP server that returns 200
+	// Create a test HTTP server that returns 200 with a valid JSON-RPC response
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"jsonrpc":"2.0","result":"0x1234567","id":1}`))
 	}))
 	defer server.Close()
 
@@ -110,7 +112,7 @@ func TestCheckEndpointHealthSuccess(t *testing.T) {
 	scheduler := NewRateLimitScheduler(cfg, mockValkey)
 
 	endpoint := cfg.Endpoints["ethereum"]["test-endpoint"]
-	healthy := scheduler.checkEndpointHealth(endpoint)
+	healthy := scheduler.checkEndpointHealth(context.Background(), endpoint)
 
 	if !healthy {
 		t.Error("Expected endpoint to be healthy")
@@ -141,7 +143,7 @@ func TestCheckEndpointHealthRateLimited(t *testing.T) {
 	scheduler := NewRateLimitScheduler(cfg, mockValkey)
 
 	endpoint := cfg.Endpoints["ethereum"]["test-endpoint"]
-	healthy := scheduler.checkEndpointHealth(endpoint)
+	healthy := scheduler.checkEndpointHealth(context.Background(), endpoint)
 
 	if healthy {
 		t.Error("Expected endpoint to be unhealthy due to rate limiting")
@@ -240,9 +242,11 @@ func TestPerformRecoveryCheckStopsAfterMaxRetries(t *testing.T) {
 }
 
 func TestPerformRecoveryCheckRecovery(t *testing.T) {
-	// Create a test HTTP server that returns 200
+	// Create a test HTTP server that returns 200 with a valid JSON-RPC response
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"jsonrpc":"2.0","result":"0x1234567","id":1}`))
 	}))
 	defer server.Close()
 
