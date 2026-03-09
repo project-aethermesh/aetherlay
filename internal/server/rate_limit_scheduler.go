@@ -247,7 +247,7 @@ func (rls *RateLimitScheduler) performRecoveryCheck(ctx context.Context, chain, 
 	}
 
 	// Perform the health check
-	success := rls.checkEndpointHealth(endpoint)
+	success := rls.checkEndpointHealth(ctx, endpoint)
 
 	if success {
 		state.ConsecutiveSuccess++
@@ -316,7 +316,7 @@ func (rls *RateLimitScheduler) performRecoveryCheck(ctx context.Context, chain, 
 }
 
 // checkEndpointHealth performs a simple HTTP health check on the endpoint
-func (rls *RateLimitScheduler) checkEndpointHealth(endpoint config.Endpoint) bool {
+func (rls *RateLimitScheduler) checkEndpointHealth(ctx context.Context, endpoint config.Endpoint) bool {
 	if endpoint.HTTPURL == "" {
 		return false
 	}
@@ -328,7 +328,7 @@ func (rls *RateLimitScheduler) checkEndpointHealth(endpoint config.Endpoint) boo
 
 	// Create a proper JSON-RPC request (same as regular health checks)
 	payload := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
-	req, err := http.NewRequest("POST", endpoint.HTTPURL, bytes.NewBuffer(payload))
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint.HTTPURL, bytes.NewBuffer(payload))
 	if err != nil {
 		log.Debug().Err(err).Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Failed to create recovery check request")
 		return false

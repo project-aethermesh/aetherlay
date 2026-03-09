@@ -112,7 +112,7 @@ func TestCheckEndpointHealthSuccess(t *testing.T) {
 	scheduler := NewRateLimitScheduler(cfg, mockValkey)
 
 	endpoint := cfg.Endpoints["ethereum"]["test-endpoint"]
-	healthy := scheduler.checkEndpointHealth(endpoint)
+	healthy := scheduler.checkEndpointHealth(context.Background(), endpoint)
 
 	if !healthy {
 		t.Error("Expected endpoint to be healthy")
@@ -143,7 +143,7 @@ func TestCheckEndpointHealthRateLimited(t *testing.T) {
 	scheduler := NewRateLimitScheduler(cfg, mockValkey)
 
 	endpoint := cfg.Endpoints["ethereum"]["test-endpoint"]
-	healthy := scheduler.checkEndpointHealth(endpoint)
+	healthy := scheduler.checkEndpointHealth(context.Background(), endpoint)
 
 	if healthy {
 		t.Error("Expected endpoint to be unhealthy due to rate limiting")
