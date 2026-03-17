@@ -354,7 +354,7 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 	rateLimitState, err := c.valkeyClient.GetRateLimitState(ctx, chain, endpointID)
 	if err == nil && rateLimitState.RateLimited {
 		log.Debug().Str("chain", chain).Str("endpoint_id", endpointID).Msg("Skipping health check for rate-limited endpoint")
-		c.updateHealthMetrics(chain, endpointID, false)
+		c.recordHealthCheckSkipped(chain, endpointID)
 		return
 	}
 
@@ -644,6 +644,13 @@ func (c *Checker) updateHealthMetrics(chain, endpointID string, healthy bool) {
 		metrics.EndpointHealthStatus.WithLabelValues(chain, endpointID).Set(0)
 		metrics.HealthCheckTotal.WithLabelValues(chain, endpointID, "failure").Inc()
 	}
+}
+
+// recordHealthCheckSkipped marks the endpoint as unhealthy in the gauge without
+// recording a failure, so rate-limited skips are distinguishable from real failures.
+func (c *Checker) recordHealthCheckSkipped(chain, endpointID string) {
+	metrics.EndpointHealthStatus.WithLabelValues(chain, endpointID).Set(0)
+	metrics.HealthCheckTotal.WithLabelValues(chain, endpointID, "skipped").Inc()
 }
 
 // incrementHealthRequestCount increments the health request count and logs errors
