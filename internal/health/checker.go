@@ -350,6 +350,13 @@ func (c *Checker) checkAllEndpointsAndWait(ctx context.Context, isInitial bool) 
 
 // checkEndpoint checks the health of a single endpoint
 func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) {
+	// Skip health checks for rate-limited endpoints to avoid burning their quota
+	rateLimitState, err := c.valkeyClient.GetRateLimitState(ctx, chain, endpointID)
+	if err == nil && rateLimitState.RateLimited {
+		log.Debug().Str("chain", chain).Str("endpoint_id", endpointID).Msg("Skipping health check for rate-limited endpoint")
+		return
+	}
+
 	status := store.NewEndpointStatus()
 	status.LastHealthCheck = time.Now()
 
