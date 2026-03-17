@@ -354,6 +354,7 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 	rateLimitState, err := c.valkeyClient.GetRateLimitState(ctx, chain, endpointID)
 	if err == nil && rateLimitState.RateLimited {
 		log.Debug().Str("chain", chain).Str("endpoint_id", endpointID).Msg("Skipping health check for rate-limited endpoint")
+		c.recordHealthCheckFailed(chain, endpointID)
 		return
 	}
 
@@ -643,6 +644,13 @@ func (c *Checker) updateHealthMetrics(chain, endpointID string, healthy bool) {
 		metrics.EndpointHealthStatus.WithLabelValues(chain, endpointID).Set(0)
 		metrics.HealthCheckTotal.WithLabelValues(chain, endpointID, "failure").Inc()
 	}
+}
+
+// recordHealthCheckFailed marks the endpoint as unhealthy in the gauge and
+// increments the failure counter for rate-limited endpoints.
+func (c *Checker) recordHealthCheckFailed(chain, endpointID string) {
+	metrics.EndpointHealthStatus.WithLabelValues(chain, endpointID).Set(0)
+	metrics.HealthCheckTotal.WithLabelValues(chain, endpointID, "failure").Inc()
 }
 
 // incrementHealthRequestCount increments the health request count and logs errors
