@@ -650,7 +650,7 @@ func (c *Checker) updateHealthMetrics(chain, endpointID string, healthy bool) {
 // increments the failure counter for rate-limited endpoints.
 func (c *Checker) recordHealthCheckFailed(chain, endpointID string) {
 	metrics.EndpointHealthStatus.WithLabelValues(chain, endpointID).Set(0)
-	metrics.HealthCheckTotal.WithLabelValues(chain, endpointID, "failed").Inc()
+	metrics.HealthCheckTotal.WithLabelValues(chain, endpointID, "failure").Inc()
 }
 
 // incrementHealthRequestCount increments the health request count and logs errors
