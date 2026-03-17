@@ -354,6 +354,7 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 	rateLimitState, err := c.valkeyClient.GetRateLimitState(ctx, chain, endpointID)
 	if err == nil && rateLimitState.RateLimited {
 		log.Debug().Str("chain", chain).Str("endpoint_id", endpointID).Msg("Skipping health check for rate-limited endpoint")
+		c.updateHealthMetrics(chain, endpointID, false)
 		return
 	}
 
