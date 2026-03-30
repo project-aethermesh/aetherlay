@@ -230,6 +230,15 @@ func (s *Server) writeReadinessResponse(w http.ResponseWriter, statusCode int, s
 	}
 }
 
+// writeJSONError writes a JSON error response with the given message and status code.
+func writeJSONError(w http.ResponseWriter, message string, statusCode int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	if err := json.NewEncoder(w).Encode(map[string]string{"error": message}); err != nil {
+		log.Error().Err(err).Msg("Failed to encode error response")
+	}
+}
+
 // handleReadinessCheck handles the /ready endpoint for readiness checks
 // Returns 200 only when both LB and health-checker are ready
 func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
@@ -405,7 +414,7 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 			var err error
 			bodyBytes, err = io.ReadAll(r.Body)
 			if err != nil {
-				http.Error(w, "Failed to read request body", http.StatusBadRequest)
+				writeJSONError(w, "Failed to read request body", http.StatusBadRequest)
 				return
 			}
 			r.Body.Close()
@@ -418,7 +427,7 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 
 		if len(allEndpoints) == 0 {
 			log.Debug().Str("chain", chain).Bool("archive", archive).Msg("No available endpoints found for HTTP request")
-			http.Error(w, "No available endpoints", http.StatusServiceUnavailable)
+			writeJSONError(w, "No available endpoints", http.StatusServiceUnavailable)
 			return
 		}
 
@@ -432,7 +441,7 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 			select {
 			case <-ctx.Done():
 				log.Error().Str("chain", chain).Msg("Request timeout reached")
-				http.Error(w, "Request timeout", http.StatusGatewayTimeout)
+				writeJSONError(w, "Request timeout", http.StatusGatewayTimeout)
 				return
 			default:
 			}
@@ -545,10 +554,10 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 		// If we get here, all retries failed
 		if retryCount >= s.maxRetries {
 			log.Error().Str("chain", chain).Strs("tried_endpoints", triedEndpoints).Int("max_retries", s.maxRetries).Msg("Max retries reached")
-			http.Error(w, "Max retries reached, all endpoints unavailable", http.StatusBadGateway)
+			writeJSONError(w, "Max retries reached, all endpoints unavailable", http.StatusBadGateway)
 		} else {
 			log.Error().Str("chain", chain).Strs("tried_endpoints", triedEndpoints).Msg("All endpoints failed")
-			http.Error(w, "Failed to forward request, all endpoints unavailable", http.StatusBadGateway)
+			writeJSONError(w, "Failed to forward request, all endpoints unavailable", http.StatusBadGateway)
 		}
 	}
 }
@@ -575,7 +584,7 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 
 			if len(allEndpoints) == 0 {
 				log.Debug().Str("chain", chain).Bool("archive", archive).Msg("No available WebSocket endpoints found")
-				http.Error(w, "No available WebSocket endpoints", http.StatusServiceUnavailable)
+				writeJSONError(w, "No available WebSocket endpoints", http.StatusServiceUnavailable)
 				return
 			}
 
@@ -699,10 +708,10 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 						if len(allEndpoints) == 0 || retryCount >= s.maxRetries {
 							if retryCount >= s.maxRetries {
 								log.Error().Str("chain", chain).Strs("tried_endpoints", triedEndpoints).Int("max_retries", s.maxRetries).Msg("WebSocket max retries reached after rate limits")
-								http.Error(w, "WebSocket max retries reached after rate limits, all endpoints unavailable", http.StatusBadGateway)
+								writeJSONError(w, "WebSocket max retries reached after rate limits, all endpoints unavailable", http.StatusBadGateway)
 							} else {
 								log.Error().Str("chain", chain).Strs("tried_endpoints", triedEndpoints).Msg("All WebSocket endpoints rate limited")
-								http.Error(w, "All WebSocket endpoints rate limited", http.StatusTooManyRequests)
+								writeJSONError(w, "All WebSocket endpoints rate limited", http.StatusTooManyRequests)
 							}
 							return
 						}
@@ -753,14 +762,14 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 			// If we get here, all retries failed
 			if retryCount >= s.maxRetries {
 				log.Error().Str("chain", chain).Strs("tried_endpoints", triedEndpoints).Int("max_retries", s.maxRetries).Msg("WebSocket max retries reached")
-				http.Error(w, "WebSocket max retries reached, all endpoints unavailable", http.StatusBadGateway)
+				writeJSONError(w, "WebSocket max retries reached, all endpoints unavailable", http.StatusBadGateway)
 			} else {
 				log.Error().Str("chain", chain).Strs("tried_endpoints", triedEndpoints).Msg("All WebSocket endpoints failed")
-				http.Error(w, "Failed to proxy WebSocket, all endpoints unavailable", http.StatusBadGateway)
+				writeJSONError(w, "Failed to proxy WebSocket, all endpoints unavailable", http.StatusBadGateway)
 			}
 			return
 		}
-		http.Error(w, "GET requests to this endpoint are only supported for WebSocket upgrade requests. Otherwise, please use POST.", http.StatusBadRequest)
+		writeJSONError(w, "GET requests to this endpoint are only supported for WebSocket upgrade requests. Otherwise, please use POST.", http.StatusBadRequest)
 	}
 }
 
