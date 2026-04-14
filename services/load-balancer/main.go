@@ -78,6 +78,21 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to connect to Valkey")
 	}
 
+	// Build the set of active endpoints from the current config and clean up
+	// any Valkey data belonging to endpoints that are no longer configured.
+	// This prevents stale metrics from appearing in the dashboard after endpoints are removed.
+	activeEndpoints := make(map[string][]string)
+	for chainName, chainEndpoints := range cfg.Endpoints {
+		for endpointID := range chainEndpoints {
+			activeEndpoints[chainName] = append(activeEndpoints[chainName], endpointID)
+		}
+	}
+	if deleted, err := valkeyClient.CleanupStaleEndpoints(context.Background(), activeEndpoints); err != nil {
+		log.Warn().Err(err).Msg("Failed to clean up stale endpoint data from Valkey")
+	} else if deleted > 0 {
+		log.Info().Int("keys_deleted", deleted).Msg("Cleaned up stale endpoint data from Valkey")
+	}
+
 	// Initialize and start the server
 	srv := server.NewServer(cfg, valkeyClient, appConfig)
 

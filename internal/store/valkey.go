@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/valkey-io/valkey-go"
@@ -65,6 +66,7 @@ type ValkeyClientIface interface {
 	GetCombinedRequestCounts(ctx context.Context, chain, endpoint string) (int64, int64, int64, error)
 	GetRateLimitState(ctx context.Context, chain, endpoint string) (*RateLimitState, error)
 	SetRateLimitState(ctx context.Context, chain, endpoint string, state RateLimitState) error
+	CleanupStaleEndpoints(ctx context.Context, activeEndpoints map[string][]string) (int, error)
 	Ping(ctx context.Context) error
 	Close() error
 }
@@ -246,6 +248,79 @@ func (r *ValkeyClient) GetCombinedRequestCounts(ctx context.Context, chain, endp
 
 	// Return combined counts
 	return p24h + h24h, p1m + h1m, pAll + hAll, nil
+}
+
+// CleanupStaleEndpoints removes all Valkey keys for endpoints that are no longer in the active config.
+// activeEndpoints maps chain names to slices of endpoint IDs that are currently configured.
+// Returns the number of keys deleted and any error encountered.
+func (r *ValkeyClient) CleanupStaleEndpoints(ctx context.Context, activeEndpoints map[string][]string) (int, error) {
+	// Build a set of active chain:endpoint pairs for fast lookup
+	active := make(map[string]struct{})
+	for chain, endpoints := range activeEndpoints {
+		for _, endpoint := range endpoints {
+			active[chain+":"+endpoint] = struct{}{}
+		}
+	}
+
+	prefixes := []string{healthPrefix, metricsPrefix, rateLimitPrefix}
+	var staleKeys []string
+
+	for _, prefix := range prefixes {
+		var cursor uint64
+		for {
+			cmd := r.client.B().Scan().Cursor(cursor).Match(prefix+"*").Count(100).Build()
+			result := r.client.Do(ctx, cmd)
+			if result.Error() != nil {
+				return 0, result.Error()
+			}
+
+			scanResult, err := result.AsScanEntry()
+			if err != nil {
+				return 0, err
+			}
+
+			for _, key := range scanResult.Elements {
+				// Parse chain and endpoint from the key.
+				// Key formats:
+				//   health:{chain}:{endpoint}
+				//   metrics:{chain}:{endpoint}:...
+				//   rate_limit:{chain}:{endpoint}
+				withoutPrefix := key[len(prefix):]
+				chain, rest, ok := strings.Cut(withoutPrefix, ":")
+				if !ok {
+					continue
+				}
+				endpoint, _, _ := strings.Cut(rest, ":")
+
+				if _, ok := active[chain+":"+endpoint]; !ok {
+					staleKeys = append(staleKeys, key)
+				}
+			}
+
+			cursor = scanResult.Cursor
+			if cursor == 0 {
+				break
+			}
+		}
+	}
+
+	if len(staleKeys) == 0 {
+		return 0, nil
+	}
+
+	// Delete all stale keys in a single pipeline
+	cmds := make([]valkey.Completed, len(staleKeys))
+	for i, key := range staleKeys {
+		cmds[i] = r.client.B().Del().Key(key).Build()
+	}
+	results := r.client.DoMulti(ctx, cmds...)
+	for _, res := range results {
+		if err := res.Error(); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(staleKeys), nil
 }
 
 // GetRateLimitState retrieves the rate limit state for an endpoint from Valkey

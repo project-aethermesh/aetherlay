@@ -18,7 +18,7 @@ RUN cd /tmp; curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && npm install -g npm@latest
 
 # Install Claude Code
-RUN npm install -g @anthropic-ai/claude-code
+RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # Install Go tools
 RUN go install golang.org/x/tools/gopls@latest \
