@@ -268,7 +268,7 @@ func (r *ValkeyClient) CleanupStaleEndpoints(ctx context.Context, activeEndpoint
 	for _, prefix := range prefixes {
 		var cursor uint64
 		for {
-			cmd := r.client.B().Scan().Cursor(cursor).Match(prefix+"*").Count(100).Build()
+			cmd := r.client.B().Scan().Cursor(cursor).Match(prefix + "*").Count(100).Build()
 			result := r.client.Do(ctx, cmd)
 			if result.Error() != nil {
 				return 0, result.Error()
@@ -308,19 +308,30 @@ func (r *ValkeyClient) CleanupStaleEndpoints(ctx context.Context, activeEndpoint
 		return 0, nil
 	}
 
-	// Delete all stale keys in a single pipeline
-	cmds := make([]valkey.Completed, len(staleKeys))
-	for i, key := range staleKeys {
-		cmds[i] = r.client.B().Del().Key(key).Build()
-	}
-	results := r.client.DoMulti(ctx, cmds...)
-	for _, res := range results {
-		if err := res.Error(); err != nil {
-			return 0, err
+	// Delete all stale keys
+	const deleteBatchSize = 500
+	deleted := 0
+
+	for start := 0; start < len(staleKeys); start += deleteBatchSize {
+		end := min(start+deleteBatchSize, len(staleKeys))
+
+		cmds := make([]valkey.Completed, 0, end-start)
+		for _, key := range staleKeys[start:end] {
+			cmds = append(cmds, r.client.B().Del().Key(key).Build())
+		}
+
+		results := r.client.DoMulti(ctx, cmds...)
+		for _, res := range results {
+			if err := res.Error(); err != nil {
+				return deleted, err
+			}
+			if n, err := res.AsInt64(); err == nil {
+				deleted += int(n)
+			}
 		}
 	}
 
-	return len(staleKeys), nil
+	return deleted, nil
 }
 
 // GetRateLimitState retrieves the rate limit state for an endpoint from Valkey
