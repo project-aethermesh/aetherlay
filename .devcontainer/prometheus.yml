@@ -15,6 +15,6 @@ scrape_configs:
   # Run the HC inside the app container with METRICS_PORT=9191
   - job_name: "aetherlay-hc"
     static_configs:
-      - targets: ["app:9191"]
+      - targets: ["app:9090"]
         labels:
           service: "aetherlay-hc"
