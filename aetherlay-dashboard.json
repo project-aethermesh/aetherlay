@@ -1328,7 +1328,7 @@
               }
             }
           },
-          "version": "13.1.0-24251769778"
+          "version": "13.1.0-24455754975"
         }
       }
     },
@@ -1465,7 +1465,7 @@
               }
             }
           },
-          "version": "13.1.0-24251769778"
+          "version": "13.1.0-24455754975"
         }
       }
     },
@@ -1556,7 +1556,7 @@
               "wideLayout": true
             }
           },
-          "version": "13.1.0-24251769778"
+          "version": "13.1.0-24455754975"
         }
       }
     },
@@ -1637,7 +1637,7 @@
               "wideLayout": true
             }
           },
-          "version": "13.1.0-24251769778"
+          "version": "13.1.0-24455754975"
         }
       }
     },
@@ -1760,7 +1760,7 @@
               }
             }
           },
-          "version": "13.1.0-24251769778"
+          "version": "13.1.0-24455754975"
         }
       }
     },
@@ -1862,7 +1862,7 @@
               "wideLayout": true
             }
           },
-          "version": "13.1.0-24251769778"
+          "version": "13.1.0-24455754975"
         }
       }
     },
@@ -1951,7 +1951,7 @@
               "wideLayout": true
             }
           },
-          "version": "13.1.0-24251769778"
+          "version": "13.1.0-24455754975"
         }
       }
     },
@@ -2095,9 +2095,10 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "sum by (exported_endpoint) (rate(aetherlay_endpoint_proxy_requests_total{chain=\"$chain\"}[5m]))",
+                      "expr": "sum by (exported_endpoint) (increase(aetherlay_endpoint_proxy_requests_total{chain=\"$chain\"}[$__range]))",
+                      "instant": true,
                       "legendFormat": "{{exported_endpoint}}",
-                      "range": true
+                      "range": false
                     },
                     "version": "v0"
                   },
@@ -2109,7 +2110,7 @@
             "transformations": []
           }
         },
-        "description": "",
+        "description": "Shows the amount of requests sent to each endpoint in the selected time range.",
         "id": 29,
         "links": [],
         "title": "Traffic Distribution for $chain",
@@ -2134,10 +2135,14 @@
               "overrides": []
             },
             "options": {
+              "displayLabels": [
+                "percent"
+              ],
               "legend": {
                 "displayMode": "list",
                 "placement": "bottom",
-                "showLegend": true
+                "showLegend": true,
+                "values": []
               },
               "pieType": "pie",
               "reduceOptions": {
@@ -2155,7 +2160,7 @@
               }
             }
           },
-          "version": "13.1.0-24251769778"
+          "version": "13.1.0-24455754975"
         }
       }
     },
@@ -2273,7 +2278,7 @@
               }
             }
           },
-          "version": "13.1.0-24251769778"
+          "version": "13.1.0-24455754975"
         }
       }
     },
@@ -2429,7 +2434,7 @@
               }
             }
           },
-          "version": "13.1.0-24251769778"
+          "version": "13.1.0-24455754975"
         }
       }
     },
@@ -2635,7 +2640,7 @@
               "wideLayout": true
             }
           },
-          "version": "13.1.0-24251769778"
+          "version": "13.1.0-24455754975"
         }
       }
     },
@@ -2724,7 +2729,7 @@
               "wideLayout": true
             }
           },
-          "version": "13.1.0-24251769778"
+          "version": "13.1.0-24455754975"
         }
       }
     },
@@ -2990,6 +2995,10 @@
                       "element": {
                         "kind": "ElementReference",
                         "name": "panel-29"
+                      },
+                      "repeat": {
+                        "mode": "variable",
+                        "value": "chain"
                       }
                     }
                   }
@@ -3305,13 +3314,17 @@
       "spec": {
         "allowCustomValue": false,
         "current": {
-          "text": "eth-mainnet",
-          "value": "eth-mainnet"
+          "text": [
+            "eth-mainnet"
+          ],
+          "value": [
+            "eth-mainnet"
+          ]
         },
         "definition": "label_values(aetherlay_endpoint_proxy_requests_total,chain)",
         "hide": "dontHide",
         "includeAll": false,
-        "multi": false,
+        "multi": true,
         "name": "chain",
         "options": [],
         "query": {
