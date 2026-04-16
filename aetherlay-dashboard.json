@@ -1355,7 +1355,7 @@
       },
       "gridPos": {
         "h": 10,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 59
       },
@@ -1381,6 +1381,8 @@
         }
       },
       "pluginVersion": "12.4.0-19576184216",
+      "repeat": "chain",
+      "repeatDirection": "h",
       "targets": [
         {
           "datasource": {
@@ -1388,13 +1390,13 @@
             "uid": "${DATA_SOURCE}"
           },
           "editorMode": "code",
-          "expr": "sum by (chain, endpoint) (rate(aetherlay_endpoint_proxy_requests_total[5m]))",
-          "legendFormat": "{{chain}}/{{endpoint}}",
+          "expr": "sum by (exported_endpoint) (rate(aetherlay_endpoint_proxy_requests_total{chain=\"$chain\"}[5m]))",
+          "legendFormat": "{{exported_endpoint}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Traffic Distribution per Endpoint",
+      "title": "Traffic Distribution - $chain",
       "type": "piechart"
     },
     {
@@ -2340,7 +2342,31 @@
   "schemaVersion": 42,
   "tags": [],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DATA_SOURCE}"
+        },
+        "definition": "label_values(aetherlay_endpoint_proxy_requests_total, chain)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Chain",
+        "multi": false,
+        "name": "chain",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(aetherlay_endpoint_proxy_requests_total, chain)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
   },
   "time": {
     "from": "now-1h",
