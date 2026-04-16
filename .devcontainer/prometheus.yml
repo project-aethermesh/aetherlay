@@ -1,0 +1,20 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Aetherlay load balancer — default metrics port 9090
+  # Run the LB inside the app container with METRICS_PORT=9090
+  - job_name: "aetherlay-lb"
+    static_configs:
+      - targets: ["app:9090"]
+        labels:
+          service: "aetherlay-lb"
+
+  # Aetherlay health checker — default metrics port 9191
+  # Run the HC inside the app container with METRICS_PORT=9191
+  - job_name: "aetherlay-hc"
+    static_configs:
+      - targets: ["app:9090"]
+        labels:
+          service: "aetherlay-hc"

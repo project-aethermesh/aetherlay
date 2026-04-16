@@ -11,6 +11,9 @@ services:
       - VALKEY_URL=valkey://:SOME_PASS@valkey:6379
     depends_on:
       - valkey
+    ports:
+      - "8080:8080"
+      - "8081:8081"
 
   valkey:
     image: valkey/valkey:8.1-alpine
@@ -33,3 +36,30 @@ services:
       - ./.redisinsight:/data
     depends_on:
       - valkey
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9999:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=24h"
+      - "--web.enable-lifecycle"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../aetherlay-dashboard.json:/var/lib/grafana/dashboards/aetherlay-dashboard.json:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped

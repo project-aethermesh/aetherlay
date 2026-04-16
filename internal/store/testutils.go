@@ -119,6 +119,11 @@ func (m *MockValkeyClient) GetRateLimitState(_ context.Context, chain, endpoint 
 	return state, nil
 }
 
+// CleanupStaleEndpoints is a no-op stub for tests; returns 0 deleted and no error.
+func (m *MockValkeyClient) CleanupStaleEndpoints(_ context.Context, _ map[string][]string) (int, error) {
+	return 0, nil
+}
+
 // SetRateLimitState sets the rate limit state for a given chain and endpoint
 func (m *MockValkeyClient) SetRateLimitState(_ context.Context, chain, endpoint string, state RateLimitState) error {
 	m.mu.Lock()

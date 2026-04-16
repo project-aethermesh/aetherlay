@@ -18,6 +18,7 @@ import (
 	"aetherlay/internal/cache"
 	"aetherlay/internal/config"
 	"aetherlay/internal/helpers"
+	"aetherlay/internal/metrics"
 	"aetherlay/internal/store"
 
 	"github.com/gorilla/mux"
@@ -545,6 +546,9 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 					log.Error().Err(err).Str("endpoint", endpoint.ID).Msg("Failed to increment request count")
 				}
 				metricsCancel()
+				if metrics.EndpointProxyRequestsTotal != nil {
+					metrics.EndpointProxyRequestsTotal.WithLabelValues(chain, endpoint.ID).Inc()
+				}
 				// Track success for health debouncing
 				s.markEndpointHealthyAttempt(chain, endpoint.ID, "http")
 				return
@@ -753,6 +757,9 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 						log.Error().Err(err).Str("endpoint", endpoint.ID).Msg("Failed to increment WebSocket request count")
 					}
 					metricsCancel()
+					if metrics.EndpointProxyRequestsTotal != nil {
+						metrics.EndpointProxyRequestsTotal.WithLabelValues(chain, endpoint.ID).Inc()
+					}
 					// Track success for health debouncing
 					s.markEndpointHealthyAttempt(chain, endpoint.ID, "ws")
 					return

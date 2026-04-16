@@ -26,10 +26,17 @@ var (
 	HealthCheckTotal *prometheus.CounterVec
 )
 
+// Load Balancer Endpoint Metrics
+var (
+	// EndpointProxyRequestsTotal counts the total number of requests successfully forwarded to each endpoint.
+	EndpointProxyRequestsTotal *prometheus.CounterVec
+)
+
 // init initializes all metrics with error handling
 func init() {
 	initHTTPMetrics()
 	initHealthMetrics()
+	initEndpointMetrics()
 }
 
 // initHTTPMetrics initializes HTTP-related metrics
@@ -65,6 +72,20 @@ func initHTTPMetrics() {
 	)
 	if HTTPRequestsTotal == nil {
 		log.Warn().Msg("Failed to register metricaetherlay_http_requests_total")
+	}
+}
+
+// initEndpointMetrics initializes per-endpoint load balancer metrics
+func initEndpointMetrics() {
+	EndpointProxyRequestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "aetherlay_endpoint_proxy_requests_total",
+			Help: "Total number of requests successfully forwarded to each endpoint.",
+		},
+		[]string{"chain", "endpoint"},
+	)
+	if EndpointProxyRequestsTotal == nil {
+		log.Warn().Msg("Failed to register metric aetherlay_endpoint_proxy_requests_total")
 	}
 }
 
