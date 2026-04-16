@@ -18,7 +18,9 @@ RUN cd /tmp; curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && npm install -g npm@latest
 
 # Install Claude Code
-RUN curl -fsSL https://claude.ai/install.sh | bash
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    && echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc \
+    && echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bash_profile
 
 # Install Go tools
 RUN go install golang.org/x/tools/gopls@latest \
