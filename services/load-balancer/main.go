@@ -87,7 +87,9 @@ func main() {
 			activeEndpoints[chainName] = append(activeEndpoints[chainName], endpointID)
 		}
 	}
-	if deleted, err := valkeyClient.CleanupStaleEndpoints(context.Background(), activeEndpoints); err != nil {
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cleanupCancel()
+	if deleted, err := valkeyClient.CleanupStaleEndpoints(cleanupCtx, activeEndpoints); err != nil {
 		log.Warn().Err(err).Msg("Failed to clean up stale endpoint data from Valkey")
 	} else if deleted > 0 {
 		log.Info().Int("keys_deleted", deleted).Msg("Cleaned up stale endpoint data from Valkey")
