@@ -1191,8 +1191,16 @@ func proxyWebSocketCopy(src, dst *websocket.Conn) error {
 		msgType, msg, err := src.ReadMessage()
 		if err != nil {
 			if closeErr, ok := err.(*websocket.CloseError); ok {
+				code := closeErr.Code
+				// RFC 6455: 1005, 1006, 1015 must not be sent on the wire.
+				switch code {
+				case websocket.CloseNoStatusReceived,
+					websocket.CloseAbnormalClosure,
+					websocket.CloseTLSHandshake:
+					code = websocket.CloseGoingAway
+				}
 				_ = dst.WriteMessage(websocket.CloseMessage,
-					websocket.FormatCloseMessage(closeErr.Code, closeErr.Text))
+					websocket.FormatCloseMessage(code, closeErr.Text))
 			}
 			return err
 		}
