@@ -1307,39 +1307,66 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 		backendConn.Close()
 		return err
 	}
-	// Proxy messages in both directions
-	errc := make(chan error, 2)
-	go func() {
-		err := proxyWebSocketCopy(clientConn, backendConn)
-		errc <- err
-	}()
+	// Proxy messages in both directions using directional channels so we can
+	// distinguish backend-initiated disconnects from client-initiated ones.
+	type wsResult struct {
+		err         error
+		fromBackend bool
+	}
+	errc := make(chan wsResult, 2)
 	go func() {
 		err := proxyWebSocketCopy(backendConn, clientConn)
-		errc <- err
+		errc <- wsResult{err, true}
+	}()
+	go func() {
+		err := proxyWebSocketCopy(clientConn, backendConn)
+		errc <- wsResult{err, false}
 	}()
 	// Wait for one direction to fail/close, then immediately close both
 	// connections so the other goroutine unblocks and finishes cleanly.
-	err = <-errc
+	first := <-errc
 	clientConn.Close()
 	backendConn.Close()
 	<-errc // wait for the second goroutine to finish
 
-	// Mark endpoint as unhealthy for WS if error is not a normal closure
-	if err != nil {
-		if isExpectedWSClose(err) {
-			if closeErr, ok := err.(*websocket.CloseError); ok && closeErr.Code == websocket.CloseAbnormalClosure {
-				log.Debug().Err(err).Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket connection closed abnormally (1006), not counting as failure")
-			} else {
-				log.Debug().Err(err).Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket connection closed normally")
+	if first.err != nil {
+		if first.fromBackend {
+			if closeErr, ok := first.err.(*websocket.CloseError); ok {
+				switch closeErr.Code {
+				case websocket.CloseNormalClosure, // 1000: graceful, e.g. connection time limit
+					websocket.CloseGoingAway,        // 1001: planned shutdown
+					websocket.CloseNoStatusReceived: // 1005: no close code (ambiguous, treat as graceful)
+					log.Debug().Err(first.err).Int("code", int(closeErr.Code)).
+						Str("endpoint", helpers.RedactAPIKey(backendURL)).
+						Msg("Backend closed WebSocket normally")
+					return nil // graceful backend close is not a failure; caller marks success
+				default:
+					// 1006 (TCP drop), 1011 (internal error), and any other code
+					// indicate the backend terminated unexpectedly.
+					log.Debug().Err(first.err).Int("code", int(closeErr.Code)).
+						Str("endpoint", helpers.RedactAPIKey(backendURL)).
+						Msg("Backend closed WebSocket with unexpected code, counting as failure")
+					if chain, endpointID, found := s.findChainAndEndpointByURL(backendURL); found {
+						s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")
+					}
+					return first.err // caller: isExpectedWSClose(1006)=true prevents retry
+				}
 			}
-			return nil
+			// Non-close-frame error from backend (network error, read timeout, etc.)
+			log.Debug().Err(first.err).
+				Str("endpoint", helpers.RedactAPIKey(backendURL)).
+				Msg("Backend WebSocket connection error, counting as failure")
+			if chain, endpointID, found := s.findChainAndEndpointByURL(backendURL); found {
+				s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")
+			}
+			return first.err
 		}
-		if chain, endpointID, found := s.findChainAndEndpointByURL(backendURL); found {
-			s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")
-		}
+		// Client closed the connection. Any reason is fine, backend was healthy.
+		log.Debug().Err(first.err).
+			Str("endpoint", helpers.RedactAPIKey(backendURL)).
+			Msg("Client closed WebSocket connection")
 	}
-
-	return err
+	return nil
 }
 
 // GetRateLimitHandler returns the rate limit handler function for the health checker
