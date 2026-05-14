@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"aetherlay/internal/cache"
@@ -1189,7 +1190,11 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 // It returns the first error and a bool indicating whether the error came from
 // reading src (true) or writing to dst (false), so callers can attribute the
 // failure to the correct peer.
-func proxyWebSocketCopy(src, dst *websocket.Conn) (error, bool) {
+// proxyWebSocketCopy copies messages from src to dst until an error occurs.
+// closeSent, when non-nil, is set to true immediately before forwarding a close
+// frame to dst. Callers use this to detect echoed close frames and avoid
+// misattributing a backend-initiated close to the client.
+func proxyWebSocketCopy(src, dst *websocket.Conn, closeSent *atomic.Bool) (error, bool) {
 	for {
 		msgType, msg, err := src.ReadMessage()
 		if err != nil {
@@ -1201,6 +1206,9 @@ func proxyWebSocketCopy(src, dst *websocket.Conn) (error, bool) {
 					websocket.CloseAbnormalClosure,
 					websocket.CloseTLSHandshake:
 					code = websocket.CloseGoingAway
+				}
+				if closeSent != nil {
+					closeSent.Store(true)
 				}
 				_ = dst.WriteMessage(websocket.CloseMessage,
 					websocket.FormatCloseMessage(code, closeErr.Text))
@@ -1323,14 +1331,20 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 		err     error
 		readErr bool // true = error from src.ReadMessage; false = from dst.WriteMessage
 	}
+	// closeSentToClient is set to true by the backend-reading goroutine
+	// immediately before it forwards a close frame to the client. If the
+	// client-reading goroutine then fires with a read error, that close is
+	// the client echoing our frame back — not a genuine client-initiated
+	// close — so the backend remains at fault.
+	var closeSentToClient atomic.Bool
 	backendErrc := make(chan wsResult, 1)
 	clientErrc := make(chan wsResult, 1)
 	go func() {
-		err, isRead := proxyWebSocketCopy(backendConn, clientConn)
+		err, isRead := proxyWebSocketCopy(backendConn, clientConn, &closeSentToClient)
 		backendErrc <- wsResult{err, isRead}
 	}()
 	go func() {
-		err, isRead := proxyWebSocketCopy(clientConn, backendConn)
+		err, isRead := proxyWebSocketCopy(clientConn, backendConn, nil)
 		clientErrc <- wsResult{err, isRead}
 	}()
 	// Wait for the first side to stop, then close both connections so the
@@ -1339,12 +1353,18 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 	var backendAtFault bool
 	select {
 	case first = <-backendErrc:
-		backendAtFault = first.readErr // read from backend failed → backend at fault
+		backendAtFault = first.readErr // read from backend failed: backend at fault
 		clientConn.Close()
 		backendConn.Close()
 		<-clientErrc
 	case first = <-clientErrc:
-		backendAtFault = !first.readErr // write to backend failed → backend at fault
+		// If we already forwarded a close frame to the client, the client's
+		// close is an echo of our frame, meaning the backend initiated the close.
+		if first.readErr && closeSentToClient.Load() {
+			backendAtFault = true
+		} else {
+			backendAtFault = !first.readErr // write to backend failed: backend at fault
+		}
 		clientConn.Close()
 		backendConn.Close()
 		<-backendErrc
