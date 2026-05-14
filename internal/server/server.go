@@ -1186,7 +1186,10 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 
 // proxyWebSocketCopy copies messages from src to dst, forwarding close frames
 // to the destination so both peers receive a proper WebSocket close handshake.
-func proxyWebSocketCopy(src, dst *websocket.Conn) error {
+// It returns the first error and a bool indicating whether the error came from
+// reading src (true) or writing to dst (false), so callers can attribute the
+// failure to the correct peer.
+func proxyWebSocketCopy(src, dst *websocket.Conn) (error, bool) {
 	for {
 		msgType, msg, err := src.ReadMessage()
 		if err != nil {
@@ -1202,10 +1205,10 @@ func proxyWebSocketCopy(src, dst *websocket.Conn) error {
 				_ = dst.WriteMessage(websocket.CloseMessage,
 					websocket.FormatCloseMessage(code, closeErr.Text))
 			}
-			return err
+			return err, true // error came from reading src
 		}
 		if err := dst.WriteMessage(msgType, msg); err != nil {
-			return err
+			return err, false // error came from writing to dst
 		}
 	}
 }
@@ -1307,30 +1310,48 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 		backendConn.Close()
 		return err
 	}
-	// Proxy messages in both directions using directional channels so we can
-	// distinguish backend-initiated disconnects from client-initiated ones.
+	// Proxy messages in both directions. Each goroutine reports (err, readErr)
+	// via proxyWebSocketCopy, where readErr=true means the error came from
+	// reading the source peer. Using separate channels lets us combine the
+	// goroutine identity with readErr to attribute failures precisely:
+	//
+	//   backendErrc + readErr=true  → backend's ReadMessage failed  → backend at fault
+	//   backendErrc + readErr=false → client's WriteMessage failed  → client at fault
+	//   clientErrc  + readErr=true  → client's ReadMessage failed   → client at fault
+	//   clientErrc  + readErr=false → backend's WriteMessage failed → backend at fault
 	type wsResult struct {
-		err         error
-		fromBackend bool
+		err     error
+		readErr bool // true = error from src.ReadMessage; false = from dst.WriteMessage
 	}
-	errc := make(chan wsResult, 2)
+	backendErrc := make(chan wsResult, 1)
+	clientErrc := make(chan wsResult, 1)
 	go func() {
-		err := proxyWebSocketCopy(backendConn, clientConn)
-		errc <- wsResult{err, true}
+		err, isRead := proxyWebSocketCopy(backendConn, clientConn)
+		backendErrc <- wsResult{err, isRead}
 	}()
 	go func() {
-		err := proxyWebSocketCopy(clientConn, backendConn)
-		errc <- wsResult{err, false}
+		err, isRead := proxyWebSocketCopy(clientConn, backendConn)
+		clientErrc <- wsResult{err, isRead}
 	}()
-	// Wait for one direction to fail/close, then immediately close both
-	// connections so the other goroutine unblocks and finishes cleanly.
-	first := <-errc
-	clientConn.Close()
-	backendConn.Close()
-	<-errc // wait for the second goroutine to finish
+	// Wait for the first side to stop, then close both connections so the
+	// other goroutine unblocks and can be drained.
+	var first wsResult
+	var backendAtFault bool
+	select {
+	case first = <-backendErrc:
+		backendAtFault = first.readErr // read from backend failed → backend at fault
+		clientConn.Close()
+		backendConn.Close()
+		<-clientErrc
+	case first = <-clientErrc:
+		backendAtFault = !first.readErr // write to backend failed → backend at fault
+		clientConn.Close()
+		backendConn.Close()
+		<-backendErrc
+	}
 
 	if first.err != nil {
-		if first.fromBackend {
+		if backendAtFault {
 			if closeErr, ok := first.err.(*websocket.CloseError); ok {
 				switch closeErr.Code {
 				case websocket.CloseNormalClosure, // 1000: graceful, e.g. connection time limit
