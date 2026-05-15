@@ -1187,11 +1187,23 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 // Liveness-detection knobs for the proxied WebSocket. Vars (not consts) so
 // tests can shorten them. wsIdleTimeout is the maximum gap between any frames
 // (data, ping, pong) received from the upstream before we declare the
-// connection dead and tear it down.
+// connection dead and tear it down. wsWriteTimeout caps any single forwarded
+// data write so a slow downstream peer can't stall the proxy or starve the
+// idle detector on the other leg.
 var (
 	wsIdleTimeout         = 90 * time.Second
+	wsWriteTimeout        = 30 * time.Second
 	wsControlWriteTimeout = 10 * time.Second
 )
+
+// wsBackendIdleError marks a read-deadline timeout from the backend leg.
+// This is the only error condition that unambiguously means "upstream went
+// silent"; other timeouts (e.g. a write to a slow client) are downstream
+// backpressure and must not be attributed to the upstream endpoint.
+type wsBackendIdleError struct{ err error }
+
+func (e *wsBackendIdleError) Error() string { return e.err.Error() }
+func (e *wsBackendIdleError) Unwrap() error { return e.err }
 
 // installControlForwarders installs ping/pong handlers on src that forward
 // the frame to dst via WriteControl, instead of letting gorilla auto-pong
@@ -1225,9 +1237,11 @@ func installControlForwarders(src, dst *websocket.Conn, bumpDeadline bool) {
 
 // proxyWebSocketCopy copies messages from src to dst, forwarding close frames
 // to the destination so both peers receive a proper WebSocket close handshake.
-// If bumpSrcDeadline is true, the src read deadline is reset to
-// wsIdleTimeout from now on every successful read, so that data traffic from
-// a healthy upstream keeps the idle backstop from firing.
+// Each forwarded write is bounded by wsWriteTimeout so a slow peer can't
+// stall the goroutine indefinitely. If bumpSrcDeadline is true, the src read
+// deadline is reset to wsIdleTimeout AFTER every successful end-to-end
+// forward, so a slow downstream write doesn't shorten the next read budget
+// and cause a false "upstream idle" timeout.
 func proxyWebSocketCopy(src, dst *websocket.Conn, bumpSrcDeadline bool) error {
 	for {
 		msgType, msg, err := src.ReadMessage()
@@ -1244,13 +1258,25 @@ func proxyWebSocketCopy(src, dst *websocket.Conn, bumpSrcDeadline bool) error {
 				_ = dst.WriteMessage(websocket.CloseMessage,
 					websocket.FormatCloseMessage(code, closeErr.Text))
 			}
+			// Tag a backend-leg read-deadline timeout as the genuine
+			// upstream-idle signal. Write timeouts (or read timeouts on
+			// the client leg, which has no deadline today) must not be
+			// misattributed to the upstream — they are caught by the
+			// caller's isExpectedWSClose path and don't mark unhealthy.
+			if bumpSrcDeadline {
+				var netErr net.Error
+				if errors.As(err, &netErr) && netErr.Timeout() {
+					return &wsBackendIdleError{err: err}
+				}
+			}
+			return err
+		}
+		_ = dst.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+		if err := dst.WriteMessage(msgType, msg); err != nil {
 			return err
 		}
 		if bumpSrcDeadline {
 			_ = src.SetReadDeadline(time.Now().Add(wsIdleTimeout))
-		}
-		if err := dst.WriteMessage(msgType, msg); err != nil {
-			return err
 		}
 	}
 }
@@ -1385,11 +1411,13 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 	<-errc // wait for the second goroutine to finish
 
 	if err != nil {
-		// Read deadline only fires on the backend conn, so any timeout error
-		// here means upstream went silent. Mark the endpoint unhealthy so
-		// the next connection attempt picks a different one.
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
+		// Backend leg's read deadline fired = upstream sent nothing for
+		// wsIdleTimeout. Only this specific error is attributed to the
+		// upstream. Other timeouts (downstream write blocking, control
+		// frame forwarding) are caught by isExpectedWSClose below and
+		// don't mark the endpoint unhealthy.
+		var idleErr *wsBackendIdleError
+		if errors.As(err, &idleErr) {
 			log.Warn().
 				Err(err).
 				Str("endpoint", helpers.RedactAPIKey(backendURL)).

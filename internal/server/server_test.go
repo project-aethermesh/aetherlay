@@ -545,9 +545,12 @@ func TestProxyWebSocket_UpstreamIdleTimeout(t *testing.T) {
 	t.Cleanup(proxy.Close)
 
 	proxyWSURL := "ws" + strings.TrimPrefix(proxy.URL, "http")
-	client, _, err := websocket.DefaultDialer.Dial(proxyWSURL, nil)
+	client, resp, err := websocket.DefaultDialer.Dial(proxyWSURL, nil)
 	if err != nil {
 		t.Fatalf("client dial failed: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
 	}
 	defer client.Close()
 
@@ -642,9 +645,12 @@ func TestProxyWebSocket_PingPongForwarded(t *testing.T) {
 	t.Cleanup(proxy.Close)
 
 	proxyWSURL := "ws" + strings.TrimPrefix(proxy.URL, "http")
-	client, _, err := websocket.DefaultDialer.Dial(proxyWSURL, nil)
+	client, resp, err := websocket.DefaultDialer.Dial(proxyWSURL, nil)
 	if err != nil {
 		t.Fatalf("client dial failed: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
 	}
 	defer client.Close()
 
