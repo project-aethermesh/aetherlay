@@ -1184,9 +1184,51 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 	return err
 }
 
+// Liveness-detection knobs for the proxied WebSocket. Vars (not consts) so
+// tests can shorten them. wsIdleTimeout is the maximum gap between any frames
+// (data, ping, pong) received from the upstream before we declare the
+// connection dead and tear it down.
+var (
+	wsIdleTimeout         = 90 * time.Second
+	wsControlWriteTimeout = 10 * time.Second
+)
+
+// installControlForwarders installs ping/pong handlers on src that forward
+// the frame to dst via WriteControl, instead of letting gorilla auto-pong
+// inbound pings on src. This makes the proxy transparent for WS control
+// frames: a client's ping reaches the upstream RPC node, and the upstream's
+// pong reaches the client, proving the full chain.
+//
+// If bumpDeadline is true, every received control frame also extends src's
+// read deadline by wsIdleTimeout — used for the upstream side so quiet
+// pong/ping traffic from a healthy upstream resets the idle backstop.
+//
+// A WriteControl failure on dst is returned from the handler, which causes
+// src.ReadMessage to return the same error and triggers the existing
+// teardown path.
+func installControlForwarders(src, dst *websocket.Conn, bumpDeadline bool) {
+	src.SetPingHandler(func(appData string) error {
+		if bumpDeadline {
+			_ = src.SetReadDeadline(time.Now().Add(wsIdleTimeout))
+		}
+		return dst.WriteControl(websocket.PingMessage,
+			[]byte(appData), time.Now().Add(wsControlWriteTimeout))
+	})
+	src.SetPongHandler(func(appData string) error {
+		if bumpDeadline {
+			_ = src.SetReadDeadline(time.Now().Add(wsIdleTimeout))
+		}
+		return dst.WriteControl(websocket.PongMessage,
+			[]byte(appData), time.Now().Add(wsControlWriteTimeout))
+	})
+}
+
 // proxyWebSocketCopy copies messages from src to dst, forwarding close frames
 // to the destination so both peers receive a proper WebSocket close handshake.
-func proxyWebSocketCopy(src, dst *websocket.Conn) error {
+// If bumpSrcDeadline is true, the src read deadline is reset to
+// wsIdleTimeout from now on every successful read, so that data traffic from
+// a healthy upstream keeps the idle backstop from firing.
+func proxyWebSocketCopy(src, dst *websocket.Conn, bumpSrcDeadline bool) error {
 	for {
 		msgType, msg, err := src.ReadMessage()
 		if err != nil {
@@ -1203,6 +1245,9 @@ func proxyWebSocketCopy(src, dst *websocket.Conn) error {
 					websocket.FormatCloseMessage(code, closeErr.Text))
 			}
 			return err
+		}
+		if bumpSrcDeadline {
+			_ = src.SetReadDeadline(time.Now().Add(wsIdleTimeout))
 		}
 		if err := dst.WriteMessage(msgType, msg); err != nil {
 			return err
@@ -1307,15 +1352,30 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 		backendConn.Close()
 		return err
 	}
-	// Proxy messages in both directions
+
+	// Forward WS control frames in both directions instead of letting
+	// gorilla auto-pong inbound pings on each side. This makes liveness
+	// checks transparent end-to-end: a client ping reaches the upstream RPC
+	// node, and the upstream pong reaches the client.
+	//
+	// On the backend conn we also bump the read deadline on every received
+	// frame and seed it now. If the upstream goes silent for wsIdleTimeout
+	// (no data, ping, or pong), ReadMessage returns a Timeout error and the
+	// teardown below propagates a close frame to the client so it knows to
+	// reconnect. The client conn intentionally has no read deadline — silent
+	// clients are fine; only upstream silence is the failure mode.
+	installControlForwarders(clientConn, backendConn, false)
+	installControlForwarders(backendConn, clientConn, true)
+	_ = backendConn.SetReadDeadline(time.Now().Add(wsIdleTimeout))
+
+	// Proxy messages in both directions. The backend leg also resets the
+	// backend read deadline on each received data frame.
 	errc := make(chan error, 2)
 	go func() {
-		err := proxyWebSocketCopy(clientConn, backendConn)
-		errc <- err
+		errc <- proxyWebSocketCopy(clientConn, backendConn, false)
 	}()
 	go func() {
-		err := proxyWebSocketCopy(backendConn, clientConn)
-		errc <- err
+		errc <- proxyWebSocketCopy(backendConn, clientConn, true)
 	}()
 	// Wait for one direction to fail/close, then immediately close both
 	// connections so the other goroutine unblocks and finishes cleanly.
@@ -1324,8 +1384,22 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 	backendConn.Close()
 	<-errc // wait for the second goroutine to finish
 
-	// Mark endpoint as unhealthy for WS if error is not a normal closure
 	if err != nil {
+		// Read deadline only fires on the backend conn, so any timeout error
+		// here means upstream went silent. Mark the endpoint unhealthy so
+		// the next connection attempt picks a different one.
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			log.Warn().
+				Err(err).
+				Str("endpoint", helpers.RedactAPIKey(backendURL)).
+				Dur("idle_timeout", wsIdleTimeout).
+				Msg("WebSocket upstream idle timeout, marking endpoint unhealthy")
+			if chain, endpointID, found := s.findChainAndEndpointByURL(backendURL); found {
+				s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")
+			}
+			return err
+		}
 		if isExpectedWSClose(err) {
 			if closeErr, ok := err.(*websocket.CloseError); ok && closeErr.Code == websocket.CloseAbnormalClosure {
 				log.Debug().Err(err).Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket connection closed abnormally (1006), not counting as failure")
