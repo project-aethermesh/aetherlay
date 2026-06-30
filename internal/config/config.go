@@ -21,6 +21,7 @@ type Endpoint struct {
 	Provider          string             `json:"provider"`            // Name of the RPC provider (e.g., "alchemy", "infura")
 	RateLimitRecovery *RateLimitRecovery `json:"rate_limit_recovery"` // Rate limit recovery configuration (optional)
 	Role              string             `json:"role"`                // Role of the endpoint: "primary" or "fallback"
+	SkipSyncCheck     bool               `json:"skip_sync_check"`     // Skip eth_syncing check for this endpoint (default: false)
 	Type              string             `json:"type"`                // Type of node: "full" or "archive"
 	HTTPURL           string             `json:"http_url"`            // HTTP/HTTPS URL for RPC requests
 	WSURL             string             `json:"ws_url"`              // WebSocket URL for real-time connections

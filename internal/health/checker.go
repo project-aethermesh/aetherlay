@@ -699,10 +699,10 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 	blockResult, blockErr := c.makeRPCCall(ctx, endpoint.HTTPURL, "eth_blockNumber", chain, endpointID)
 	c.incrementHealthRequestCount(ctx, chain, endpointID)
 
-	// Only make the eth_syncing call if sync status checking is enabled
+	// Only make the eth_syncing call if sync status checking is enabled and not skipped for this endpoint
 	var syncResult any
 	var syncErr error
-	if c.healthCheckSyncStatus {
+	if c.healthCheckSyncStatus && !endpoint.SkipSyncCheck {
 		syncResult, syncErr = c.makeRPCCall(ctx, endpoint.HTTPURL, "eth_syncing", chain, endpointID)
 		c.incrementHealthRequestCount(ctx, chain, endpointID)
 	}
@@ -749,10 +749,10 @@ func (c *Checker) checkWSHealth(ctx context.Context, chain, endpointID string, e
 	blockResult, blockErr := c.makeWSRPCCall(endpoint.WSURL, "eth_blockNumber", chain, endpointID)
 	c.incrementHealthRequestCount(ctx, chain, endpointID)
 
-	// Only make the eth_syncing call if sync status checking is enabled
+	// Only make the eth_syncing call if sync status checking is enabled and not skipped for this endpoint
 	var syncResult any
 	var syncErr error
-	if c.healthCheckSyncStatus {
+	if c.healthCheckSyncStatus && !endpoint.SkipSyncCheck {
 		syncResult, syncErr = c.makeWSRPCCall(endpoint.WSURL, "eth_syncing", chain, endpointID)
 		c.incrementHealthRequestCount(ctx, chain, endpointID)
 	}
