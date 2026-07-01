@@ -1255,22 +1255,20 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	// Copy response headers
-	for key, values := range resp.Header {
-		// Skip CORS headers to avoid duplication
-		if strings.HasPrefix(key, "Access-Control-") {
-			continue
-		}
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
-
 	// For JSON responses within a bounded size, buffer and scan the body for an embedded
 	// rate-limit error before forwarding. Some providers (e.g. Alchemy on batch requests)
 	// return HTTP 200 with the rate-limit signal only inside the JSON-RPC body - invisible
 	// to a status-code-only check. Larger bodies are streamed through unmodified and
 	// uninspected, to bound memory use on large responses (e.g. eth_getLogs).
+	//
+	// Headers are copied onto w only once we've committed to writing this specific
+	// response (immediately before each w.WriteHeader below), not unconditionally up
+	// front: handleRequestHTTP's retry loop reuses the same w across attempts, so copying
+	// headers before knowing whether this attempt aborts (the embedded-signal branch
+	// below returns an error without ever calling WriteHeader) would leave them sitting
+	// in w's header map, where a subsequent successful retry's headers would be added on
+	// top of rather than replacing them - e.g. two Content-Length values in the response
+	// actually sent to the client.
 	if isJSONContentType(resp.Header.Get("Content-Type")) {
 		buffered, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRateLimitScanBodyBytes+1))
 		if readErr == nil && int64(len(buffered)) <= maxRateLimitScanBodyBytes {
@@ -1284,23 +1282,41 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 					return fmt.Errorf("rate limited: embedded JSON-RPC rate-limit error in 2xx response")
 				}
 			}
+			copyResponseHeaders(w, resp.Header)
 			w.WriteHeader(resp.StatusCode)
 			_, err = w.Write(buffered)
 			return err
 		}
 		// Exceeded the scan cap (or a read error occurred): stream the buffered prefix
 		// plus whatever remains, unmodified and uninspected.
+		copyResponseHeaders(w, resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		_, err = io.Copy(w, io.MultiReader(bytes.NewReader(buffered), resp.Body))
 		return err
 	}
 
 	// Set response status
+	copyResponseHeaders(w, resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
 	// Copy response body
 	_, err = io.Copy(w, resp.Body)
 	return err
+}
+
+// copyResponseHeaders copies resp's headers onto w, skipping CORS headers (already set
+// by the CORS middleware). Callers must only invoke this once they've committed to
+// writing this specific response - see the comment at defaultForwardRequestWithBodyFunc's
+// call sites for why copying headers before that commitment is unsafe.
+func copyResponseHeaders(w http.ResponseWriter, respHeader http.Header) {
+	for key, values := range respHeader {
+		if strings.HasPrefix(key, "Access-Control-") {
+			continue
+		}
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
 }
 
 // maxRateLimitScanBodyBytes bounds how much of a 2xx response body is buffered to scan

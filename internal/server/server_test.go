@@ -1057,6 +1057,63 @@ func TestDefaultForwardRequestWithBodyFuncDetectsEmbeddedBatchRateLimit(t *testi
 	}
 }
 
+// TestDefaultForwardRequestWithBodyFuncNoDuplicateHeadersAcrossRetries guards against a
+// regression where response headers were copied onto w unconditionally, before the
+// embedded-rate-limit body scan decided whether to abort. Since handleRequestHTTP's
+// retry loop reuses the same http.ResponseWriter across attempts, an aborted attempt's
+// headers were left sitting in w's header map and then added to (not replaced by) the
+// next successful attempt's headers - producing duplicate header values in the response
+// actually sent to the client.
+func TestDefaultForwardRequestWithBodyFuncNoDuplicateHeadersAcrossRetries(t *testing.T) {
+	rateLimitedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Test-Header", "from-rate-limited")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"error":{"code":-32005,"message":"Request limit exceeded"}}]`))
+	}))
+	defer rateLimitedServer.Close()
+
+	healthyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Test-Header", "from-healthy")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x2"}`))
+	}))
+	defer healthyServer.Close()
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"ethereum": {
+				"flaky":    config.Endpoint{Provider: "alchemy", HTTPURL: rateLimitedServer.URL, Role: "primary", Type: "full"},
+				"reliable": config.Endpoint{Provider: "drpc", HTTPURL: healthyServer.URL, Role: "primary", Type: "full"},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	server := NewServer(cfg, valkeyClient, createTestConfig())
+
+	// Simulate exactly what handleRequestHTTP's retry loop does: the same
+	// http.ResponseWriter passed to a first attempt that aborts (embedded rate-limit
+	// signal, no write), then to a second attempt that succeeds and writes for real.
+	w := httptest.NewRecorder()
+
+	if err := server.defaultForwardRequestWithBodyFunc(w, context.Background(), "POST", rateLimitedServer.URL, nil, http.Header{}); err == nil {
+		t.Fatal("Expected the first attempt (embedded rate-limit signal) to return an error")
+	}
+
+	if err := server.defaultForwardRequestWithBodyFunc(w, context.Background(), "POST", healthyServer.URL, nil, http.Header{}); err != nil {
+		t.Fatalf("Expected the second attempt to succeed, got error: %v", err)
+	}
+
+	values := w.Header().Values("X-Test-Header")
+	if len(values) != 1 {
+		t.Fatalf("Expected exactly one X-Test-Header value in the final response, got %v (duplicate headers leaked across retries)", values)
+	}
+	if values[0] != "from-healthy" {
+		t.Errorf("Expected the surviving header to be from the endpoint that actually succeeded, got %q", values[0])
+	}
+}
+
 // TestDefaultProxyWebSocketHandshake429ParsesRetryAfter tests that a 429 during the WS
 // handshake dial (before any client upgrade) carries a Retry-After header through to the
 // returned RateLimitError's Signal field.
