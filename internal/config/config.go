@@ -102,13 +102,16 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 // validateEndpointCapacity catches an endpoint's static Capacity being configured with a
-// non-positive WindowSeconds (e.g. omitted entirely, which JSON-decodes to the int zero
-// value). WindowSeconds ends up as a divisor when computing the Valkey bucket key for
-// capacity counting (see capacityBucketKey in internal/store/valkey.go), so a zero or
-// negative value would panic on the endpoint's very first request. Rather than crash,
-// disable proactive capacity throttling for that endpoint (matching today's behavior for
-// an endpoint with no capacity configured at all) and warn loudly so the operator notices
-// the misconfiguration.
+// non-positive WindowSeconds or MaxRequests (e.g. either field omitted entirely, which
+// JSON-decodes to the int zero value). WindowSeconds ends up as a divisor when computing
+// the Valkey bucket key for capacity counting (see capacityBucketKey in
+// internal/store/valkey.go), so a zero or negative value would panic on the endpoint's
+// very first request. A MaxRequests of zero (or negative) makes the "count >= max"
+// gating check in getEndpointsByRole true on the very first request, silently and
+// permanently excluding the endpoint with no distinguishing error. Rather than crash or
+// silently starve the endpoint, disable proactive capacity throttling for it (matching
+// today's behavior for an endpoint with no capacity configured at all) and warn loudly
+// so the operator notices the misconfiguration.
 func validateEndpointCapacity(chain, endpointID string, endpoint *Endpoint) {
 	if endpoint.Capacity == nil {
 		return
@@ -119,6 +122,15 @@ func validateEndpointCapacity(chain, endpointID string, endpoint *Endpoint) {
 			Str("endpoint", endpointID).
 			Int("window_seconds", endpoint.Capacity.WindowSeconds).
 			Msg("Endpoint's capacity.window_seconds must be positive - disabling proactive capacity throttling for this endpoint")
+		endpoint.Capacity = nil
+		return
+	}
+	if endpoint.Capacity.MaxRequests <= 0 {
+		log.Warn().
+			Str("chain", chain).
+			Str("endpoint", endpointID).
+			Int("max_requests", endpoint.Capacity.MaxRequests).
+			Msg("Endpoint's capacity.max_requests must be positive - disabling proactive capacity throttling for this endpoint")
 		endpoint.Capacity = nil
 	}
 }

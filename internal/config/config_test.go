@@ -210,6 +210,64 @@ func TestLoadConfigDisablesCapacityWithNonPositiveWindowSeconds(t *testing.T) {
 	}
 }
 
+// TestLoadConfigDisablesCapacityWithNonPositiveMaxRequests guards against a regression
+// where a max_requests of 0 (e.g. omitted from the JSON) or negative would make the
+// "count >= max_requests" gating check in getEndpointsByRole true on the endpoint's very
+// first request, silently and permanently excluding it with no distinguishing error -
+// LoadConfig should catch it and disable capacity for that endpoint instead.
+func TestLoadConfigDisablesCapacityWithNonPositiveMaxRequests(t *testing.T) {
+	tmpFile := "test_zero_max_requests.json"
+	content := `{
+		"ethereum": {
+			"zero-max": {
+				"provider": "alchemy",
+				"role": "primary",
+				"type": "full",
+				"http_url": "http://test.com",
+				"capacity": {"window_seconds": 10}
+			},
+			"negative-max": {
+				"provider": "alchemy",
+				"role": "primary",
+				"type": "full",
+				"http_url": "http://test2.com",
+				"capacity": {"max_requests": -5, "window_seconds": 10}
+			},
+			"valid-max": {
+				"provider": "alchemy",
+				"role": "primary",
+				"type": "full",
+				"http_url": "http://test3.com",
+				"capacity": {"max_requests": 100, "window_seconds": 10}
+			}
+		}
+	}`
+	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+	defer os.Remove(tmpFile)
+
+	cfg, err := LoadConfig(tmpFile)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	endpoints := cfg.Endpoints["ethereum"]
+
+	if endpoints["zero-max"].Capacity != nil {
+		t.Error("Expected Capacity to be disabled (nil) for an endpoint with omitted (zero) max_requests")
+	}
+	if endpoints["negative-max"].Capacity != nil {
+		t.Error("Expected Capacity to be disabled (nil) for an endpoint with negative max_requests")
+	}
+	if endpoints["valid-max"].Capacity == nil {
+		t.Fatal("Expected Capacity to remain set for an endpoint with a valid max_requests")
+	}
+	if endpoints["valid-max"].Capacity.MaxRequests != 100 {
+		t.Errorf("Expected valid endpoint's MaxRequests to be untouched (100), got %d", endpoints["valid-max"].Capacity.MaxRequests)
+	}
+}
+
 func TestDefaultRateLimitRecovery(t *testing.T) {
 	config := DefaultRateLimitRecovery()
 
