@@ -1328,9 +1328,23 @@ func (s *Server) providerForEndpoint(chain, endpointID string) string {
 // learning window - so an endpoint with no static Capacity still accumulates real
 // GetCapacityCount evidence before it's ever rate limited, for applyLearnedCapacityDecrease
 // to seed an estimate from on the first hit.
-func capacityWindowSeconds(endpoint config.Endpoint) int {
+// capacityWindowSeconds resolves the window width to track usage against for the WRITE
+// path (recordCapacityUsage's usage counter). It must agree with whatever window
+// effectiveCapacityCeiling's READ path is watching, or gating silently stops working -
+// writes and reads would land in different Valkey bucket keys (see capacityBucketKey,
+// which derives the bucket from windowSeconds itself). So: static Capacity's window if
+// configured (unchanged, always stable); else the frozen window already recorded on a
+// learned estimate, if one has been seeded (matching effectiveCapacityCeiling exactly);
+// else the live-resolved adaptive-learning window as a bootstrap default before any
+// estimate exists yet to freeze against.
+func (s *Server) capacityWindowSeconds(chain, endpointID string, endpoint config.Endpoint) int {
 	if endpoint.Capacity != nil {
 		return endpoint.Capacity.WindowSeconds
+	}
+	if s.appConfig.CapacityLearningEnabled {
+		if estimate, err := s.valkeyClient.GetCapacityEstimate(context.Background(), chain, endpointID); err == nil && estimate.HasEstimate {
+			return estimate.WindowSeconds
+		}
 	}
 	return config.ResolveCapacityLearning(endpoint.CapacityLearning).WindowSeconds
 }
@@ -1349,7 +1363,7 @@ func (s *Server) recordCapacityUsage(chain string, endpoint config.Endpoint, end
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if _, err := s.valkeyClient.IncrementCapacityCount(ctx, chain, endpointID, capacityWindowSeconds(endpoint)); err != nil {
+	if _, err := s.valkeyClient.IncrementCapacityCount(ctx, chain, endpointID, s.capacityWindowSeconds(chain, endpointID, endpoint)); err != nil {
 		log.Debug().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to record capacity usage")
 	}
 }
@@ -1375,12 +1389,23 @@ func (s *Server) applyLearnedCapacityDecrease(chain, endpointID string, endpoint
 		return
 	}
 
-	if !store.ShouldApplyCapacityDecrease(*prior, params.WindowSeconds, now) {
+	// Read against whichever window the usage counter is actually being written to right
+	// now (see capacityWindowSeconds): the estimate's own frozen window once one exists,
+	// not the live-resolved config - otherwise this read targets a different Valkey
+	// bucket key than recordCapacityUsage's writes, and observedCount below would always
+	// be stale/zero. Only before any estimate has been seeded is there no frozen value to
+	// match, so the live-resolved window is the correct (and only) choice at that point.
+	readWindowSeconds := params.WindowSeconds
+	if prior.HasEstimate {
+		readWindowSeconds = prior.WindowSeconds
+	}
+
+	if !store.ShouldApplyCapacityDecrease(*prior, readWindowSeconds, now) {
 		log.Debug().Str("chain", chain).Str("endpoint", endpointID).Msg("Skipping capacity estimate decrease, within cooldown of the last decrease")
 		return
 	}
 
-	observedCount, err := s.valkeyClient.GetCapacityCount(ctx, chain, endpointID, params.WindowSeconds)
+	observedCount, err := s.valkeyClient.GetCapacityCount(ctx, chain, endpointID, readWindowSeconds)
 	if err != nil {
 		log.Debug().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get capacity count for estimate decrease")
 		return

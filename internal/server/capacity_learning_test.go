@@ -316,3 +316,140 @@ func TestEffectiveCapacityCeilingUnaffectedWhenLearningNotOptedIn(t *testing.T) 
 		t.Error("Expected no ceiling for an unconfigured endpoint when learning is not opted in")
 	}
 }
+
+// TestCapacityWindowSecondsUsesFrozenEstimateWindow guards against a regression where
+// the write path (recordCapacityUsage) resolved window_seconds from the live config while
+// the read/gating path (effectiveCapacityCeiling) used the estimate's frozen window -
+// causing writes and reads to target different Valkey bucket keys and silently
+// defeating the proactive gate. Once an estimate is seeded, both paths must agree.
+func TestCapacityWindowSecondsUsesFrozenEstimateWindow(t *testing.T) {
+	cfg := &config.Config{}
+	valkeyClient := store.NewMockValkeyClient()
+	server := NewServer(cfg, valkeyClient, learningTestConfig())
+
+	// Endpoint has no static Capacity; its live-resolved learning window (30s) differs
+	// from the frozen window already recorded on its estimate (60s) - simulating an
+	// operator changing capacity_learning.window_seconds after the estimate was seeded.
+	ep := config.Endpoint{
+		Provider:         "alchemy",
+		CapacityLearning: &config.CapacityLearning{WindowSeconds: 30},
+	}
+	if err := valkeyClient.SetCapacityEstimate(context.Background(), "ethereum", "ep1", store.CapacityEstimate{
+		HasEstimate: true, MaxRequests: 10, IncreaseStep: 1, WindowSeconds: 60, LastDecreaseAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SetCapacityEstimate failed: %v", err)
+	}
+
+	if got := server.capacityWindowSeconds("ethereum", "ep1", ep); got != 60 {
+		t.Errorf("Expected capacityWindowSeconds to return the frozen estimate window (60), got %d", got)
+	}
+
+	// Bootstrap case: no estimate exists yet for this endpoint - falls back to the live
+	// config, since there's no frozen value yet to match.
+	if got := server.capacityWindowSeconds("ethereum", "no-estimate-yet", ep); got != 30 {
+		t.Errorf("Expected capacityWindowSeconds to fall back to the live config (30) before any estimate exists, got %d", got)
+	}
+}
+
+// TestRecordCapacityUsageWritesToFrozenWindowBucket confirms recordCapacityUsage's write
+// lands in the same Valkey bucket effectiveCapacityCeiling's gating check reads from,
+// even when the endpoint's live-resolved learning window has since changed.
+func TestRecordCapacityUsageWritesToFrozenWindowBucket(t *testing.T) {
+	cfg := &config.Config{}
+	valkeyClient := store.NewMockValkeyClient()
+	appConfig := learningTestConfig()
+	server := NewServer(cfg, valkeyClient, appConfig)
+	ctx := context.Background()
+
+	ep := config.Endpoint{
+		Provider:         "alchemy",
+		CapacityLearning: &config.CapacityLearning{WindowSeconds: 30}, // live value, deliberately different from frozen
+	}
+	if err := valkeyClient.SetCapacityEstimate(ctx, "ethereum", "ep1", store.CapacityEstimate{
+		HasEstimate: true, MaxRequests: 10, IncreaseStep: 1, WindowSeconds: 60, LastDecreaseAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SetCapacityEstimate failed: %v", err)
+	}
+
+	server.recordCapacityUsage("ethereum", ep, "ep1")
+
+	frozenWindowCount, err := valkeyClient.GetCapacityCount(ctx, "ethereum", "ep1", 60)
+	if err != nil {
+		t.Fatalf("GetCapacityCount failed: %v", err)
+	}
+	if frozenWindowCount != 1 {
+		t.Errorf("Expected the write to land in the frozen-window (60s) bucket, got count %d there", frozenWindowCount)
+	}
+
+	liveWindowCount, err := valkeyClient.GetCapacityCount(ctx, "ethereum", "ep1", 30)
+	if err != nil {
+		t.Fatalf("GetCapacityCount failed: %v", err)
+	}
+	if liveWindowCount != 0 {
+		t.Errorf("Expected nothing written to the stale live-window (30s) bucket, got count %d there", liveWindowCount)
+	}
+
+	// The gating path must observe the same count recordCapacityUsage just wrote.
+	maxRequests, windowSeconds, ok := server.effectiveCapacityCeiling("ethereum", "ep1", ep)
+	if !ok {
+		t.Fatal("Expected a resolvable ceiling")
+	}
+	gatedCount, err := valkeyClient.GetCapacityCount(ctx, "ethereum", "ep1", windowSeconds)
+	if err != nil {
+		t.Fatalf("GetCapacityCount failed: %v", err)
+	}
+	if gatedCount != 1 {
+		t.Errorf("Expected the gating path to observe the write (count=1) via its own resolved window (%d), got count %d", windowSeconds, gatedCount)
+	}
+	_ = maxRequests
+}
+
+// TestApplyLearnedCapacityDecreaseReadsFrozenWindowNotLiveConfig confirms the decrease
+// path's cooldown check and observed-count read are grounded in the estimate's frozen
+// window, not a live config value that may have since diverged - otherwise the decrease
+// would be seeded from an empty/wrong bucket's count.
+func TestApplyLearnedCapacityDecreaseReadsFrozenWindowNotLiveConfig(t *testing.T) {
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"ethereum": {
+				"ep1": config.Endpoint{
+					Provider:         "alchemy",
+					Role:             "primary",
+					Type:             "full",
+					HTTPURL:          "http://ep1",
+					CapacityLearning: &config.CapacityLearning{WindowSeconds: 30}, // live value, differs from frozen
+				},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	ctx := context.Background()
+	ep := cfg.Endpoints["ethereum"]["ep1"]
+
+	// Seed an estimate frozen at 60s, with its cooldown already elapsed.
+	if err := valkeyClient.SetCapacityEstimate(ctx, "ethereum", "ep1", store.CapacityEstimate{
+		HasEstimate: true, MaxRequests: 10, IncreaseStep: 1, WindowSeconds: 60,
+		LastDecreaseAt: time.Now().Add(-120 * time.Second),
+	}); err != nil {
+		t.Fatalf("SetCapacityEstimate failed: %v", err)
+	}
+
+	// Real traffic landed in the frozen (60s) bucket, as recordCapacityUsage would write it.
+	for i := 0; i < 8; i++ {
+		valkeyClient.IncrementCapacityCount(ctx, "ethereum", "ep1", 60)
+	}
+
+	server := NewServer(cfg, valkeyClient, learningTestConfig())
+	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep)
+
+	final, err := valkeyClient.GetCapacityEstimate(ctx, "ethereum", "ep1")
+	if err != nil {
+		t.Fatalf("GetCapacityEstimate failed: %v", err)
+	}
+	// If the decrease had incorrectly read the live 30s bucket (count=0 there), it would
+	// seed from 0 and clamp to MinEstimate (1). Reading the correct frozen 60s bucket
+	// (count=8) grounds the decrease at floor(8*0.5)=4 instead.
+	if final.MaxRequests != 4 {
+		t.Errorf("Expected decrease to be grounded in the frozen window's observed count (8 -> 4), got MaxRequests=%d", final.MaxRequests)
+	}
+}

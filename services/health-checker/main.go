@@ -86,12 +86,22 @@ func applyStandaloneLearnedCapacityDecrease(cfg *config.Config, valkeyClient sto
 		return
 	}
 
-	if !store.ShouldApplyCapacityDecrease(*prior, params.WindowSeconds, now) {
+	// Read against the estimate's own frozen window once one exists (matching
+	// server.Server.capacityWindowSeconds/effectiveCapacityCeiling exactly), not the
+	// live-resolved config - otherwise this read targets a different Valkey bucket key
+	// than the load balancer's writes. Only before any estimate has been seeded is there
+	// no frozen value to match.
+	readWindowSeconds := params.WindowSeconds
+	if prior.HasEstimate {
+		readWindowSeconds = prior.WindowSeconds
+	}
+
+	if !store.ShouldApplyCapacityDecrease(*prior, readWindowSeconds, now) {
 		log.Debug().Str("chain", chain).Str("endpoint", endpointID).Msg("Skipping capacity estimate decrease in standalone health checker, within cooldown")
 		return
 	}
 
-	observedCount, err := valkeyClient.GetCapacityCount(ctx, chain, endpointID, params.WindowSeconds)
+	observedCount, err := valkeyClient.GetCapacityCount(ctx, chain, endpointID, readWindowSeconds)
 	if err != nil {
 		log.Debug().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get capacity count in standalone health checker")
 		return
