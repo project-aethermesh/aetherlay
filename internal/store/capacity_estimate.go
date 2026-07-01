@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"aetherlay/internal/config"
+	"aetherlay/internal/metrics"
 
+	"github.com/rs/zerolog/log"
 	"github.com/valkey-io/valkey-go"
 )
 
@@ -132,4 +134,65 @@ func (r *ValkeyClient) SetCapacityEstimate(ctx context.Context, chain, endpoint 
 
 	cmd := r.client.B().Set().Key(key).Value(string(jsonBytes)).Build()
 	return r.client.Do(ctx, cmd).Error()
+}
+
+// ApplyLearnedCapacityDecreaseIfEligible is called on every confirmed rate-limit signal.
+// It only ever engages for endpoints with no static Capacity configured - static config,
+// if present, is left completely untouched. A cooldown (the learning window itself)
+// collapses several near-simultaneous hits from one episode into a single decrease.
+//
+// This is shared verbatim between the load balancer (internal/server) and the standalone
+// health checker (services/health-checker) - both mutate the same Valkey-persisted
+// estimate for a given endpoint, so they must apply identical math or silently disagree
+// about what the learned ceiling means for that endpoint.
+func ApplyLearnedCapacityDecreaseIfEligible(ctx context.Context, valkeyClient ValkeyClientIface, chain, endpointID string, ep config.Endpoint, capacityThrottlingEnabled, capacityLearningEnabled bool) {
+	if !capacityThrottlingEnabled || !capacityLearningEnabled || ep.Capacity != nil {
+		return
+	}
+
+	params := config.ResolveCapacityLearning(ep.CapacityLearning)
+	now := time.Now()
+
+	prior, err := valkeyClient.GetCapacityEstimate(ctx, chain, endpointID)
+	if err != nil {
+		log.Debug().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get capacity estimate")
+		return
+	}
+
+	// Read against whichever window the usage counter is actually being written to right
+	// now: the estimate's own frozen window once one exists, not the live-resolved
+	// config - otherwise this read targets a different Valkey bucket key than the
+	// dispatch-time usage writes, and observedCount below would always be stale/zero.
+	// Only before any estimate has been seeded is there no frozen value to match.
+	readWindowSeconds := params.WindowSeconds
+	if prior.HasEstimate {
+		readWindowSeconds = prior.WindowSeconds
+	}
+
+	if !ShouldApplyCapacityDecrease(*prior, readWindowSeconds, now) {
+		log.Debug().Str("chain", chain).Str("endpoint", endpointID).Msg("Skipping capacity estimate decrease, within cooldown of the last decrease")
+		return
+	}
+
+	observedCount, err := valkeyClient.GetCapacityCount(ctx, chain, endpointID, readWindowSeconds)
+	if err != nil {
+		log.Debug().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get capacity count for estimate decrease")
+		return
+	}
+
+	effectiveNow := EffectiveMaxRequests(*prior, params, now)
+	newEstimate := ApplyCapacityDecrease(*prior, effectiveNow, observedCount, params.WindowSeconds, params, now)
+
+	if err := valkeyClient.SetCapacityEstimate(ctx, chain, endpointID, newEstimate); err != nil {
+		log.Debug().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to set capacity estimate")
+		return
+	}
+
+	log.Info().Str("chain", chain).Str("endpoint", endpointID).Int64("new_estimate", newEstimate.MaxRequests).Int("window_seconds", newEstimate.WindowSeconds).Msg("Decreased learned capacity estimate after a rate-limit hit")
+	if metrics.EndpointCapacityEstimatedCeiling != nil {
+		metrics.EndpointCapacityEstimatedCeiling.WithLabelValues(chain, endpointID).Set(float64(newEstimate.MaxRequests))
+	}
+	if metrics.EndpointCapacityEstimateDecreasedTotal != nil {
+		metrics.EndpointCapacityEstimateDecreasedTotal.WithLabelValues(chain, endpointID).Inc()
+	}
 }

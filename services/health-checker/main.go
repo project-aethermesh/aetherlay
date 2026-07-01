@@ -36,33 +36,18 @@ var testExitAfterSetup bool
 // exitCode is used to track the exit code for the process
 var exitCode int
 
-// standaloneInitialBackoff mirrors server.Server.initialBackoffForSignal: seed the first
-// recovery-check wait from whatever the provider actually told us, instead of always
-// guessing. A parsed Retry-After is used directly; Infura's daily credit cap (402) seeds
-// from the endpoint's own (or default) MaxBackoff, since the docs don't guarantee an
-// exact reset boundary. Otherwise 0, leaving the load balancer's scheduler to fall back
-// to InitialBackoff once it picks up recovery monitoring.
+// standaloneInitialBackoff delegates to health.InitialBackoffForSignal, the same shared
+// implementation server.Server.initialBackoffForSignal calls, so the load balancer and
+// the standalone health checker seed recovery backoff identically from the same signal.
 func standaloneInitialBackoff(cfg *config.Config, chain, endpointID string, signal health.RateLimitSignal) int {
-	if signal.RetryAfter > 0 {
-		return int(signal.RetryAfter.Seconds())
-	}
-	if signal.IsDailyQuota {
-		rlc := config.DefaultRateLimitRecovery()
-		if chainEndpoints, ok := cfg.GetEndpointsForChain(chain); ok {
-			if ep, ok := chainEndpoints[endpointID]; ok && ep.RateLimitRecovery != nil && ep.RateLimitRecovery.MaxBackoff != 0 {
-				rlc.MaxBackoff = ep.RateLimitRecovery.MaxBackoff
-			}
-		}
-		return rlc.MaxBackoff
-	}
-	return 0
+	return health.InitialBackoffForSignal(cfg, chain, endpointID, signal)
 }
 
-// applyStandaloneLearnedCapacityDecrease mirrors server.Server.applyLearnedCapacityDecrease
-// exactly, using the same shared store.ApplyCapacityDecrease/EffectiveMaxRequests math, so
-// the load balancer and the standalone health checker - two separate processes mutating
-// the same Valkey-persisted estimate - never diverge. Only engages for endpoints with no
-// static Capacity configured, mirroring effectiveCapacityCeiling's rule in server.go.
+// applyStandaloneLearnedCapacityDecrease resolves chain/endpointID to a config.Endpoint
+// and delegates to store.ApplyLearnedCapacityDecreaseIfEligible, the same shared
+// implementation server.Server.applyLearnedCapacityDecrease calls, so the load balancer
+// and the standalone health checker - two separate processes mutating the same
+// Valkey-persisted estimate - never diverge.
 func applyStandaloneLearnedCapacityDecrease(cfg *config.Config, valkeyClient store.ValkeyClientIface, capacityThrottlingEnabled, capacityLearningEnabled bool, chain, endpointID string) {
 	chainEndpoints, ok := cfg.GetEndpointsForChain(chain)
 	if !ok {
@@ -72,56 +57,10 @@ func applyStandaloneLearnedCapacityDecrease(cfg *config.Config, valkeyClient sto
 	if !ok {
 		return
 	}
-	if !capacityThrottlingEnabled || !capacityLearningEnabled || ep.Capacity != nil {
-		return
-	}
 
-	params := config.ResolveCapacityLearning(ep.CapacityLearning)
-	now := time.Now()
-	ctx := context.Background()
-
-	prior, err := valkeyClient.GetCapacityEstimate(ctx, chain, endpointID)
-	if err != nil {
-		log.Debug().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get capacity estimate in standalone health checker")
-		return
-	}
-
-	// Read against the estimate's own frozen window once one exists (matching
-	// server.Server.capacityWindowSeconds/effectiveCapacityCeiling exactly), not the
-	// live-resolved config - otherwise this read targets a different Valkey bucket key
-	// than the load balancer's writes. Only before any estimate has been seeded is there
-	// no frozen value to match.
-	readWindowSeconds := params.WindowSeconds
-	if prior.HasEstimate {
-		readWindowSeconds = prior.WindowSeconds
-	}
-
-	if !store.ShouldApplyCapacityDecrease(*prior, readWindowSeconds, now) {
-		log.Debug().Str("chain", chain).Str("endpoint", endpointID).Msg("Skipping capacity estimate decrease in standalone health checker, within cooldown")
-		return
-	}
-
-	observedCount, err := valkeyClient.GetCapacityCount(ctx, chain, endpointID, readWindowSeconds)
-	if err != nil {
-		log.Debug().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get capacity count in standalone health checker")
-		return
-	}
-
-	effectiveNow := store.EffectiveMaxRequests(*prior, params, now)
-	newEstimate := store.ApplyCapacityDecrease(*prior, effectiveNow, observedCount, params.WindowSeconds, params, now)
-
-	if err := valkeyClient.SetCapacityEstimate(ctx, chain, endpointID, newEstimate); err != nil {
-		log.Debug().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to set capacity estimate in standalone health checker")
-		return
-	}
-
-	log.Info().Str("chain", chain).Str("endpoint", endpointID).Int64("new_estimate", newEstimate.MaxRequests).Msg("Standalone health checker decreased learned capacity estimate after a rate-limit hit")
-	if metrics.EndpointCapacityEstimatedCeiling != nil {
-		metrics.EndpointCapacityEstimatedCeiling.WithLabelValues(chain, endpointID).Set(float64(newEstimate.MaxRequests))
-	}
-	if metrics.EndpointCapacityEstimateDecreasedTotal != nil {
-		metrics.EndpointCapacityEstimateDecreasedTotal.WithLabelValues(chain, endpointID).Inc()
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	store.ApplyLearnedCapacityDecreaseIfEligible(ctx, valkeyClient, chain, endpointID, ep, capacityThrottlingEnabled, capacityLearningEnabled)
 }
 
 // createStandaloneRateLimitHandler creates a simple rate limit handler for the standalone health checker

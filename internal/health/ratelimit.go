@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"aetherlay/internal/config"
 )
 
 // RateLimitSignal describes a detected rate-limit condition and any recovery timing
@@ -58,4 +60,35 @@ func DetectRateLimit(provider string, statusCode int, headers http.Header, rpcRe
 	}
 
 	return sig
+}
+
+// InitialBackoffForSignal computes the first recovery-check wait time from whatever the
+// provider actually told us, instead of always guessing from the configured
+// RateLimitRecovery.InitialBackoff:
+//   - A parsed Retry-After is the most precise signal available and is used directly.
+//   - Infura's daily credit cap (402) can't be sped up by probing sooner, since it only
+//     resets once the day rolls over - Infura's docs don't guarantee an exact reset
+//     boundary, so rather than assume one, this seeds at the endpoint's own configured
+//     (or default) MaxBackoff, so a known-exhausted daily quota isn't re-probed on a
+//     short cycle.
+//   - Otherwise 0, which leaves the caller's recovery scheduler to fall back to
+//     InitialBackoff, exactly as it did before this signal existed.
+//
+// This is shared verbatim between the load balancer (internal/server) and the standalone
+// health checker (services/health-checker) - both seed the same recovery backoff from the
+// same signal, so they must apply identical logic.
+func InitialBackoffForSignal(cfg *config.Config, chain, endpointID string, signal RateLimitSignal) int {
+	if signal.RetryAfter > 0 {
+		return int(signal.RetryAfter.Seconds())
+	}
+	if signal.IsDailyQuota {
+		rlc := config.DefaultRateLimitRecovery()
+		if chainEndpoints, ok := cfg.GetEndpointsForChain(chain); ok {
+			if ep, ok := chainEndpoints[endpointID]; ok && ep.RateLimitRecovery != nil && ep.RateLimitRecovery.MaxBackoff != 0 {
+				rlc.MaxBackoff = ep.RateLimitRecovery.MaxBackoff
+			}
+		}
+		return rlc.MaxBackoff
+	}
+	return 0
 }

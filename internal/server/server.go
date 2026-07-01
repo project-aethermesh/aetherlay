@@ -1385,63 +1385,13 @@ func (s *Server) recordCapacityUsage(chain string, endpoint config.Endpoint, end
 }
 
 // applyLearnedCapacityDecrease is called from handleRateLimit on every confirmed
-// rate-limit signal. It only ever engages for endpoints with no static Capacity
-// configured (static config, if present, is left completely untouched - see
-// effectiveCapacityCeiling). A cooldown (the learning window itself) collapses several
-// near-simultaneous hits from one episode into a single decrease.
+// rate-limit signal. It delegates to store.ApplyLearnedCapacityDecreaseIfEligible, the
+// same shared implementation the standalone health checker calls, so the two processes -
+// both mutating the same Valkey-persisted estimate - never diverge.
 func (s *Server) applyLearnedCapacityDecrease(chain, endpointID string, endpoint config.Endpoint) {
-	if !s.appConfig.CapacityThrottlingEnabled || !s.appConfig.CapacityLearningEnabled || endpoint.Capacity != nil {
-		return
-	}
-
-	params := config.ResolveCapacityLearning(endpoint.CapacityLearning)
-	now := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-
-	prior, err := s.valkeyClient.GetCapacityEstimate(ctx, chain, endpointID)
-	if err != nil {
-		log.Debug().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get capacity estimate")
-		return
-	}
-
-	// Read against whichever window the usage counter is actually being written to right
-	// now (see capacityWindowSeconds): the estimate's own frozen window once one exists,
-	// not the live-resolved config - otherwise this read targets a different Valkey
-	// bucket key than recordCapacityUsage's writes, and observedCount below would always
-	// be stale/zero. Only before any estimate has been seeded is there no frozen value to
-	// match, so the live-resolved window is the correct (and only) choice at that point.
-	readWindowSeconds := params.WindowSeconds
-	if prior.HasEstimate {
-		readWindowSeconds = prior.WindowSeconds
-	}
-
-	if !store.ShouldApplyCapacityDecrease(*prior, readWindowSeconds, now) {
-		log.Debug().Str("chain", chain).Str("endpoint", endpointID).Msg("Skipping capacity estimate decrease, within cooldown of the last decrease")
-		return
-	}
-
-	observedCount, err := s.valkeyClient.GetCapacityCount(ctx, chain, endpointID, readWindowSeconds)
-	if err != nil {
-		log.Debug().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get capacity count for estimate decrease")
-		return
-	}
-
-	effectiveNow := store.EffectiveMaxRequests(*prior, params, now)
-	newEstimate := store.ApplyCapacityDecrease(*prior, effectiveNow, observedCount, params.WindowSeconds, params, now)
-
-	if err := s.valkeyClient.SetCapacityEstimate(ctx, chain, endpointID, newEstimate); err != nil {
-		log.Debug().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to set capacity estimate")
-		return
-	}
-
-	log.Info().Str("chain", chain).Str("endpoint", endpointID).Int64("new_estimate", newEstimate.MaxRequests).Int("window_seconds", newEstimate.WindowSeconds).Msg("Decreased learned capacity estimate after a rate-limit hit")
-	if metrics.EndpointCapacityEstimatedCeiling != nil {
-		metrics.EndpointCapacityEstimatedCeiling.WithLabelValues(chain, endpointID).Set(float64(newEstimate.MaxRequests))
-	}
-	if metrics.EndpointCapacityEstimateDecreasedTotal != nil {
-		metrics.EndpointCapacityEstimateDecreasedTotal.WithLabelValues(chain, endpointID).Inc()
-	}
+	store.ApplyLearnedCapacityDecreaseIfEligible(ctx, s.valkeyClient, chain, endpointID, endpoint, s.appConfig.CapacityThrottlingEnabled, s.appConfig.CapacityLearningEnabled)
 }
 
 // bodyCarriesRateLimitSignal reports whether a 2xx JSON-RPC response body (a single
@@ -1746,28 +1696,9 @@ func (s *Server) handleRateLimit(chain, endpointID, protocol string, signal heal
 	s.rateLimitScheduler.StartMonitoring(chain, endpointID)
 }
 
-// initialBackoffForSignal computes the first recovery-check wait time from whatever the
-// provider actually told us, instead of always guessing via the scheduler's InitialBackoff:
-//   - A parsed Retry-After is the most precise signal available and is used directly.
-//   - Infura's daily credit cap (402) can't be sped up by probing sooner, since it only
-//     resets once the day rolls over - Infura's docs don't guarantee an exact reset
-//     boundary, so rather than assume one, this seeds at the endpoint's own configured
-//     (or default) MaxBackoff, so a known-exhausted daily quota isn't re-probed on a
-//     short cycle.
-//   - Otherwise 0, which leaves rate_limit_scheduler.go's calculateNextBackoff to fall
-//     back to InitialBackoff, exactly as it did before this signal existed.
+// initialBackoffForSignal delegates to health.InitialBackoffForSignal, the same shared
+// implementation the standalone health checker calls, so the two processes seed recovery
+// backoff identically from the same signal.
 func (s *Server) initialBackoffForSignal(chain, endpointID string, signal health.RateLimitSignal) int {
-	if signal.RetryAfter > 0 {
-		return int(signal.RetryAfter.Seconds())
-	}
-	if signal.IsDailyQuota {
-		rlc := config.DefaultRateLimitRecovery()
-		if chainEndpoints, ok := s.config.GetEndpointsForChain(chain); ok {
-			if ep, ok := chainEndpoints[endpointID]; ok && ep.RateLimitRecovery != nil && ep.RateLimitRecovery.MaxBackoff != 0 {
-				rlc.MaxBackoff = ep.RateLimitRecovery.MaxBackoff
-			}
-		}
-		return rlc.MaxBackoff
-	}
-	return 0
+	return health.InitialBackoffForSignal(s.config, chain, endpointID, signal)
 }
