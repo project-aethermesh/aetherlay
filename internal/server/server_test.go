@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -496,6 +497,202 @@ func TestIsExpectedWSClose(t *testing.T) {
 				t.Errorf("isExpectedWSClose(%v) = %v, want %v", tt.err, got, tt.expected)
 			}
 		})
+	}
+}
+
+// TestProxyWebSocket_UpstreamIdleTimeout verifies that when the upstream
+// stops sending any frames (data, ping, or pong) for longer than
+// wsIdleTimeout, the proxy tears down the client connection and marks the
+// endpoint unhealthy. This is the regression test for the silent-subscription
+// bug where eth_subscribe stops delivering newHeads but the client connection
+// stays open indefinitely.
+func TestProxyWebSocket_UpstreamIdleTimeout(t *testing.T) {
+	origTimeout := wsIdleTimeout
+	wsIdleTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { wsIdleTimeout = origTimeout })
+
+	// Silent upstream: complete the WS handshake, then do nothing — no
+	// reads (so no auto-pong on inbound pings), no writes, no close frame.
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		<-r.Context().Done()
+		c.Close()
+	}))
+	t.Cleanup(upstream.Close)
+
+	upstreamWSURL := "ws" + strings.TrimPrefix(upstream.URL, "http")
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"chainX": {
+				"ep1": config.Endpoint{Provider: "ep1", WSURL: upstreamWSURL, Role: "primary", Type: "full"},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
+		"chainX:ep1": {HasWS: true, HealthyWS: true},
+	})
+	srv := NewServer(cfg, valkeyClient, createTestConfig())
+
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = srv.defaultProxyWebSocket(w, r, upstreamWSURL)
+	}))
+	t.Cleanup(proxy.Close)
+
+	proxyWSURL := "ws" + strings.TrimPrefix(proxy.URL, "http")
+	client, resp, err := websocket.DefaultDialer.Dial(proxyWSURL, nil)
+	if err != nil {
+		t.Fatalf("client dial failed: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	defer client.Close()
+
+	// Give the proxy a generous read deadline; we expect it to hang up well
+	// before this fires.
+	_ = client.SetReadDeadline(time.Now().Add(wsIdleTimeout + 2*time.Second))
+	start := time.Now()
+	_, _, err = client.ReadMessage()
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatalf("expected client ReadMessage to fail after upstream idle timeout, got nil after %s", elapsed)
+	}
+	if elapsed < wsIdleTimeout {
+		t.Errorf("client torn down too early: elapsed=%s wsIdleTimeout=%s", elapsed, wsIdleTimeout)
+	}
+	if elapsed > wsIdleTimeout+2*time.Second {
+		t.Errorf("client torn down too late: elapsed=%s wsIdleTimeout=%s", elapsed, wsIdleTimeout)
+	}
+
+	// The proxy should mark the upstream endpoint unhealthy. The status
+	// write happens just before defaultProxyWebSocket returns, after both
+	// goroutines have joined; allow a brief moment for it to land.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		status, _ := valkeyClient.GetEndpointStatus(context.Background(), "chainX", "ep1")
+		if !status.HealthyWS {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("expected HealthyWS=false after upstream idle timeout, still true")
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestProxyWebSocket_PingPongForwarded verifies that a client ping is
+// forwarded all the way to the upstream and the upstream's pong is forwarded
+// back to the client (rather than aetherlay auto-ponging at the proxy
+// layer). Payload bytes must round-trip unchanged.
+func TestProxyWebSocket_PingPongForwarded(t *testing.T) {
+	origTimeout := wsIdleTimeout
+	wsIdleTimeout = 5 * time.Second
+	t.Cleanup(func() { wsIdleTimeout = origTimeout })
+
+	pingReceived := make(chan string, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		// Override default ping handler so we can capture the payload AND
+		// reply with a pong carrying the same payload (default behavior, but
+		// explicit here).
+		c.SetPingHandler(func(appData string) error {
+			select {
+			case pingReceived <- appData:
+			default:
+			}
+			return c.WriteControl(websocket.PongMessage,
+				[]byte(appData), time.Now().Add(time.Second))
+		})
+		// Drive the read loop so the ping handler actually fires.
+		for {
+			if _, _, err := c.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	upstreamWSURL := "ws" + strings.TrimPrefix(upstream.URL, "http")
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"chainX": {
+				"ep1": config.Endpoint{Provider: "ep1", WSURL: upstreamWSURL, Role: "primary", Type: "full"},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
+		"chainX:ep1": {HasWS: true, HealthyWS: true},
+	})
+	srv := NewServer(cfg, valkeyClient, createTestConfig())
+
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = srv.defaultProxyWebSocket(w, r, upstreamWSURL)
+	}))
+	t.Cleanup(proxy.Close)
+
+	proxyWSURL := "ws" + strings.TrimPrefix(proxy.URL, "http")
+	client, resp, err := websocket.DefaultDialer.Dial(proxyWSURL, nil)
+	if err != nil {
+		t.Fatalf("client dial failed: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	defer client.Close()
+
+	pongReceived := make(chan string, 1)
+	client.SetPongHandler(func(appData string) error {
+		select {
+		case pongReceived <- appData:
+		default:
+		}
+		return nil
+	})
+	// Read loop required to drive the pong handler.
+	go func() {
+		for {
+			if _, _, err := client.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	payload := "abc-correlation-123"
+	if err := client.WriteControl(websocket.PingMessage,
+		[]byte(payload), time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("client ping write failed: %v", err)
+	}
+
+	select {
+	case got := <-pingReceived:
+		if got != payload {
+			t.Errorf("upstream got ping payload %q, want %q", got, payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream never received the forwarded ping (proxy is auto-ponging instead of forwarding)")
+	}
+
+	select {
+	case got := <-pongReceived:
+		if got != payload {
+			t.Errorf("client got pong payload %q, want %q", got, payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("client never received the forwarded pong from upstream")
 	}
 }
 
