@@ -1259,11 +1259,15 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	// For JSON responses within a bounded size, buffer and scan the body for an embedded
-	// rate-limit error before forwarding. Some providers (e.g. Alchemy on batch requests)
-	// return HTTP 200 with the rate-limit signal only inside the JSON-RPC body - invisible
-	// to a status-code-only check. Larger bodies are streamed through unmodified and
-	// uninspected, to bound memory use on large responses (e.g. eth_getLogs).
+	// For JSON responses from a provider known to need it, buffer (within a bounded size)
+	// and scan the body for an embedded rate-limit error before forwarding. Some providers
+	// (currently Alchemy, on batch requests) return HTTP 200 with the rate-limit signal
+	// only inside the JSON-RPC body - invisible to a status-code-only check. This is
+	// scoped to those providers specifically: buffering every 2xx JSON response
+	// regardless of provider would delay time-to-first-byte and hold up to
+	// maxRateLimitScanBodyBytes in memory per in-flight request, for providers that never
+	// exhibit this behavior. Responses from other providers, and oversized bodies from
+	// providers that do need the scan, are streamed through unmodified and uninspected.
 	//
 	// Headers are copied onto w only once we've committed to writing this specific
 	// response (immediately before each w.WriteHeader below), not unconditionally up
@@ -1273,18 +1277,17 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 	// in w's header map, where a subsequent successful retry's headers would be added on
 	// top of rather than replacing them - e.g. two Content-Length values in the response
 	// actually sent to the client.
-	if isJSONContentType(resp.Header.Get("Content-Type")) {
+	chain, endpointID, endpointFound := s.findChainAndEndpointByURL(targetURL)
+	if endpointFound && isJSONContentType(resp.Header.Get("Content-Type")) && providerNeedsEmbeddedRateLimitScan(s.providerForEndpoint(chain, endpointID)) {
 		buffered, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRateLimitScanBodyBytes+1))
 		if readErr == nil && int64(len(buffered)) <= maxRateLimitScanBodyBytes {
-			if chain, endpointID, found := s.findChainAndEndpointByURL(targetURL); found {
-				if sig := bodyCarriesRateLimitSignal(s.providerForEndpoint(chain, endpointID), buffered, resp.Header); sig.IsRateLimited {
-					// The HTTP transaction itself succeeded (2xx) - don't mark the endpoint
-					// unhealthy, just flag it as rate limited so selection avoids it, and
-					// retry the same buffered request body against a different endpoint.
-					s.handleRateLimit(chain, endpointID, "http", sig)
-					log.Debug().Str("url", helpers.RedactAPIKey(targetURL)).Bool("daily_quota", sig.IsDailyQuota).Msg("2xx response carried an embedded rate-limit signal, retrying with a different endpoint")
-					return fmt.Errorf("rate limited: embedded JSON-RPC rate-limit error in 2xx response")
-				}
+			if sig := bodyCarriesRateLimitSignal(s.providerForEndpoint(chain, endpointID), buffered, resp.Header); sig.IsRateLimited {
+				// The HTTP transaction itself succeeded (2xx) - don't mark the endpoint
+				// unhealthy, just flag it as rate limited so selection avoids it, and
+				// retry the same buffered request body against a different endpoint.
+				s.handleRateLimit(chain, endpointID, "http", sig)
+				log.Debug().Str("url", helpers.RedactAPIKey(targetURL)).Bool("daily_quota", sig.IsDailyQuota).Msg("2xx response carried an embedded rate-limit signal, retrying with a different endpoint")
+				return fmt.Errorf("rate limited: embedded JSON-RPC rate-limit error in 2xx response")
 			}
 			copyResponseHeaders(w, resp.Header)
 			w.WriteHeader(resp.StatusCode)
@@ -1401,6 +1404,16 @@ func (s *Server) applyLearnedCapacityDecrease(chain, endpointID string, endpoint
 // Alchemy's HTTP-200-with-one-batch-item-429 blind spot visible, since HTTP status alone
 // can't see it. Returns a zero-value signal if the body isn't a recognizable JSON-RPC
 // response or carries no rate-limit error.
+// providerNeedsEmbeddedRateLimitScan reports whether a provider is known to sometimes
+// return a 2xx HTTP response with a rate-limit error embedded in the JSON-RPC body
+// instead of a non-2xx status code. Currently only Alchemy, on batch requests - the
+// specific quirk bodyCarriesRateLimitSignal exists to detect. Gating on this list keeps
+// the buffer-and-scan cost (up to maxRateLimitScanBodyBytes held in memory, delaying
+// time-to-first-byte) off every other provider's 2xx JSON responses.
+func providerNeedsEmbeddedRateLimitScan(provider string) bool {
+	return strings.EqualFold(provider, "alchemy")
+}
+
 func bodyCarriesRateLimitSignal(provider string, body []byte, headers http.Header) health.RateLimitSignal {
 	var single health.RpcResponse
 	if err := json.Unmarshal(body, &single); err == nil && single.Error != nil {

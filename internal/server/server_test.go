@@ -1057,6 +1057,68 @@ func TestDefaultForwardRequestWithBodyFuncDetectsEmbeddedBatchRateLimit(t *testi
 	}
 }
 
+// TestDefaultForwardRequestWithBodyFuncSkipsEmbeddedScanForNonAlchemyProvider guards
+// against buffering-and-scanning every provider's 2xx JSON responses: since only Alchemy
+// is documented to embed a rate-limit error in an HTTP-200 batch response, a non-Alchemy
+// provider's response carrying the same shape must be forwarded to the client verbatim
+// and unscanned, not buffered into memory and treated as a rate-limit signal.
+func TestDefaultForwardRequestWithBodyFuncSkipsEmbeddedScanForNonAlchemyProvider(t *testing.T) {
+	batchBody := `[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"error":{"code":-32005,"message":"Request limit exceeded"}}]`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(batchBody))
+	}))
+	defer ts.Close()
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"chainA": {
+				"ep1": config.Endpoint{Provider: "drpc", HTTPURL: ts.URL, Role: "primary", Type: "full"},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	server := NewServer(cfg, valkeyClient, createTestConfig())
+
+	rec := httptest.NewRecorder()
+	err := server.defaultForwardRequestWithBodyFunc(rec, context.Background(), "POST", ts.URL, nil, http.Header{})
+	if err != nil {
+		t.Fatalf("Expected no error - a non-Alchemy provider's body should never be scanned, got: %v", err)
+	}
+	if rec.Body.String() != batchBody {
+		t.Errorf("Expected the batch body to be forwarded verbatim, got %q", rec.Body.String())
+	}
+
+	state, stateErr := valkeyClient.GetRateLimitState(context.Background(), "chainA", "ep1")
+	if stateErr != nil {
+		t.Fatalf("Failed to get rate limit state: %v", stateErr)
+	}
+	if state.RateLimited {
+		t.Error("Expected a non-Alchemy provider's embedded error to NOT be treated as a rate-limit signal")
+	}
+}
+
+func TestProviderNeedsEmbeddedRateLimitScan(t *testing.T) {
+	tests := []struct {
+		provider string
+		expected bool
+	}{
+		{"alchemy", true},
+		{"Alchemy", true},
+		{"infura", false},
+		{"drpc", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			if got := providerNeedsEmbeddedRateLimitScan(tt.provider); got != tt.expected {
+				t.Errorf("providerNeedsEmbeddedRateLimitScan(%q) = %v, want %v", tt.provider, got, tt.expected)
+			}
+		})
+	}
+}
+
 // TestDefaultForwardRequestWithBodyFuncNoDuplicateHeadersAcrossRetries guards against a
 // regression where response headers were copied onto w unconditionally, before the
 // embedded-rate-limit body scan decided whether to abort. Since handleRequestHTTP's
