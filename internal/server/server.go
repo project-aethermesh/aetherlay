@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"aetherlay/internal/cache"
@@ -1237,12 +1238,17 @@ func installControlForwarders(src, dst *websocket.Conn, bumpDeadline bool) {
 
 // proxyWebSocketCopy copies messages from src to dst, forwarding close frames
 // to the destination so both peers receive a proper WebSocket close handshake.
-// Each forwarded write is bounded by wsWriteTimeout so a slow peer can't
-// stall the goroutine indefinitely. If bumpSrcDeadline is true, the src read
-// deadline is reset to wsIdleTimeout AFTER every successful end-to-end
-// forward, so a slow downstream write doesn't shorten the next read budget
-// and cause a false "upstream idle" timeout.
-func proxyWebSocketCopy(src, dst *websocket.Conn, bumpSrcDeadline bool) error {
+// It returns the first error and a bool indicating whether the error came from
+// reading src (true) or writing to dst (false), so callers can attribute the
+// failure to the correct peer.
+// closeSent, when non-nil, is set to true immediately before forwarding a close
+// frame to dst. Callers use this to detect echoed close frames and avoid
+// misattributing a backend-initiated close to the client.
+// If bumpSrcDeadline is true, the src read deadline is reset to wsIdleTimeout
+// after every successful end-to-end forward, and a src read-deadline timeout
+// is returned as a *wsBackendIdleError so callers can distinguish genuine
+// upstream silence from downstream backpressure.
+func proxyWebSocketCopy(src, dst *websocket.Conn, bumpSrcDeadline bool, closeSent *atomic.Bool) (error, bool) {
 	for {
 		msgType, msg, err := src.ReadMessage()
 		if err != nil {
@@ -1255,25 +1261,27 @@ func proxyWebSocketCopy(src, dst *websocket.Conn, bumpSrcDeadline bool) error {
 					websocket.CloseTLSHandshake:
 					code = websocket.CloseGoingAway
 				}
+				if closeSent != nil {
+					closeSent.Store(true)
+				}
 				_ = dst.WriteMessage(websocket.CloseMessage,
 					websocket.FormatCloseMessage(code, closeErr.Text))
 			}
 			// Tag a backend-leg read-deadline timeout as the genuine
 			// upstream-idle signal. Write timeouts (or read timeouts on
 			// the client leg, which has no deadline today) must not be
-			// misattributed to the upstream — they are caught by the
-			// caller's isExpectedWSClose path and don't mark unhealthy.
+			// misattributed to the upstream.
 			if bumpSrcDeadline {
 				var netErr net.Error
 				if errors.As(err, &netErr) && netErr.Timeout() {
-					return &wsBackendIdleError{err: err}
+					return &wsBackendIdleError{err: err}, true
 				}
 			}
-			return err
+			return err, true // error came from reading src
 		}
 		_ = dst.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 		if err := dst.WriteMessage(msgType, msg); err != nil {
-			return err
+			return err, false // error came from writing to dst
 		}
 		if bumpSrcDeadline {
 			_ = src.SetReadDeadline(time.Now().Add(wsIdleTimeout))
@@ -1378,7 +1386,6 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 		backendConn.Close()
 		return err
 	}
-
 	// Forward WS control frames in both directions instead of letting
 	// gorilla auto-pong inbound pings on each side. This makes liveness
 	// checks transparent end-to-end: a client ping reaches the upstream RPC
@@ -1394,54 +1401,112 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 	installControlForwarders(backendConn, clientConn, true)
 	_ = backendConn.SetReadDeadline(time.Now().Add(wsIdleTimeout))
 
-	// Proxy messages in both directions. The backend leg also resets the
-	// backend read deadline on each received data frame.
-	errc := make(chan error, 2)
+	// Proxy messages in both directions. Each goroutine reports (err, readErr)
+	// via proxyWebSocketCopy, where readErr=true means the error came from
+	// reading the source peer. Using separate channels lets us combine the
+	// goroutine identity with readErr to attribute failures precisely:
+	//
+	//   backendErrc + readErr=true  → backend's ReadMessage failed  → backend at fault
+	//   backendErrc + readErr=false → client's WriteMessage failed  → client at fault
+	//   clientErrc  + readErr=true  → client's ReadMessage failed   → client at fault
+	//   clientErrc  + readErr=false → backend's WriteMessage failed → backend at fault
+	type wsResult struct {
+		err     error
+		readErr bool // true = error from src.ReadMessage; false = from dst.WriteMessage
+	}
+	// closeSentToClient is set to true by the backend-reading goroutine
+	// immediately before it forwards a close frame to the client. If the
+	// client-reading goroutine then fires with a read error, that close is
+	// the client echoing our frame back — not a genuine client-initiated
+	// close — so the backend remains at fault.
+	var closeSentToClient atomic.Bool
+	backendErrc := make(chan wsResult, 1)
+	clientErrc := make(chan wsResult, 1)
 	go func() {
-		errc <- proxyWebSocketCopy(clientConn, backendConn, false)
+		err, isRead := proxyWebSocketCopy(backendConn, clientConn, true, &closeSentToClient)
+		backendErrc <- wsResult{err, isRead}
 	}()
 	go func() {
-		errc <- proxyWebSocketCopy(backendConn, clientConn, true)
+		err, isRead := proxyWebSocketCopy(clientConn, backendConn, false, nil)
+		clientErrc <- wsResult{err, isRead}
 	}()
-	// Wait for one direction to fail/close, then immediately close both
-	// connections so the other goroutine unblocks and finishes cleanly.
-	err = <-errc
-	clientConn.Close()
-	backendConn.Close()
-	<-errc // wait for the second goroutine to finish
+	// Wait for the first side to stop, then close both connections so the
+	// other goroutine unblocks and can be drained.
+	var first wsResult
+	var backendAtFault bool
+	select {
+	case first = <-backendErrc:
+		backendAtFault = first.readErr // read from backend failed: backend at fault
+		clientConn.Close()
+		backendConn.Close()
+		<-clientErrc
+	case first = <-clientErrc:
+		// If we already forwarded a close frame to the client, the client's
+		// close is an echo of our frame, meaning the backend initiated the close.
+		if first.readErr && closeSentToClient.Load() {
+			backendAtFault = true
+		} else {
+			backendAtFault = !first.readErr // write to backend failed: backend at fault
+		}
+		clientConn.Close()
+		backendConn.Close()
+		<-backendErrc
+	}
 
-	if err != nil {
+	if first.err != nil {
 		// Backend leg's read deadline fired = upstream sent nothing for
 		// wsIdleTimeout. Only this specific error is attributed to the
-		// upstream. Other timeouts (downstream write blocking, control
-		// frame forwarding) are caught by isExpectedWSClose below and
-		// don't mark the endpoint unhealthy.
+		// upstream this way; it always occurs on the backend-read leg, so
+		// it is unambiguously backend-at-fault regardless of backendAtFault.
 		var idleErr *wsBackendIdleError
-		if errors.As(err, &idleErr) {
+		if errors.As(first.err, &idleErr) {
 			log.Warn().
-				Err(err).
+				Err(first.err).
 				Str("endpoint", helpers.RedactAPIKey(backendURL)).
 				Dur("idle_timeout", wsIdleTimeout).
 				Msg("WebSocket upstream idle timeout, marking endpoint unhealthy")
 			if chain, endpointID, found := s.findChainAndEndpointByURL(backendURL); found {
 				s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")
 			}
-			return err
+			return first.err
 		}
-		if isExpectedWSClose(err) {
-			if closeErr, ok := err.(*websocket.CloseError); ok && closeErr.Code == websocket.CloseAbnormalClosure {
-				log.Debug().Err(err).Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket connection closed abnormally (1006), not counting as failure")
-			} else {
-				log.Debug().Err(err).Str("endpoint", helpers.RedactAPIKey(backendURL)).Msg("WebSocket connection closed normally")
+		if backendAtFault {
+			if closeErr, ok := first.err.(*websocket.CloseError); ok {
+				switch closeErr.Code {
+				case websocket.CloseNormalClosure, // 1000: graceful, e.g. connection time limit
+					websocket.CloseGoingAway,        // 1001: planned shutdown
+					websocket.CloseNoStatusReceived: // 1005: no close code (ambiguous, treat as graceful)
+					log.Debug().Err(first.err).Int("code", int(closeErr.Code)).
+						Str("endpoint", helpers.RedactAPIKey(backendURL)).
+						Msg("Backend closed WebSocket normally")
+					return nil // graceful backend close is not a failure; caller marks success
+				default:
+					// 1006 (TCP drop), 1011 (internal error), and any other code
+					// indicate the backend terminated unexpectedly.
+					log.Debug().Err(first.err).Int("code", int(closeErr.Code)).
+						Str("endpoint", helpers.RedactAPIKey(backendURL)).
+						Msg("Backend closed WebSocket with unexpected code, counting as failure")
+					if chain, endpointID, found := s.findChainAndEndpointByURL(backendURL); found {
+						s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")
+					}
+					return first.err // caller: isExpectedWSClose(1006)=true prevents retry
+				}
 			}
-			return nil
+			// Non-close-frame error from backend (network error, read timeout, etc.)
+			log.Debug().Err(first.err).
+				Str("endpoint", helpers.RedactAPIKey(backendURL)).
+				Msg("Backend WebSocket connection error, counting as failure")
+			if chain, endpointID, found := s.findChainAndEndpointByURL(backendURL); found {
+				s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")
+			}
+			return first.err
 		}
-		if chain, endpointID, found := s.findChainAndEndpointByURL(backendURL); found {
-			s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")
-		}
+		// Client closed the connection. Any reason is fine, backend was healthy.
+		log.Debug().Err(first.err).
+			Str("endpoint", helpers.RedactAPIKey(backendURL)).
+			Msg("Client closed WebSocket connection")
 	}
-
-	return err
+	return nil
 }
 
 // GetRateLimitHandler returns the rate limit handler function for the health checker
