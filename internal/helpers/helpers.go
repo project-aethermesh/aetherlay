@@ -12,6 +12,8 @@ import (
 
 // Config holds all CLI flags and their values
 type Config struct {
+	CapacityLearningEnabled         bool
+	CapacityThrottlingEnabled       bool
 	ConfigFile                      string
 	CorsHeaders                     string
 	CorsOrigin                      string
@@ -50,6 +52,8 @@ func ParseFlags() *Config {
 	config := &Config{}
 
 	// Define all flags with proper defaults
+	flag.BoolVar(&config.CapacityLearningEnabled, "capacity-learning-enabled", true, "Enable adaptive per-endpoint capacity estimation, learned from observed rate-limit hits, for endpoints with no static capacity configured")
+	flag.BoolVar(&config.CapacityThrottlingEnabled, "capacity-throttling-enabled", true, "Enable proactive per-endpoint capacity throttling based on configured request ceilings")
 	flag.StringVar(&config.ConfigFile, "config-file", "configs/endpoints.json", "Configuration file path")
 	flag.StringVar(&config.CorsHeaders, "cors-headers", "Accept, Authorization, Content-Type, Origin, X-Requested-With", "CORS allowed headers")
 	flag.StringVar(&config.CorsMethods, "cors-methods", "GET, POST, OPTIONS", "CORS allowed methods")
@@ -126,6 +130,8 @@ func (c *Config) GetBoolValue(flagName string, flagValue bool, envKey string, de
 // LoadConfiguration loads all configuration values with proper precedence
 func (c *Config) LoadConfiguration() *LoadedConfig {
 	cfg := &LoadedConfig{
+		CapacityLearningEnabled:         c.GetBoolValue("capacity-learning-enabled", c.CapacityLearningEnabled, "CAPACITY_LEARNING_ENABLED", true),
+		CapacityThrottlingEnabled:       c.GetBoolValue("capacity-throttling-enabled", c.CapacityThrottlingEnabled, "CAPACITY_THROTTLING_ENABLED", true),
 		ConfigFile:                      c.GetStringValue("config-file", c.ConfigFile, "CONFIG_FILE", "configs/endpoints.json"),
 		CorsHeaders:                     c.GetStringValue("cors-headers", c.CorsHeaders, "CORS_HEADERS", "Accept, Authorization, Content-Type, Origin, X-Requested-With"),
 		CorsMethods:                     c.GetStringValue("cors-methods", c.CorsMethods, "CORS_METHODS", "GET, POST, OPTIONS"),
@@ -171,6 +177,8 @@ func (c *Config) LoadConfiguration() *LoadedConfig {
 
 // LoadedConfig contains the final resolved configuration values
 type LoadedConfig struct {
+	CapacityLearningEnabled         bool
+	CapacityThrottlingEnabled       bool
 	ConfigFile                      string
 	CorsHeaders                     string
 	CorsMethods                     string

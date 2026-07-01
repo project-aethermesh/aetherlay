@@ -6,6 +6,7 @@ import (
 	"aetherlay/internal/store"
 	"context"
 	"testing"
+	"time"
 )
 
 // mockConfig returns a minimal valid *config.Config for testing
@@ -64,6 +65,8 @@ func TestRunHealthCheckerFromEnv_Standalone(t *testing.T) {
 		"Accept, Authorization, Content-Type, Origin, X-Requested-With", // corsHeaders
 		"GET, POST, OPTIONS", // corsMethods
 		"*",                  // corsOrigin
+		true,                 // capacityLearningEnabled
+		true,                 // capacityThrottlingEnabled
 		true,                 // ephemeralChecksEnabled
 		3,                    // ephemeralChecksHealthyThreshold
 		30,                   // ephemeralChecksInterval
@@ -125,6 +128,8 @@ func TestRunHealthCheckerFromEnv_Ephemeral(t *testing.T) {
 		"Accept, Authorization, Content-Type, Origin, X-Requested-With", // corsHeaders
 		"GET, POST, OPTIONS", // corsMethods
 		"*",                  // corsOrigin
+		true,                 // capacityLearningEnabled
+		true,                 // capacityThrottlingEnabled
 		true,                 // ephemeralChecksEnabled
 		3,                    // ephemeralChecksHealthyThreshold
 		30,                   // ephemeralChecksInterval
@@ -186,6 +191,8 @@ func TestRunHealthCheckerFromEnv_Disabled(t *testing.T) {
 		"Accept, Authorization, Content-Type, Origin, X-Requested-With", // corsHeaders
 		"GET, POST, OPTIONS", // corsMethods
 		"*",                  // corsOrigin
+		true,                 // capacityLearningEnabled
+		true,                 // capacityThrottlingEnabled
 		true,                 // ephemeralChecksEnabled
 		3,                    // ephemeralChecksHealthyThreshold
 		30,                   // ephemeralChecksInterval
@@ -205,5 +212,144 @@ func TestRunHealthCheckerFromEnv_Disabled(t *testing.T) {
 
 	if detectedMode != "disabled" {
 		t.Errorf("Expected mode 'disabled', got '%s'", detectedMode)
+	}
+}
+
+// TestStandaloneInitialBackoff tests that standaloneInitialBackoff mirrors
+// server.Server.initialBackoffForSignal's precedence: Retry-After first, then the
+// endpoint's own (or default) MaxBackoff for a daily-quota signal, else 0.
+func TestStandaloneInitialBackoff(t *testing.T) {
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"mainnet": {
+				"with-override": config.Endpoint{
+					Provider:          "infura",
+					Role:              "primary",
+					Type:              "full",
+					HTTPURL:           "http://with-override",
+					RateLimitRecovery: &config.RateLimitRecovery{MaxBackoff: 555},
+				},
+				"no-override": config.Endpoint{
+					Provider: "infura",
+					Role:     "primary",
+					Type:     "full",
+					HTTPURL:  "http://no-override",
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name       string
+		endpointID string
+		signal     health.RateLimitSignal
+		expected   int
+	}{
+		{"retry-after takes priority over daily quota", "no-override", health.RateLimitSignal{RetryAfter: 20 * time.Second, IsDailyQuota: true}, 20},
+		{"daily quota uses endpoint's own MaxBackoff override", "with-override", health.RateLimitSignal{IsDailyQuota: true}, 555},
+		{"daily quota without override uses default MaxBackoff", "no-override", health.RateLimitSignal{IsDailyQuota: true}, config.DefaultRateLimitRecovery().MaxBackoff},
+		{"plain rate limit signal leaves 0", "no-override", health.RateLimitSignal{IsRateLimited: true}, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := standaloneInitialBackoff(cfg, "mainnet", tt.endpointID, tt.signal); got != tt.expected {
+				t.Errorf("standaloneInitialBackoff() = %d, want %d", got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestCreateStandaloneRateLimitHandlerSeedsBackoffFromSignal tests that the standalone
+// health checker's rate limit handler seeds CurrentBackoff from the signal, not just
+// marking the endpoint rate limited with a zero backoff.
+func TestCreateStandaloneRateLimitHandlerSeedsBackoffFromSignal(t *testing.T) {
+	cfg := mockConfig()
+	valkeyClient := store.NewMockValkeyClient()
+	handler := createStandaloneRateLimitHandler(cfg, valkeyClient, true, true)
+
+	handler("mainnet", "mock", "http", health.RateLimitSignal{RetryAfter: 15 * time.Second})
+
+	state, err := valkeyClient.GetRateLimitState(context.Background(), "mainnet", "mock")
+	if err != nil {
+		t.Fatalf("Failed to get rate limit state: %v", err)
+	}
+	if !state.RateLimited {
+		t.Error("Expected endpoint to be marked rate limited")
+	}
+	if state.CurrentBackoff != 15 {
+		t.Errorf("Expected CurrentBackoff to be seeded to 15 from Retry-After, got %d", state.CurrentBackoff)
+	}
+}
+
+// TestApplyStandaloneLearnedCapacityDecreaseSeedsFromObservedCount confirms the
+// standalone health checker's decrease path shares the exact same store.ApplyCapacityDecrease
+// math as the load balancer's own applyLearnedCapacityDecrease - load-bearing, since
+// these run as separate processes mutating the same Valkey-persisted estimate.
+func TestApplyStandaloneLearnedCapacityDecreaseSeedsFromObservedCount(t *testing.T) {
+	cfg := mockConfig()
+	valkeyClient := store.NewMockValkeyClient()
+	ctx := context.Background()
+
+	for i := 0; i < 10; i++ {
+		valkeyClient.IncrementCapacityCount(ctx, "mainnet", "mock", 60)
+	}
+
+	applyStandaloneLearnedCapacityDecrease(cfg, valkeyClient, true, true, "mainnet", "mock")
+
+	estimate, err := valkeyClient.GetCapacityEstimate(ctx, "mainnet", "mock")
+	if err != nil {
+		t.Fatalf("GetCapacityEstimate failed: %v", err)
+	}
+	if !estimate.HasEstimate || estimate.MaxRequests != 5 {
+		t.Errorf("Expected a learned estimate of 5 (10 observed * 0.5), got %+v", estimate)
+	}
+}
+
+// TestApplyStandaloneLearnedCapacityDecreaseSkipsWhenStaticCapacityConfigured mirrors
+// server.effectiveCapacityCeiling's rule: adaptive learning never engages for an
+// endpoint that already has a static Capacity configured.
+func TestApplyStandaloneLearnedCapacityDecreaseSkipsWhenStaticCapacityConfigured(t *testing.T) {
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"mainnet": {
+				"mock": config.Endpoint{
+					Provider: "mock", Role: "primary", Type: "full", HTTPURL: "http://mock",
+					Capacity: &config.CapacityLimit{MaxRequests: 100, WindowSeconds: 10},
+				},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	ctx := context.Background()
+
+	applyStandaloneLearnedCapacityDecrease(cfg, valkeyClient, true, true, "mainnet", "mock")
+
+	estimate, _ := valkeyClient.GetCapacityEstimate(ctx, "mainnet", "mock")
+	if estimate.HasEstimate {
+		t.Error("Expected no learned estimate when a static Capacity is configured")
+	}
+}
+
+// TestCreateStandaloneRateLimitHandlerAlsoSeedsCapacityEstimate confirms the handler
+// wires both the reactive backoff and the proactive learned-estimate decrease together.
+func TestCreateStandaloneRateLimitHandlerAlsoSeedsCapacityEstimate(t *testing.T) {
+	cfg := mockConfig()
+	valkeyClient := store.NewMockValkeyClient()
+	ctx := context.Background()
+
+	for i := 0; i < 8; i++ {
+		valkeyClient.IncrementCapacityCount(ctx, "mainnet", "mock", 60)
+	}
+
+	handler := createStandaloneRateLimitHandler(cfg, valkeyClient, true, true)
+	handler("mainnet", "mock", "http", health.RateLimitSignal{IsRateLimited: true})
+
+	estimate, err := valkeyClient.GetCapacityEstimate(ctx, "mainnet", "mock")
+	if err != nil {
+		t.Fatalf("GetCapacityEstimate failed: %v", err)
+	}
+	if !estimate.HasEstimate || estimate.MaxRequests != 4 {
+		t.Errorf("Expected a learned estimate of 4 (8 observed * 0.5), got %+v", estimate)
 	}
 }

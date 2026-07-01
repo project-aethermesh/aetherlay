@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 )
@@ -259,5 +260,155 @@ func TestEndpointWithRateLimitRecovery(t *testing.T) {
 
 	if endpoint.RateLimitRecovery.ResetAfter != 7200 {
 		t.Errorf("Expected ResetAfter to be 7200, got %d", endpoint.RateLimitRecovery.ResetAfter)
+	}
+}
+
+func TestEndpointWithCapacity(t *testing.T) {
+	endpoint := Endpoint{
+		Provider: "alchemy",
+		Capacity: &CapacityLimit{
+			MaxRequests:   190,
+			WindowSeconds: 10,
+		},
+		Role:    "primary",
+		Type:    "full",
+		HTTPURL: "http://test.com",
+	}
+
+	if endpoint.Capacity == nil {
+		t.Fatal("Expected capacity configuration to be set")
+	}
+
+	if endpoint.Capacity.MaxRequests != 190 {
+		t.Errorf("Expected MaxRequests to be 190, got %d", endpoint.Capacity.MaxRequests)
+	}
+
+	if endpoint.Capacity.WindowSeconds != 10 {
+		t.Errorf("Expected WindowSeconds to be 10, got %d", endpoint.Capacity.WindowSeconds)
+	}
+}
+
+func TestEndpointCapacityJSONRoundTrip(t *testing.T) {
+	original := Endpoint{
+		Provider: "drpc",
+		Capacity: &CapacityLimit{
+			MaxRequests:   100,
+			WindowSeconds: 1,
+		},
+		Role:    "fallback",
+		Type:    "full",
+		HTTPURL: "http://test.com",
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Failed to marshal endpoint: %v", err)
+	}
+
+	var decoded Endpoint
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Failed to unmarshal endpoint: %v", err)
+	}
+
+	if decoded.Capacity == nil {
+		t.Fatal("Expected capacity to survive round-trip")
+	}
+	if decoded.Capacity.MaxRequests != 100 {
+		t.Errorf("Expected MaxRequests to be 100, got %d", decoded.Capacity.MaxRequests)
+	}
+	if decoded.Capacity.WindowSeconds != 1 {
+		t.Errorf("Expected WindowSeconds to be 1, got %d", decoded.Capacity.WindowSeconds)
+	}
+
+	// An endpoint with no capacity configured should round-trip to a nil pointer,
+	// not a zero-value struct - this is what makes the feature opt-in.
+	unconfigured := Endpoint{Provider: "infura", Role: "primary", Type: "full", HTTPURL: "http://test.com"}
+	data, err = json.Marshal(unconfigured)
+	if err != nil {
+		t.Fatalf("Failed to marshal endpoint: %v", err)
+	}
+	var decodedUnconfigured Endpoint
+	if err := json.Unmarshal(data, &decodedUnconfigured); err != nil {
+		t.Fatalf("Failed to unmarshal endpoint: %v", err)
+	}
+	if decodedUnconfigured.Capacity != nil {
+		t.Fatal("Expected capacity to remain nil when not configured")
+	}
+}
+
+func TestDefaultCapacityLearning(t *testing.T) {
+	learning := DefaultCapacityLearning()
+
+	if learning.DecreaseFactor != 0.5 {
+		t.Errorf("Expected DecreaseFactor to be 0.5, got %f", learning.DecreaseFactor)
+	}
+	if learning.IncreaseInterval != 60 {
+		t.Errorf("Expected IncreaseInterval to be 60, got %d", learning.IncreaseInterval)
+	}
+	if learning.MinEstimate != 1 {
+		t.Errorf("Expected MinEstimate to be 1, got %d", learning.MinEstimate)
+	}
+	if learning.WindowSeconds != 60 {
+		t.Errorf("Expected WindowSeconds to be 60, got %d", learning.WindowSeconds)
+	}
+}
+
+func TestResolveCapacityLearning(t *testing.T) {
+	t.Run("nil override returns defaults", func(t *testing.T) {
+		resolved := ResolveCapacityLearning(nil)
+		if resolved != DefaultCapacityLearning() {
+			t.Errorf("Expected defaults, got %+v", resolved)
+		}
+	})
+
+	t.Run("only non-zero override fields replace defaults", func(t *testing.T) {
+		override := &CapacityLearning{
+			DecreaseFactor: 0.25,
+			MinEstimate:    5,
+			// IncreaseInterval and WindowSeconds left zero - should fall back to defaults.
+		}
+		resolved := ResolveCapacityLearning(override)
+
+		if resolved.DecreaseFactor != 0.25 {
+			t.Errorf("Expected DecreaseFactor to be 0.25, got %f", resolved.DecreaseFactor)
+		}
+		if resolved.MinEstimate != 5 {
+			t.Errorf("Expected MinEstimate to be 5, got %d", resolved.MinEstimate)
+		}
+		if resolved.IncreaseInterval != 60 {
+			t.Errorf("Expected IncreaseInterval to fall back to default 60, got %d", resolved.IncreaseInterval)
+		}
+		if resolved.WindowSeconds != 60 {
+			t.Errorf("Expected WindowSeconds to fall back to default 60, got %d", resolved.WindowSeconds)
+		}
+	})
+}
+
+func TestEndpointWithCapacityLearningOverride(t *testing.T) {
+	endpoint := Endpoint{
+		Provider: "alchemy",
+		CapacityLearning: &CapacityLearning{
+			DecreaseFactor: 0.75,
+		},
+		Role:    "primary",
+		Type:    "full",
+		HTTPURL: "http://test.com",
+	}
+
+	data, err := json.Marshal(endpoint)
+	if err != nil {
+		t.Fatalf("Failed to marshal endpoint: %v", err)
+	}
+
+	var decoded Endpoint
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Failed to unmarshal endpoint: %v", err)
+	}
+
+	if decoded.CapacityLearning == nil {
+		t.Fatal("Expected capacity_learning to survive round-trip")
+	}
+	if decoded.CapacityLearning.DecreaseFactor != 0.75 {
+		t.Errorf("Expected DecreaseFactor to be 0.75, got %f", decoded.CapacityLearning.DecreaseFactor)
 	}
 }

@@ -375,7 +375,7 @@ func (rls *RateLimitScheduler) checkEndpointHealth(ctx context.Context, endpoint
 			Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).
 			Int("code", rpcResp.Error.Code).
 			Str("message", rpcResp.Error.Message)
-		if isJSONRPCRateLimitCode(rpcResp.Error.Code) {
+		if health.IsJSONRPCRateLimitCode(rpcResp.Error.Code) {
 			evt.Msg("Recovery check received JSON-RPC rate-limit error")
 		} else {
 			evt.Msg("Recovery check received JSON-RPC error")
@@ -392,12 +392,6 @@ func (rls *RateLimitScheduler) checkEndpointHealth(ctx context.Context, endpoint
 
 	log.Debug().Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Recovery check successful")
 	return true
-}
-
-// isJSONRPCRateLimitCode reports whether a JSON-RPC error code indicates rate limiting.
-// -32005 is the standard "Request limit exceeded" code used by Infura, Alchemy, and others.
-func isJSONRPCRateLimitCode(code int) bool {
-	return code == -32005
 }
 
 // shouldResetBackoff determines if the backoff cycle should be reset

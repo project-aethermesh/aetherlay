@@ -9,20 +9,29 @@ import (
 // MockValkeyClient is a mock implementation of ValkeyClientIface for testing.
 // It supports in-memory endpoint status storage and is safe for concurrent use.
 type MockValkeyClient struct {
-	rateLimitStates map[string]*RateLimitState
-	requestCounts   map[string]map[string]map[string][3]int64 // [0]=24h, [1]=1m, [2]=all
-	statuses        map[string]*EndpointStatus
-	values          map[string]string // Generic key-value storage for Set/Get
-	mu              sync.RWMutex
+	rateLimitStates   map[string]*RateLimitState
+	requestCounts     map[string]map[string]map[string][3]int64 // [0]=24h, [1]=1m, [2]=all
+	capacityCounts    map[string]map[int64]int64                // "chain:endpoint" -> bucket -> count
+	capacityEstimates map[string]*CapacityEstimate              // "chain:endpoint" -> learned estimate
+	statuses          map[string]*EndpointStatus
+	values            map[string]string // Generic key-value storage for Set/Get
+	mu                sync.RWMutex
+
+	// NowFunc lets tests deterministically simulate capacity-window rollover
+	// without a real sleep. Defaults to time.Now.
+	NowFunc func() time.Time
 }
 
 // NewMockValkeyClient creates a new MockValkeyClient with empty state.
 func NewMockValkeyClient() *MockValkeyClient {
 	return &MockValkeyClient{
-		rateLimitStates: make(map[string]*RateLimitState),
-		requestCounts:   make(map[string]map[string]map[string][3]int64),
-		statuses:        make(map[string]*EndpointStatus),
-		values:          make(map[string]string),
+		rateLimitStates:   make(map[string]*RateLimitState),
+		requestCounts:     make(map[string]map[string]map[string][3]int64),
+		capacityCounts:    make(map[string]map[int64]int64),
+		capacityEstimates: make(map[string]*CapacityEstimate),
+		statuses:          make(map[string]*EndpointStatus),
+		values:            make(map[string]string),
+		NowFunc:           time.Now,
 	}
 }
 
@@ -130,6 +139,56 @@ func (m *MockValkeyClient) SetRateLimitState(_ context.Context, chain, endpoint 
 	defer m.mu.Unlock()
 	key := chain + ":" + endpoint
 	m.rateLimitStates[key] = &state
+	return nil
+}
+
+// IncrementCapacityCount increments the mock's in-memory capacity counter for the
+// endpoint's current fixed window (bucketed by NowFunc().Unix()/windowSeconds, mirroring
+// the real ValkeyClient's bucketing) and returns the new count.
+func (m *MockValkeyClient) IncrementCapacityCount(_ context.Context, chain, endpoint string, windowSeconds int) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := chain + ":" + endpoint
+	bucket := m.NowFunc().Unix() / int64(windowSeconds)
+	if _, ok := m.capacityCounts[key]; !ok {
+		m.capacityCounts[key] = make(map[int64]int64)
+	}
+	m.capacityCounts[key][bucket]++
+	return m.capacityCounts[key][bucket], nil
+}
+
+// GetCapacityCount returns the mock's in-memory capacity counter for the endpoint's
+// current fixed window, or 0 if nothing has been recorded in that window yet.
+func (m *MockValkeyClient) GetCapacityCount(_ context.Context, chain, endpoint string, windowSeconds int) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	key := chain + ":" + endpoint
+	bucket := m.NowFunc().Unix() / int64(windowSeconds)
+	if buckets, ok := m.capacityCounts[key]; ok {
+		return buckets[bucket], nil
+	}
+	return 0, nil
+}
+
+// GetCapacityEstimate returns the mock's in-memory learned capacity estimate for an
+// endpoint, or a zero-value estimate (HasEstimate: false) if none has been recorded.
+func (m *MockValkeyClient) GetCapacityEstimate(_ context.Context, chain, endpoint string) (*CapacityEstimate, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	key := chain + ":" + endpoint
+	estimate, ok := m.capacityEstimates[key]
+	if !ok {
+		return &CapacityEstimate{}, nil
+	}
+	return estimate, nil
+}
+
+// SetCapacityEstimate stores the mock's in-memory learned capacity estimate for an endpoint.
+func (m *MockValkeyClient) SetCapacityEstimate(_ context.Context, chain, endpoint string, estimate CapacityEstimate) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := chain + ":" + endpoint
+	m.capacityEstimates[key] = &estimate
 	return nil
 }
 
