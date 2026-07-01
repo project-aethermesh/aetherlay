@@ -238,9 +238,20 @@ func (rls *RateLimitScheduler) performRecoveryCheck(ctx context.Context, chain, 
 	state.RecoveryAttempts++
 	state.LastRecoveryCheck = time.Now()
 
-	// Update current backoff for next iteration
-	if state.CurrentBackoff == 0 {
-		state.CurrentBackoff = rateLimitConfig.InitialBackoff
+	// Update current backoff for next iteration. Gate on RecoveryAttempts, not
+	// CurrentBackoff == 0: handleRateLimit can seed CurrentBackoff to a precise nonzero
+	// value (from a Retry-After header or Infura's daily-quota MaxBackoff), and a bare
+	// "== 0" check would then look like escalation had already happened, multiplying the
+	// backoff after only a single probe instead of giving the seeded value one repeat
+	// wait first - the same treatment a guessed InitialBackoff gets below.
+	if state.RecoveryAttempts == 1 {
+		// First attempt for this episode: only fall back to InitialBackoff if nothing
+		// more precise was seeded: a signal-seeded value is left untouched, so the
+		// second attempt still waits the exact seeded duration once more before this
+		// same "else" branch below starts multiplying it.
+		if state.CurrentBackoff == 0 {
+			state.CurrentBackoff = rateLimitConfig.InitialBackoff
+		}
 	} else {
 		newBackoff := int(float64(state.CurrentBackoff) * rateLimitConfig.BackoffMultiplier)
 		state.CurrentBackoff = min(newBackoff, rateLimitConfig.MaxBackoff)
