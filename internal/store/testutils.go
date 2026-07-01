@@ -148,6 +148,9 @@ func (m *MockValkeyClient) SetRateLimitState(_ context.Context, chain, endpoint 
 func (m *MockValkeyClient) IncrementCapacityCount(_ context.Context, chain, endpoint string, windowSeconds int) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if windowSeconds <= 0 {
+		windowSeconds = 1
+	}
 	key := chain + ":" + endpoint
 	bucket := m.NowFunc().Unix() / int64(windowSeconds)
 	if _, ok := m.capacityCounts[key]; !ok {
@@ -162,6 +165,9 @@ func (m *MockValkeyClient) IncrementCapacityCount(_ context.Context, chain, endp
 func (m *MockValkeyClient) GetCapacityCount(_ context.Context, chain, endpoint string, windowSeconds int) (int64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if windowSeconds <= 0 {
+		windowSeconds = 1
+	}
 	key := chain + ":" + endpoint
 	bucket := m.NowFunc().Unix() / int64(windowSeconds)
 	if buckets, ok := m.capacityCounts[key]; ok {

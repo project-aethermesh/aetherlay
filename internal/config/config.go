@@ -3,6 +3,8 @@ package config
 import (
 	"encoding/json"
 	"os"
+
+	"github.com/rs/zerolog/log"
 )
 
 // RateLimitRecovery represents the configuration for rate limit recovery
@@ -91,11 +93,34 @@ func LoadConfig(path string) (*Config, error) {
 	for chainName, chainEndpoints := range config.Endpoints {
 		for endpointID, endpoint := range chainEndpoints {
 			substituteEnvVarsInEndpoint(&endpoint)
+			validateEndpointCapacity(chainName, endpointID, &endpoint)
 			config.Endpoints[chainName][endpointID] = endpoint
 		}
 	}
 
 	return &config, nil
+}
+
+// validateEndpointCapacity catches an endpoint's static Capacity being configured with a
+// non-positive WindowSeconds (e.g. omitted entirely, which JSON-decodes to the int zero
+// value). WindowSeconds ends up as a divisor when computing the Valkey bucket key for
+// capacity counting (see capacityBucketKey in internal/store/valkey.go), so a zero or
+// negative value would panic on the endpoint's very first request. Rather than crash,
+// disable proactive capacity throttling for that endpoint (matching today's behavior for
+// an endpoint with no capacity configured at all) and warn loudly so the operator notices
+// the misconfiguration.
+func validateEndpointCapacity(chain, endpointID string, endpoint *Endpoint) {
+	if endpoint.Capacity == nil {
+		return
+	}
+	if endpoint.Capacity.WindowSeconds <= 0 {
+		log.Warn().
+			Str("chain", chain).
+			Str("endpoint", endpointID).
+			Int("window_seconds", endpoint.Capacity.WindowSeconds).
+			Msg("Endpoint's capacity.window_seconds must be positive - disabling proactive capacity throttling for this endpoint")
+		endpoint.Capacity = nil
+	}
 }
 
 // GetEndpointsForChain returns all endpoints for a specific chain.

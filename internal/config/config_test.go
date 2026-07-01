@@ -152,6 +152,64 @@ func TestLoadConfigInvalidJSON(t *testing.T) {
 	}
 }
 
+// TestLoadConfigDisablesCapacityWithNonPositiveWindowSeconds guards against a regression
+// of a divide-by-zero panic: WindowSeconds is used as a divisor when computing the Valkey
+// capacity bucket key, so a zero (e.g. omitted from the JSON) or negative value must never
+// reach the rest of the system - LoadConfig should catch it and disable capacity for that
+// endpoint instead of letting it through.
+func TestLoadConfigDisablesCapacityWithNonPositiveWindowSeconds(t *testing.T) {
+	tmpFile := "test_zero_window.json"
+	content := `{
+		"ethereum": {
+			"zero-window": {
+				"provider": "alchemy",
+				"role": "primary",
+				"type": "full",
+				"http_url": "http://test.com",
+				"capacity": {"max_requests": 100}
+			},
+			"negative-window": {
+				"provider": "alchemy",
+				"role": "primary",
+				"type": "full",
+				"http_url": "http://test2.com",
+				"capacity": {"max_requests": 100, "window_seconds": -5}
+			},
+			"valid-window": {
+				"provider": "alchemy",
+				"role": "primary",
+				"type": "full",
+				"http_url": "http://test3.com",
+				"capacity": {"max_requests": 100, "window_seconds": 10}
+			}
+		}
+	}`
+	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+	defer os.Remove(tmpFile)
+
+	cfg, err := LoadConfig(tmpFile)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	endpoints := cfg.Endpoints["ethereum"]
+
+	if endpoints["zero-window"].Capacity != nil {
+		t.Error("Expected Capacity to be disabled (nil) for an endpoint with omitted (zero) window_seconds")
+	}
+	if endpoints["negative-window"].Capacity != nil {
+		t.Error("Expected Capacity to be disabled (nil) for an endpoint with negative window_seconds")
+	}
+	if endpoints["valid-window"].Capacity == nil {
+		t.Fatal("Expected Capacity to remain set for an endpoint with a valid window_seconds")
+	}
+	if endpoints["valid-window"].Capacity.WindowSeconds != 10 {
+		t.Errorf("Expected valid endpoint's WindowSeconds to be untouched (10), got %d", endpoints["valid-window"].Capacity.WindowSeconds)
+	}
+}
+
 func TestDefaultRateLimitRecovery(t *testing.T) {
 	config := DefaultRateLimitRecovery()
 

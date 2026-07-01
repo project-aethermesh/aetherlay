@@ -325,6 +325,24 @@ func TestGetCapacityCountForUnusedEndpointReturnsZero(t *testing.T) {
 	}
 }
 
+// TestCapacityCountDoesNotPanicOnNonPositiveWindowSeconds guards against a regression of
+// a divide-by-zero panic: windowSeconds is used as a divisor to compute the capacity
+// bucket, so a caller passing 0 or a negative value (e.g. from a bug elsewhere, since
+// config.LoadConfig is the primary guard, not this function) must never crash the process.
+func TestCapacityCountDoesNotPanicOnNonPositiveWindowSeconds(t *testing.T) {
+	client := NewMockValkeyClient()
+	ctx := context.Background()
+
+	for _, windowSeconds := range []int{0, -1, -100} {
+		if _, err := client.IncrementCapacityCount(ctx, "test-chain", "ep1", windowSeconds); err != nil {
+			t.Fatalf("IncrementCapacityCount(windowSeconds=%d) failed: %v", windowSeconds, err)
+		}
+		if _, err := client.GetCapacityCount(ctx, "test-chain", "ep1", windowSeconds); err != nil {
+			t.Fatalf("GetCapacityCount(windowSeconds=%d) failed: %v", windowSeconds, err)
+		}
+	}
+}
+
 func TestCapacityCountWindowRollover(t *testing.T) {
 	client := NewMockValkeyClient()
 	ctx := context.Background()

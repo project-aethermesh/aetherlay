@@ -395,6 +395,12 @@ func (r *ValkeyClient) SetRateLimitState(ctx context.Context, chain, endpoint st
 // IncrementRequestCount's rolling TTL, this key naturally stops being written to
 // once the window elapses, so a fresh window always starts at zero.
 func capacityBucketKey(chain, endpoint string, windowSeconds int) string {
+	// windowSeconds is a divisor below; config.LoadConfig is the primary guard against a
+	// non-positive value reaching here, but this function is reachable through the public
+	// ValkeyClientIface, so it defends itself too rather than panicking on bad input.
+	if windowSeconds <= 0 {
+		windowSeconds = 1
+	}
 	bucket := time.Now().Unix() / int64(windowSeconds)
 	return capacityPrefix + chain + ":" + endpoint + ":" + strconv.FormatInt(bucket, 10)
 }
