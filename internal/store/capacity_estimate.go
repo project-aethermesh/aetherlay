@@ -159,29 +159,32 @@ func ApplyLearnedCapacityDecreaseIfEligible(ctx context.Context, valkeyClient Va
 		return
 	}
 
-	// Read against whichever window the usage counter is actually being written to right
-	// now: the estimate's own frozen window once one exists, not the live-resolved
-	// config - otherwise this read targets a different Valkey bucket key than the
-	// dispatch-time usage writes, and observedCount below would always be stale/zero.
-	// Only before any estimate has been seeded is there no frozen value to match.
-	readWindowSeconds := params.WindowSeconds
+	// Once an estimate exists, its own WindowSeconds is permanently authoritative - not
+	// just for this read, but for the estimate this decrease persists below. Otherwise a
+	// later config change to the learning window would both target a different Valkey
+	// bucket key than the dispatch-time usage writes (making observedCount stale/zero)
+	// and silently re-freeze the estimate to the new value, contradicting the documented
+	// invariant that the window is frozen for the lifetime of the estimate. Only before
+	// any estimate has been seeded is there no frozen value yet, so the live-resolved
+	// config is used - and that first decrease is what freezes it from then on.
+	windowSeconds := params.WindowSeconds
 	if prior.HasEstimate {
-		readWindowSeconds = prior.WindowSeconds
+		windowSeconds = prior.WindowSeconds
 	}
 
-	if !ShouldApplyCapacityDecrease(*prior, readWindowSeconds, now) {
+	if !ShouldApplyCapacityDecrease(*prior, windowSeconds, now) {
 		log.Debug().Str("chain", chain).Str("endpoint", endpointID).Msg("Skipping capacity estimate decrease, within cooldown of the last decrease")
 		return
 	}
 
-	observedCount, err := valkeyClient.GetCapacityCount(ctx, chain, endpointID, readWindowSeconds)
+	observedCount, err := valkeyClient.GetCapacityCount(ctx, chain, endpointID, windowSeconds)
 	if err != nil {
 		log.Debug().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to get capacity count for estimate decrease")
 		return
 	}
 
 	effectiveNow := EffectiveMaxRequests(*prior, params, now)
-	newEstimate := ApplyCapacityDecrease(*prior, effectiveNow, observedCount, params.WindowSeconds, params, now)
+	newEstimate := ApplyCapacityDecrease(*prior, effectiveNow, observedCount, windowSeconds, params, now)
 
 	if err := valkeyClient.SetCapacityEstimate(ctx, chain, endpointID, newEstimate); err != nil {
 		log.Debug().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to set capacity estimate")

@@ -453,3 +453,63 @@ func TestApplyLearnedCapacityDecreaseReadsFrozenWindowNotLiveConfig(t *testing.T
 		t.Errorf("Expected decrease to be grounded in the frozen window's observed count (8 -> 4), got MaxRequests=%d", final.MaxRequests)
 	}
 }
+
+func TestApplyLearnedCapacityDecreasePersistsFrozenWindowNotLiveConfig(t *testing.T) {
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"ethereum": {
+				"ep1": config.Endpoint{
+					Provider:         "alchemy",
+					Role:             "primary",
+					Type:             "full",
+					HTTPURL:          "http://ep1",
+					CapacityLearning: &config.CapacityLearning{WindowSeconds: 30}, // live value, differs from frozen
+				},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	ctx := context.Background()
+	ep := cfg.Endpoints["ethereum"]["ep1"]
+
+	// Seed an estimate frozen at 60s, with its cooldown already elapsed.
+	if err := valkeyClient.SetCapacityEstimate(ctx, "ethereum", "ep1", store.CapacityEstimate{
+		HasEstimate: true, MaxRequests: 10, IncreaseStep: 1, WindowSeconds: 60,
+		LastDecreaseAt: time.Now().Add(-120 * time.Second),
+	}); err != nil {
+		t.Fatalf("SetCapacityEstimate failed: %v", err)
+	}
+	valkeyClient.IncrementCapacityCount(ctx, "ethereum", "ep1", 60)
+
+	server := NewServer(cfg, valkeyClient, learningTestConfig())
+	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep)
+
+	final, err := valkeyClient.GetCapacityEstimate(ctx, "ethereum", "ep1")
+	if err != nil {
+		t.Fatalf("GetCapacityEstimate failed: %v", err)
+	}
+	// The persisted estimate's WindowSeconds must stay frozen at the value it was seeded
+	// with (60), not get re-synced to the live config value (30) on this decrease - the
+	// window is documented as permanently frozen for the estimate's lifetime, not just
+	// stable between reads.
+	if final.WindowSeconds != 60 {
+		t.Errorf("Expected the persisted estimate to keep its frozen WindowSeconds (60), got %d", final.WindowSeconds)
+	}
+
+	// A second decrease after another elapsed cooldown must still persist the original
+	// frozen window, not the live one - the freeze must survive across repeated decreases.
+	valkeyClient.SetCapacityEstimate(ctx, "ethereum", "ep1", store.CapacityEstimate{
+		HasEstimate: true, MaxRequests: final.MaxRequests, IncreaseStep: final.IncreaseStep, WindowSeconds: final.WindowSeconds,
+		LastDecreaseAt: time.Now().Add(-120 * time.Second),
+	})
+	valkeyClient.IncrementCapacityCount(ctx, "ethereum", "ep1", 60)
+	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep)
+
+	final2, err := valkeyClient.GetCapacityEstimate(ctx, "ethereum", "ep1")
+	if err != nil {
+		t.Fatalf("GetCapacityEstimate failed: %v", err)
+	}
+	if final2.WindowSeconds != 60 {
+		t.Errorf("Expected the frozen window to survive a second decrease (60), got %d", final2.WindowSeconds)
+	}
+}
