@@ -885,7 +885,9 @@ func (s *Server) getEndpointsByRole(chainEndpoints config.ChainEndpoints, role s
 				// a provider signal.
 				if s.appConfig.CapacityThrottlingEnabled {
 					if maxRequests, windowSeconds, hasCeiling := s.effectiveCapacityCeiling(chain, endpointID, endpoint); hasCeiling {
-						count, err := s.valkeyClient.GetCapacityCount(context.Background(), chain, endpointID, windowSeconds)
+						capCtx, capCancel := context.WithTimeout(context.Background(), 2*time.Second)
+						count, err := s.valkeyClient.GetCapacityCount(capCtx, chain, endpointID, windowSeconds)
+						capCancel()
 						if err == nil {
 							if metrics.EndpointCapacityUtilization != nil {
 								metrics.EndpointCapacityUtilization.WithLabelValues(chain, endpointID).Set(float64(count) / float64(maxRequests))
@@ -1021,7 +1023,9 @@ func (s *Server) effectiveCapacityCeiling(chain, endpointID string, ep config.En
 	if !s.appConfig.CapacityLearningEnabled {
 		return 0, 0, false
 	}
-	estimate, err := s.valkeyClient.GetCapacityEstimate(context.Background(), chain, endpointID)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	estimate, err := s.valkeyClient.GetCapacityEstimate(ctx, chain, endpointID)
 	if err != nil || !estimate.HasEstimate {
 		return 0, 0, false
 	}
@@ -1339,11 +1343,6 @@ func (s *Server) providerForEndpoint(chain, endpointID string) string {
 	return chainEndpoints[endpointID].Provider
 }
 
-// capacityWindowSeconds resolves the window width to track usage against: the static
-// CapacityLimit's window if configured, else the (possibly overridden) adaptive
-// learning window - so an endpoint with no static Capacity still accumulates real
-// GetCapacityCount evidence before it's ever rate limited, for applyLearnedCapacityDecrease
-// to seed an estimate from on the first hit.
 // capacityWindowSeconds resolves the window width to track usage against for the WRITE
 // path (recordCapacityUsage's usage counter). It must agree with whatever window
 // effectiveCapacityCeiling's READ path is watching, or gating silently stops working -
@@ -1358,7 +1357,10 @@ func (s *Server) capacityWindowSeconds(chain, endpointID string, endpoint config
 		return endpoint.Capacity.WindowSeconds
 	}
 	if s.appConfig.CapacityLearningEnabled {
-		if estimate, err := s.valkeyClient.GetCapacityEstimate(context.Background(), chain, endpointID); err == nil && estimate.HasEstimate {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		estimate, err := s.valkeyClient.GetCapacityEstimate(ctx, chain, endpointID)
+		cancel()
+		if err == nil && estimate.HasEstimate {
 			return estimate.WindowSeconds
 		}
 	}

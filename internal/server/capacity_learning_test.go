@@ -513,3 +513,58 @@ func TestApplyLearnedCapacityDecreasePersistsFrozenWindowNotLiveConfig(t *testin
 		t.Errorf("Expected the frozen window to survive a second decrease (60), got %d", final2.WindowSeconds)
 	}
 }
+
+// deadlineCheckingValkeyClient wraps MockValkeyClient to record whether any capacity
+// lookup arrived with a context that has no deadline - i.e. context.Background(), which
+// can let a slow Valkey stall endpoint selection indefinitely instead of bounding it to
+// the request's timeout budget.
+type deadlineCheckingValkeyClient struct {
+	*store.MockValkeyClient
+	sawNoDeadline bool
+}
+
+func (c *deadlineCheckingValkeyClient) GetCapacityCount(ctx context.Context, chain, endpoint string, windowSeconds int) (int64, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		c.sawNoDeadline = true
+	}
+	return c.MockValkeyClient.GetCapacityCount(ctx, chain, endpoint, windowSeconds)
+}
+
+func (c *deadlineCheckingValkeyClient) GetCapacityEstimate(ctx context.Context, chain, endpoint string) (*store.CapacityEstimate, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		c.sawNoDeadline = true
+	}
+	return c.MockValkeyClient.GetCapacityEstimate(ctx, chain, endpoint)
+}
+
+func TestCapacityValkeyLookupsUseRequestScopedTimeouts(t *testing.T) {
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"ethereum": {
+				"ep1": config.Endpoint{Provider: "alchemy", Role: "primary", Type: "full", HTTPURL: "http://ep1"},
+			},
+		},
+	}
+	inner := store.NewMockValkeyClient()
+	inner.PopulateStatuses(map[string]*store.EndpointStatus{
+		"ethereum:ep1": {HasHTTP: true, HealthyHTTP: true},
+	})
+	ctx := context.Background()
+	if err := inner.SetCapacityEstimate(ctx, "ethereum", "ep1", store.CapacityEstimate{
+		HasEstimate: true, MaxRequests: 5, IncreaseStep: 1, WindowSeconds: 60, LastDecreaseAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SetCapacityEstimate failed: %v", err)
+	}
+
+	client := &deadlineCheckingValkeyClient{MockValkeyClient: inner}
+	server := NewServer(cfg, client, learningTestConfig())
+
+	// Exercises effectiveCapacityCeiling + GetCapacityCount via getEndpointsByRole.
+	server.getAvailableEndpoints("ethereum", false, false)
+	// Exercises capacityWindowSeconds directly.
+	server.capacityWindowSeconds("ethereum", "ep1", cfg.Endpoints["ethereum"]["ep1"])
+
+	if client.sawNoDeadline {
+		t.Error("Expected all capacity Valkey lookups in the selection path to use a context with a deadline, not context.Background()")
+	}
+}
