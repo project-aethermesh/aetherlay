@@ -1099,6 +1099,59 @@ func TestDefaultForwardRequestWithBodyFuncSkipsEmbeddedScanForNonAlchemyProvider
 	}
 }
 
+// TestDefaultForwardRequestWithBodyFuncFailsOpenWhenBodyExceedsScanCap tests the
+// intentional fail-open behavior when an Alchemy 2xx JSON body exceeds
+// maxRateLimitScanBodyBytes: rather than fully buffering an unbounded body in memory,
+// the scan is skipped entirely and the body is streamed through unmodified - even if it
+// carries an embedded rate-limit error the scan would otherwise have caught. This
+// guards the tradeoff described at maxRateLimitScanBodyBytes's declaration against a
+// silent regression (e.g. accidentally treating a truncated scan as proof of no
+// embedded error, or losing bytes from the streamed tail).
+func TestDefaultForwardRequestWithBodyFuncFailsOpenWhenBodyExceedsScanCap(t *testing.T) {
+	// An embedded rate-limit error placed first, followed by enough padding to push the
+	// total body past maxRateLimitScanBodyBytes - so the scan never gets far enough to see
+	// it, and the whole oversized body must stream through untouched.
+	padding := strings.Repeat("a", int(maxRateLimitScanBodyBytes))
+	oversizedBody := fmt.Sprintf(
+		`[{"jsonrpc":"2.0","id":1,"error":{"code":-32005,"message":"Request limit exceeded"}},{"jsonrpc":"2.0","id":2,"result":"0x%s"}]`,
+		padding,
+	)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(oversizedBody))
+	}))
+	defer ts.Close()
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"chainA": {
+				"ep1": config.Endpoint{Provider: "alchemy", HTTPURL: ts.URL, Role: "primary", Type: "full"},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	server := NewServer(cfg, valkeyClient, createTestConfig())
+
+	rec := httptest.NewRecorder()
+	err := server.defaultForwardRequestWithBodyFunc(rec, context.Background(), "POST", ts.URL, nil, http.Header{})
+	if err != nil {
+		t.Fatalf("Expected no error - an oversized body must fail open and stream through, got: %v", err)
+	}
+	if rec.Body.String() != oversizedBody {
+		t.Errorf("Expected the oversized body to be forwarded verbatim (got length %d, want %d)", rec.Body.Len(), len(oversizedBody))
+	}
+
+	state, stateErr := valkeyClient.GetRateLimitState(context.Background(), "chainA", "ep1")
+	if stateErr != nil {
+		t.Fatalf("Failed to get rate limit state: %v", stateErr)
+	}
+	if state.RateLimited {
+		t.Error("Expected the embedded rate-limit error beyond the scan cap to go undetected, not mark the endpoint rate limited")
+	}
+}
+
 func TestProviderNeedsEmbeddedRateLimitScan(t *testing.T) {
 	tests := []struct {
 		provider string
