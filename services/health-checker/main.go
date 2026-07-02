@@ -48,7 +48,7 @@ func standaloneInitialBackoff(cfg *config.Config, chain, endpointID string, sign
 // implementation server.Server.applyLearnedCapacityDecrease calls, so the load balancer
 // and the standalone health checker - two separate processes mutating the same
 // Valkey-persisted estimate - never diverge.
-func applyStandaloneLearnedCapacityDecrease(cfg *config.Config, valkeyClient store.ValkeyClientIface, capacityThrottlingEnabled, capacityLearningEnabled bool, chain, endpointID string) {
+func applyStandaloneLearnedCapacityDecrease(cfg *config.Config, valkeyClient store.ValkeyClientIface, capacityThrottlingEnabled, capacityLearningEnabled bool, chain, endpointID string, signal health.RateLimitSignal) {
 	chainEndpoints, ok := cfg.GetEndpointsForChain(chain)
 	if !ok {
 		return
@@ -60,7 +60,7 @@ func applyStandaloneLearnedCapacityDecrease(cfg *config.Config, valkeyClient sto
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	store.ApplyLearnedCapacityDecreaseIfEligible(ctx, valkeyClient, chain, endpointID, ep, capacityThrottlingEnabled, capacityLearningEnabled)
+	store.ApplyLearnedCapacityDecreaseIfEligible(ctx, valkeyClient, chain, endpointID, ep, capacityThrottlingEnabled, capacityLearningEnabled, signal.IsDailyQuota)
 }
 
 // createStandaloneRateLimitHandler creates a simple rate limit handler for the standalone health checker
@@ -96,7 +96,7 @@ func createStandaloneRateLimitHandler(cfg *config.Config, valkeyClient store.Val
 		// Check for rate limits first (this signal), then approximate the endpoint's
 		// safe throughput ceiling from it - only engages for endpoints with no static
 		// Capacity, and shares the exact same math as the load balancer's own path.
-		applyStandaloneLearnedCapacityDecrease(cfg, valkeyClient, capacityThrottlingEnabled, capacityLearningEnabled, chain, endpointID)
+		applyStandaloneLearnedCapacityDecrease(cfg, valkeyClient, capacityThrottlingEnabled, capacityLearningEnabled, chain, endpointID, signal)
 	}
 }
 

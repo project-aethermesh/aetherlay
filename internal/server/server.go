@@ -1393,10 +1393,10 @@ func (s *Server) recordCapacityUsage(chain string, endpoint config.Endpoint, end
 // rate-limit signal. It delegates to store.ApplyLearnedCapacityDecreaseIfEligible, the
 // same shared implementation the standalone health checker calls, so the two processes -
 // both mutating the same Valkey-persisted estimate - never diverge.
-func (s *Server) applyLearnedCapacityDecrease(chain, endpointID string, endpoint config.Endpoint) {
+func (s *Server) applyLearnedCapacityDecrease(chain, endpointID string, endpoint config.Endpoint, signal health.RateLimitSignal) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	store.ApplyLearnedCapacityDecreaseIfEligible(ctx, s.valkeyClient, chain, endpointID, endpoint, s.appConfig.CapacityThrottlingEnabled, s.appConfig.CapacityLearningEnabled)
+	store.ApplyLearnedCapacityDecreaseIfEligible(ctx, s.valkeyClient, chain, endpointID, endpoint, s.appConfig.CapacityThrottlingEnabled, s.appConfig.CapacityLearningEnabled, signal.IsDailyQuota)
 }
 
 // bodyCarriesRateLimitSignal reports whether a 2xx JSON-RPC response body (a single
@@ -1703,7 +1703,7 @@ func (s *Server) handleRateLimit(chain, endpointID, protocol string, signal heal
 	// throughput ceiling from it - only engages for endpoints with no static Capacity.
 	if chainEndpoints, ok := s.config.GetEndpointsForChain(chain); ok {
 		if ep, ok := chainEndpoints[endpointID]; ok {
-			s.applyLearnedCapacityDecrease(chain, endpointID, ep)
+			s.applyLearnedCapacityDecrease(chain, endpointID, ep, signal)
 		}
 	}
 

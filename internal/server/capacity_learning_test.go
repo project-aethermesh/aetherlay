@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"aetherlay/internal/config"
+	"aetherlay/internal/health"
 	"aetherlay/internal/helpers"
 	"aetherlay/internal/store"
 )
@@ -40,7 +41,7 @@ func TestApplyLearnedCapacityDecreaseSeedsFromObservedCount(t *testing.T) {
 	}
 
 	server := NewServer(cfg, valkeyClient, learningTestConfig())
-	server.applyLearnedCapacityDecrease("ethereum", "ep1", cfg.Endpoints["ethereum"]["ep1"])
+	server.applyLearnedCapacityDecrease("ethereum", "ep1", cfg.Endpoints["ethereum"]["ep1"], health.RateLimitSignal{})
 
 	estimate, err := valkeyClient.GetCapacityEstimate(ctx, "ethereum", "ep1")
 	if err != nil {
@@ -75,7 +76,7 @@ func TestApplyLearnedCapacityDecreaseSkipsWithinCooldown(t *testing.T) {
 	server := NewServer(cfg, valkeyClient, learningTestConfig())
 	ep := cfg.Endpoints["ethereum"]["ep1"]
 
-	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep)
+	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep, health.RateLimitSignal{})
 	first, _ := valkeyClient.GetCapacityEstimate(ctx, "ethereum", "ep1")
 	if first.MaxRequests != 5 {
 		t.Fatalf("Expected first decrease to seed 5, got %d", first.MaxRequests)
@@ -83,7 +84,7 @@ func TestApplyLearnedCapacityDecreaseSkipsWithinCooldown(t *testing.T) {
 
 	// Second hit immediately after - within the cooldown (the learning window itself) -
 	// must not decrease again even though the observed count hasn't changed.
-	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep)
+	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep, health.RateLimitSignal{})
 	second, _ := valkeyClient.GetCapacityEstimate(ctx, "ethereum", "ep1")
 	if second.MaxRequests != 5 {
 		t.Errorf("Expected MaxRequests to remain 5 (no double decrease within cooldown), got %d", second.MaxRequests)
@@ -107,7 +108,7 @@ func TestApplyLearnedCapacityDecreaseAppliesAgainAfterCooldownElapsed(t *testing
 	}
 
 	server := NewServer(cfg, valkeyClient, learningTestConfig())
-	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep)
+	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep, health.RateLimitSignal{})
 
 	seeded, _ := valkeyClient.GetCapacityEstimate(ctx, "ethereum", "ep1")
 	if seeded.MaxRequests != 5 {
@@ -128,7 +129,7 @@ func TestApplyLearnedCapacityDecreaseAppliesAgainAfterCooldownElapsed(t *testing
 		valkeyClient.IncrementCapacityCount(ctx, "ethereum", "ep1", 60)
 	}
 
-	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep)
+	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep, health.RateLimitSignal{})
 
 	final, err := valkeyClient.GetCapacityEstimate(ctx, "ethereum", "ep1")
 	if err != nil {
@@ -157,11 +158,39 @@ func TestApplyLearnedCapacityDecreaseSkipsWhenStaticCapacityConfigured(t *testin
 	ctx := context.Background()
 
 	server := NewServer(cfg, valkeyClient, learningTestConfig())
-	server.applyLearnedCapacityDecrease("ethereum", "ep1", cfg.Endpoints["ethereum"]["ep1"])
+	server.applyLearnedCapacityDecrease("ethereum", "ep1", cfg.Endpoints["ethereum"]["ep1"], health.RateLimitSignal{})
 
 	estimate, _ := valkeyClient.GetCapacityEstimate(ctx, "ethereum", "ep1")
 	if estimate.HasEstimate {
 		t.Error("Expected no learned estimate when a static Capacity is configured")
+	}
+}
+
+// TestApplyLearnedCapacityDecreaseSkipsForDailyQuotaSignal confirms an Infura-style
+// daily-credit-cap exhaustion (HTTP 402) never feeds the AIMD estimator: that signal
+// says nothing about the endpoint's short-term RPS capacity, so folding it in would
+// incorrectly halve a burst-capacity ceiling in response to a daily quota running out.
+func TestApplyLearnedCapacityDecreaseSkipsForDailyQuotaSignal(t *testing.T) {
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"ethereum": {
+				"ep1": config.Endpoint{Provider: "infura", Role: "primary", Type: "full", HTTPURL: "http://ep1"},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	ctx := context.Background()
+
+	for i := 0; i < 10; i++ {
+		valkeyClient.IncrementCapacityCount(ctx, "ethereum", "ep1", 60)
+	}
+
+	server := NewServer(cfg, valkeyClient, learningTestConfig())
+	server.applyLearnedCapacityDecrease("ethereum", "ep1", cfg.Endpoints["ethereum"]["ep1"], health.RateLimitSignal{IsDailyQuota: true})
+
+	estimate, _ := valkeyClient.GetCapacityEstimate(ctx, "ethereum", "ep1")
+	if estimate.HasEstimate {
+		t.Error("Expected no learned estimate to be seeded from a daily-quota (402) signal")
 	}
 }
 
@@ -179,7 +208,7 @@ func TestApplyLearnedCapacityDecreaseSkipsWhenLearningDisabled(t *testing.T) {
 	appConfig := learningTestConfig()
 	appConfig.CapacityLearningEnabled = false
 	server := NewServer(cfg, valkeyClient, appConfig)
-	server.applyLearnedCapacityDecrease("ethereum", "ep1", cfg.Endpoints["ethereum"]["ep1"])
+	server.applyLearnedCapacityDecrease("ethereum", "ep1", cfg.Endpoints["ethereum"]["ep1"], health.RateLimitSignal{})
 
 	estimate, _ := valkeyClient.GetCapacityEstimate(ctx, "ethereum", "ep1")
 	if estimate.HasEstimate {
@@ -440,7 +469,7 @@ func TestApplyLearnedCapacityDecreaseReadsFrozenWindowNotLiveConfig(t *testing.T
 	}
 
 	server := NewServer(cfg, valkeyClient, learningTestConfig())
-	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep)
+	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep, health.RateLimitSignal{})
 
 	final, err := valkeyClient.GetCapacityEstimate(ctx, "ethereum", "ep1")
 	if err != nil {
@@ -482,7 +511,7 @@ func TestApplyLearnedCapacityDecreasePersistsFrozenWindowNotLiveConfig(t *testin
 	valkeyClient.IncrementCapacityCount(ctx, "ethereum", "ep1", 60)
 
 	server := NewServer(cfg, valkeyClient, learningTestConfig())
-	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep)
+	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep, health.RateLimitSignal{})
 
 	final, err := valkeyClient.GetCapacityEstimate(ctx, "ethereum", "ep1")
 	if err != nil {
@@ -503,7 +532,7 @@ func TestApplyLearnedCapacityDecreasePersistsFrozenWindowNotLiveConfig(t *testin
 		LastDecreaseAt: time.Now().Add(-120 * time.Second),
 	})
 	valkeyClient.IncrementCapacityCount(ctx, "ethereum", "ep1", 60)
-	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep)
+	server.applyLearnedCapacityDecrease("ethereum", "ep1", ep, health.RateLimitSignal{})
 
 	final2, err := valkeyClient.GetCapacityEstimate(ctx, "ethereum", "ep1")
 	if err != nil {

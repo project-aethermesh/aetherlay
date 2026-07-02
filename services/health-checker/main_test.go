@@ -295,7 +295,7 @@ func TestApplyStandaloneLearnedCapacityDecreaseSeedsFromObservedCount(t *testing
 		valkeyClient.IncrementCapacityCount(ctx, "mainnet", "mock", 60)
 	}
 
-	applyStandaloneLearnedCapacityDecrease(cfg, valkeyClient, true, true, "mainnet", "mock")
+	applyStandaloneLearnedCapacityDecrease(cfg, valkeyClient, true, true, "mainnet", "mock", health.RateLimitSignal{})
 
 	estimate, err := valkeyClient.GetCapacityEstimate(ctx, "mainnet", "mock")
 	if err != nil {
@@ -323,7 +323,7 @@ func TestApplyStandaloneLearnedCapacityDecreaseSkipsWhenStaticCapacityConfigured
 	valkeyClient := store.NewMockValkeyClient()
 	ctx := context.Background()
 
-	applyStandaloneLearnedCapacityDecrease(cfg, valkeyClient, true, true, "mainnet", "mock")
+	applyStandaloneLearnedCapacityDecrease(cfg, valkeyClient, true, true, "mainnet", "mock", health.RateLimitSignal{})
 
 	estimate, _ := valkeyClient.GetCapacityEstimate(ctx, "mainnet", "mock")
 	if estimate.HasEstimate {
@@ -351,5 +351,32 @@ func TestCreateStandaloneRateLimitHandlerAlsoSeedsCapacityEstimate(t *testing.T)
 	}
 	if !estimate.HasEstimate || estimate.MaxRequests != 4 {
 		t.Errorf("Expected a learned estimate of 4 (8 observed * 0.5), got %+v", estimate)
+	}
+}
+
+// TestCreateStandaloneRateLimitHandlerSkipsCapacityEstimateForDailyQuota mirrors
+// TestApplyLearnedCapacityDecreaseSkipsForDailyQuotaSignal in the server package, but
+// through the standalone health checker's own production entry point
+// (createStandaloneRateLimitHandler), not just the shared store function directly - this
+// is what actually confirms the daily-quota exclusion is wired through this process's
+// handler, not only proven correct in the load balancer's call path.
+func TestCreateStandaloneRateLimitHandlerSkipsCapacityEstimateForDailyQuota(t *testing.T) {
+	cfg := mockConfig()
+	valkeyClient := store.NewMockValkeyClient()
+	ctx := context.Background()
+
+	for i := 0; i < 8; i++ {
+		valkeyClient.IncrementCapacityCount(ctx, "mainnet", "mock", 60)
+	}
+
+	handler := createStandaloneRateLimitHandler(cfg, valkeyClient, true, true)
+	handler("mainnet", "mock", "http", health.RateLimitSignal{IsRateLimited: true, IsDailyQuota: true})
+
+	estimate, err := valkeyClient.GetCapacityEstimate(ctx, "mainnet", "mock")
+	if err != nil {
+		t.Fatalf("GetCapacityEstimate failed: %v", err)
+	}
+	if estimate.HasEstimate {
+		t.Errorf("Expected no learned estimate to be seeded from a daily-quota (402) signal, got %+v", estimate)
 	}
 }

@@ -141,12 +141,19 @@ func (r *ValkeyClient) SetCapacityEstimate(ctx context.Context, chain, endpoint 
 // if present, is left completely untouched. A cooldown (the learning window itself)
 // collapses several near-simultaneous hits from one episode into a single decrease.
 //
+// isDailyQuota excludes Infura-style daily-credit-cap exhaustion (HTTP 402) from this
+// math entirely: that signal says nothing about the endpoint's short-term RPS capacity,
+// so folding it into the AIMD estimator would teach it the wrong lesson - halving a
+// burst-capacity ceiling in response to a daily quota running out. The long-cooldown
+// recovery backoff already seeded for this signal (see health.InitialBackoffForSignal)
+// is the correct - and separate - response.
+//
 // This is shared verbatim between the load balancer (internal/server) and the standalone
 // health checker (services/health-checker) - both mutate the same Valkey-persisted
 // estimate for a given endpoint, so they must apply identical math or silently disagree
 // about what the learned ceiling means for that endpoint.
-func ApplyLearnedCapacityDecreaseIfEligible(ctx context.Context, valkeyClient ValkeyClientIface, chain, endpointID string, ep config.Endpoint, capacityThrottlingEnabled, capacityLearningEnabled bool) {
-	if !capacityThrottlingEnabled || !capacityLearningEnabled || ep.Capacity != nil {
+func ApplyLearnedCapacityDecreaseIfEligible(ctx context.Context, valkeyClient ValkeyClientIface, chain, endpointID string, ep config.Endpoint, capacityThrottlingEnabled, capacityLearningEnabled, isDailyQuota bool) {
+	if !capacityThrottlingEnabled || !capacityLearningEnabled || ep.Capacity != nil || isDailyQuota {
 		return
 	}
 
