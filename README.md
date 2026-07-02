@@ -134,6 +134,8 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 
 | Flag | Default | Description |
 | --- | --- | --- |
+| `--capacity-learning-enabled` | `true` | Enable adaptive per-endpoint capacity estimation, learned from observed rate-limit hits, for endpoints with no static `capacity` configured (see [Adaptive Capacity Estimation](#adaptive-capacity-estimation)) |
+| `--capacity-throttling-enabled` | `true` | Enable proactive per-endpoint capacity throttling for endpoints with a configured `capacity` (see [Proactive Capacity Throttling](#proactive-capacity-throttling)) |
 | `--config-file` | `configs/endpoints.json` | Path to endpoints configuration file |
 | `--cors-headers` | `Accept, Authorization, Content-Type, Origin, X-Requested-With` | Allowed headers for CORS requests |
 | `--cors-methods` | `GET, POST, OPTIONS` | Allowed HTTP methods for CORS requests |
@@ -174,6 +176,8 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 | --- | --- | --- |
 | `ALCHEMY_API_KEY` | - | Example API key for Alchemy RPC endpoints. **Only needed for the example config.** The name must match the variable referenced in your `configs/endpoints.json`, if you need any. |
 | `INFURA_API_KEY` | - | Example API key for Infura RPC endpoints. **Only needed for the example config.** The name must match the variable referenced in your `configs/endpoints.json`, if you need any. |
+| `CAPACITY_LEARNING_ENABLED` | `true` | Enable adaptive per-endpoint capacity estimation, learned from observed rate-limit hits, for endpoints with no static `capacity` configured (see [Adaptive Capacity Estimation](#adaptive-capacity-estimation)) |
+| `CAPACITY_THROTTLING_ENABLED` | `true` | Enable proactive per-endpoint capacity throttling for endpoints with a configured `capacity` (see [Proactive Capacity Throttling](#proactive-capacity-throttling)) |
 | `CONFIG_FILE` | `configs/endpoints.json` | Path to the endpoints configuration file |
 | `CORS_HEADERS` | `Accept, Authorization, Content-Type, Origin, X-Requested-With` | Allowed headers for CORS requests |
 | `CORS_METHODS` | `GET, POST, OPTIONS` | Allowed HTTP methods for CORS requests |
@@ -340,8 +344,8 @@ Prevents routing traffic to pods before initial health checks complete:
 
 ### How Rate Limit Recovery Works
 
-1. **Detection**: When a request returns a rate limit error (HTTP 429), the endpoint is automatically marked as rate-limited.
-2. **Retries with "backoff"**: The system tries to reach the endpoint only after waiting for a specific amount of time, defined as a backoff, which is configurable by the user. This wait period increases each time, relative to another user-defined parameter (the backoff multiplier).
+1. **Detection**: When a request returns a rate limit error, the endpoint is automatically marked as rate-limited. This covers HTTP 429, Infura's HTTP 402 daily-credit-cap convention, and rate-limit errors embedded in a JSON-RPC response body even when the HTTP status is 200 (some providers, e.g. Alchemy on batch requests, only signal rate limiting this way). When a provider sends a `Retry-After` header, it's used to size the first recovery wait precisely instead of guessing.
+2. **Retries with "backoff"**: The system tries to reach the endpoint only after waiting for a specific amount of time, defined as a backoff, which is configurable by the user. This wait period increases each time, relative to another user-defined parameter (the backoff multiplier). For Infura's daily credit cap specifically, the first wait is seeded from the endpoint's own `max_backoff` rather than `initial_backoff`, since a daily quota can't be recovered by probing sooner.
 3. **Automatic recovery**: The system will reintroduce the endpoint back into the load balancing pool after a certain amount of successful consecutive requests. Users can specify how many consecutive requests are required for endpoints to be marked again as healthy.
 4. **Per-endpoint configuration**: Each endpoint can have its own rate limit recovery strategy tailored to the provider's limits. You can also simply rely on the system's defaults, which have been carefully set.
 
@@ -406,6 +410,108 @@ Rate limit recovery is configured per endpoint in your `endpoints.json` file:
   "reset_after": 86400
 }
 ```
+
+## Proactive Capacity Throttling
+
+Rate limit recovery (above) is reactive: it only kicks in once a provider has already rejected a request. None of the major RPC providers (Infura, Alchemy, dRPC) expose a live "remaining quota" header, so there's no way to know a provider's real-time budget from a response alone. Proactive capacity throttling closes that gap by letting you declare each endpoint's known ceiling and having Ætherlay self-throttle below it, so it avoids triggering the provider's limit in the first place.
+
+### How It Works
+
+1. **Configure a ceiling**: Set `capacity` on an endpoint with a request count and a window width, matching however your provider actually windows its limit.
+2. **Self-imposed counting**: Ætherlay counts every dispatch attempt to that endpoint (success or failure - a rejected attempt still spent real quota) against the ceiling, in a shared counter so it works correctly across multiple load-balancer replicas.
+3. **Gating**: An endpoint at its ceiling for the current window is skipped in favor of another available endpoint - the same way an already-rate-limited endpoint is skipped today. If every endpoint in a role is at its ceiling, the request falls through to the next role tier (or a 503, if none are available), exactly like today's "all endpoints unhealthy" case.
+4. **Weighting**: When every candidate endpoint in a role has `capacity` configured, endpoint selection is weighted by utilization relative to each endpoint's own ceiling instead of raw request count, so a higher-capacity endpoint isn't penalized for carrying more traffic than a lower-capacity one. If any endpoint in the comparison lacks `capacity`, selection falls back to the original raw-count behavior.
+
+This is a self-imposed budget, separate from rate limit recovery - an endpoint can be at its configured capacity ceiling without being marked rate-limited by a provider, and vice versa.
+
+### Configuration
+
+There is no default: a numeric ceiling is only meaningful relative to your specific paid plan with that specific provider, so it must be explicitly configured. Leaving `capacity` unset (the default) disables proactive throttling for that endpoint - existing configs need no changes.
+
+```json
+{
+  "mainnet": {
+    "provider-1": {
+      "provider": "alchemy",
+      "role": "primary",
+      "type": "archive",
+      "http_url": "https://api.example.com",
+      "capacity": {
+        "max_requests": 190,
+        "window_seconds": 10
+      }
+    }
+  }
+}
+```
+
+- **`max_requests`** (`int`): Requests allowed per window.
+- **`window_seconds`** (`int`): Width of the window, in seconds. Match this to how your provider actually windows its limit rather than converting everything to a per-second rate - see the worked examples below.
+
+### Worked Per-Provider Examples
+
+These are starting points, not exact conversions - size conservatively for your own call mix:
+
+- **Infura**: no live signal at all; use the RPS ceiling published for your specific plan tier. Example: `{"max_requests": 8, "window_seconds": 1}` for a conservative sub-10-rps free-tier budget.
+- **Alchemy**: published as Compute Units over a real **10-second rolling window** (Free tier: 500 CU/s, burst up to 5000 CU/10s). Per-method CU cost isn't modeled here, so convert using your own typical call mix: `max_requests ≈ floor(window_CU_budget / avg_CU_per_call)`. Example for a mostly-simple-read workload: `{"max_requests": 190, "window_seconds": 10}` (5000 CU / ~26 CU per simple call). Lower this if your workload is CU-heavy.
+- **dRPC**: free tier is roughly 120,000 CU/minute per IP (~100 eth_call/s), with a 10 CU floor per call. Example: `{"max_requests": 100, "window_seconds": 1}`, or the minute-equivalent `{"max_requests": 6000, "window_seconds": 60}`.
+
+### Important Limitations
+
+- **The counter is shared across load-balancer replicas** (via Valkey), but the check-then-dispatch isn't a single atomic reservation - under concurrent load from multiple replicas the ceiling can be slightly overshot for a given window. This is intentional: configure `max_requests` with headroom below the provider's real ceiling rather than relying on exact enforcement.
+- **WebSocket capacity gates new connection attempts only, not messages on an already-open connection.** Ætherlay relays WebSocket frames without inspecting their content, so there is no way to proactively throttle traffic on a connection that's already established.
+
+### Disabling
+
+Proactive capacity throttling is on by default whenever an endpoint has `capacity` configured. To disable it globally (e.g. during an incident, without editing every endpoint's config), set `CAPACITY_THROTTLING_ENABLED=false` (or `--capacity-throttling-enabled=false`).
+
+## Adaptive Capacity Estimation
+
+Declaring a static `capacity` (above) requires knowing your provider's real ceiling ahead of time - a number you'd have to look up, guess, or re-derive whenever your plan changes. Adaptive capacity estimation removes that requirement entirely: **no configuration is needed**. Ætherlay checks for rate-limit signals first, then approximates each endpoint's safe throughput ceiling from what it actually observes, adjusting it up or down as it continues routing traffic - the same shape of control loop TCP congestion control uses (AIMD: additive increase, multiplicative decrease).
+
+This is the recommended default going forward. A static `capacity` still works exactly as documented above and takes priority when set; adaptive learning only ever engages for endpoints with no static `capacity` configured.
+
+### How It Works
+
+1. **No ceiling until there's evidence.** A fresh endpoint is never proactively throttled - it behaves exactly like an unconfigured endpoint today. It's still fully covered by Ætherlay's existing *reactive* rate-limit detection (429, Infura's 402 daily cap, or a JSON-RPC error embedded in a 200 response) the instant it's actually rejected.
+2. **On a rate-limit hit, halve the ceiling.** The first time an endpoint is rate limited, Ætherlay looks at how many requests it had actually dispatched to that endpoint in the current window and halves that number - a conservative first estimate grounded in real observed behavior, not a guess. Every subsequent hit halves the ceiling again, always starting from whichever is more conservative: the current estimate, or what was actually observed that window.
+3. **A cooldown prevents overreacting to one episode.** Several near-simultaneous rejections (e.g. multiple in-flight retries against the same endpoint) collapse into a single decrease - the cooldown is the endpoint's own learning window, so the ceiling can't be revised "worse" faster than once per window.
+4. **While clean, the ceiling grows back.** For every interval of sustained clean traffic since the last decrease, the ceiling grows by a small additive step (computed once per decrease, not a flat constant, so it scales with the endpoint's own magnitude). Growth is computed on the fly from elapsed time - there's no background process running per endpoint.
+5. **Gating and weighting just work.** The learned ceiling feeds the exact same proactive-gating and utilization-weighted-selection logic as a static `capacity` - an endpoint with a learned estimate is skipped at its ceiling and weighted against other endpoints (static or learned) exactly like above.
+
+If an estimate overshoots the provider's real limit, the very next rejection halves it back down - the AIMD process is its own safety net, converging around the real ceiling the same way a TCP congestion window sawtooths around available bandwidth. There's no separate decay or reset mechanism, and no artificial upper cap beyond overflow protection.
+
+### Configuration
+
+Nothing is required by default - adaptive learning is on out of the box (`CAPACITY_LEARNING_ENABLED=true`) for every endpoint with no static `capacity`. The AIMD tuning knobs can be overridden per endpoint if needed, following the same optional-override pattern as `rate_limit_recovery`:
+
+```json
+{
+  "mainnet": {
+    "provider-1": {
+      "provider": "alchemy",
+      "role": "primary",
+      "type": "archive",
+      "http_url": "https://api.example.com",
+      "capacity_learning": {
+        "decrease_factor": 0.5,
+        "increase_interval": 60,
+        "min_estimate": 1,
+        "window_seconds": 60
+      }
+    }
+  }
+}
+```
+
+- **`decrease_factor`** (`float`): Multiplier applied to the ceiling on a confirmed rate-limit hit (default `0.5`, halving).
+- **`increase_interval`** (`int`): Seconds of sustained clean time per additive-increase step (default `60`).
+- **`min_estimate`** (`int`): Floor the learned ceiling can never decrease below (default `1`).
+- **`window_seconds`** (`int`): Learning window width in seconds, used to size the usage counter and the decrease cooldown (default `60`) - only takes effect for an endpoint's first-ever estimate; once seeded, the window is frozen for that endpoint even if this value later changes.
+
+### Disabling
+
+Set `CAPACITY_LEARNING_ENABLED=false` (or `--capacity-learning-enabled=false`) to turn off adaptive learning globally and return to purely reactive rate-limit recovery for any endpoint without a static `capacity`. This is independent of `CAPACITY_THROTTLING_ENABLED`, which is the overall kill switch for *all* capacity-based gating and weighting, static or learned.
 
 ## Prometheus Metrics
 

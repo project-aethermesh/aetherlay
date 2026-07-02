@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,14 +13,16 @@ import (
 
 const (
 	// Key prefixes for Valkey storage
-	healthPrefix    = "health:"
-	metricsPrefix   = "metrics:"
-	rateLimitPrefix = "rate_limit:"
-	proxyRequests   = "proxy_requests"
-	healthRequests  = "health_requests"
-	requests24hKey  = "requests_24h"
-	requests1mKey   = "requests_1m"
-	requestsAllKey  = "requests_all"
+	healthPrefix           = "health:"
+	metricsPrefix          = "metrics:"
+	rateLimitPrefix        = "rate_limit:"
+	capacityPrefix         = "capacity:"
+	capacityEstimatePrefix = "capacity_estimate:"
+	proxyRequests          = "proxy_requests"
+	healthRequests         = "health_requests"
+	requests24hKey         = "requests_24h"
+	requests1mKey          = "requests_1m"
+	requestsAllKey         = "requests_all"
 )
 
 // EndpointStatus represents the health status and metrics of an endpoint.
@@ -66,6 +69,10 @@ type ValkeyClientIface interface {
 	GetCombinedRequestCounts(ctx context.Context, chain, endpoint string) (int64, int64, int64, error)
 	GetRateLimitState(ctx context.Context, chain, endpoint string) (*RateLimitState, error)
 	SetRateLimitState(ctx context.Context, chain, endpoint string, state RateLimitState) error
+	IncrementCapacityCount(ctx context.Context, chain, endpoint string, windowSeconds int) (int64, error)
+	GetCapacityCount(ctx context.Context, chain, endpoint string, windowSeconds int) (int64, error)
+	GetCapacityEstimate(ctx context.Context, chain, endpoint string) (*CapacityEstimate, error)
+	SetCapacityEstimate(ctx context.Context, chain, endpoint string, estimate CapacityEstimate) error
 	CleanupStaleEndpoints(ctx context.Context, activeEndpoints map[string][]string) (int, error)
 	Ping(ctx context.Context) error
 	Close() error
@@ -262,7 +269,7 @@ func (r *ValkeyClient) CleanupStaleEndpoints(ctx context.Context, activeEndpoint
 		}
 	}
 
-	prefixes := []string{healthPrefix, metricsPrefix, rateLimitPrefix}
+	prefixes := []string{healthPrefix, metricsPrefix, rateLimitPrefix, capacityEstimatePrefix}
 	var staleKeys []string
 
 	for _, prefix := range prefixes {
@@ -380,4 +387,61 @@ func (r *ValkeyClient) SetRateLimitState(ctx context.Context, chain, endpoint st
 	// Simple SET operation with expiration, last write wins
 	cmd := r.client.B().Set().Key(key).Value(string(jsonBytes)).Ex(24 * time.Hour).Build()
 	return r.client.Do(ctx, cmd).Error()
+}
+
+// capacityBucketKey returns the Valkey key for the current fixed window of width
+// windowSeconds, e.g. window 10 buckets time into 10-second slices. The window
+// resets every windowSeconds because each slice gets its own key - unlike
+// IncrementRequestCount's rolling TTL, this key naturally stops being written to
+// once the window elapses, so a fresh window always starts at zero.
+func capacityBucketKey(chain, endpoint string, windowSeconds int) string {
+	// windowSeconds is a divisor below; config.LoadConfig is the primary guard against a
+	// non-positive value reaching here, but this function is reachable through the public
+	// ValkeyClientIface, so it defends itself too rather than panicking on bad input.
+	if windowSeconds <= 0 {
+		windowSeconds = 1
+	}
+	bucket := time.Now().Unix() / int64(windowSeconds)
+	return capacityPrefix + chain + ":" + endpoint + ":" + strconv.FormatInt(bucket, 10)
+}
+
+// IncrementCapacityCount increments the self-imposed capacity counter for an endpoint
+// within the current fixed window of width windowSeconds, and returns the new count.
+// Used to proactively throttle requests below a configured ceiling, independent of
+// any provider-reported rate limit state.
+func (r *ValkeyClient) IncrementCapacityCount(ctx context.Context, chain, endpoint string, windowSeconds int) (int64, error) {
+	key := capacityBucketKey(chain, endpoint, windowSeconds)
+
+	cmds := []valkey.Completed{
+		r.client.B().Incr().Key(key).Build(),
+		r.client.B().Expire().Key(key).Seconds(int64(2 * windowSeconds)).Build(),
+	}
+
+	results := r.client.DoMulti(ctx, cmds...)
+	if err := results[0].Error(); err != nil {
+		return 0, err
+	}
+	count, err := results[0].AsInt64()
+	if err != nil {
+		return 0, err
+	}
+	if err := results[1].Error(); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// GetCapacityCount returns the current count for an endpoint's capacity window,
+// or 0 if nothing has been recorded in the current window yet.
+func (r *ValkeyClient) GetCapacityCount(ctx context.Context, chain, endpoint string, windowSeconds int) (int64, error) {
+	key := capacityBucketKey(chain, endpoint, windowSeconds)
+	result := r.client.Do(ctx, r.client.B().Get().Key(key).Build())
+
+	if valkey.IsValkeyNil(result.Error()) {
+		return 0, nil
+	}
+	if err := result.Error(); err != nil {
+		return 0, err
+	}
+	return result.AsInt64()
 }

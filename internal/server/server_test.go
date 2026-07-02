@@ -6,10 +6,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"aetherlay/internal/config"
+	"aetherlay/internal/health"
 	"aetherlay/internal/helpers"
 	"aetherlay/internal/store"
 
@@ -589,7 +591,7 @@ func TestHandleRateLimit(t *testing.T) {
 	server := NewServer(cfg, mockValkey, appConfig)
 
 	// Test handling rate limit
-	server.handleRateLimit("ethereum", "test-endpoint", "http")
+	server.handleRateLimit("ethereum", "test-endpoint", "http", health.RateLimitSignal{IsRateLimited: true})
 
 	// Verify rate limit state was set
 	state, err := mockValkey.GetRateLimitState(context.Background(), "ethereum", "test-endpoint")
@@ -732,7 +734,7 @@ func TestServerGetRateLimitHandler(t *testing.T) {
 	}
 
 	// Test that handler works
-	handler("ethereum", "test-endpoint", "http")
+	handler("ethereum", "test-endpoint", "http", health.RateLimitSignal{IsRateLimited: true})
 
 	// Verify rate limit state was set
 	state, err := mockValkey.GetRateLimitState(context.Background(), "ethereum", "test-endpoint")
@@ -810,4 +812,454 @@ func TestEphemeralChecksEnabled(t *testing.T) {
 			t.Error("Expected HealthyHTTP to remain true when ephemeral checks are disabled")
 		}
 	})
+}
+
+// TestInitialBackoffForSignal tests that handleRateLimit's backoff seeding prefers a
+// parsed Retry-After, falls back to the endpoint's own (or default) MaxBackoff for a
+// daily-quota signal, and leaves 0 (scheduler default) for a plain signal.
+func TestInitialBackoffForSignal(t *testing.T) {
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"chainA": {
+				"with-override": config.Endpoint{
+					Provider:          "infura",
+					Role:              "primary",
+					Type:              "full",
+					HTTPURL:           "http://with-override",
+					RateLimitRecovery: &config.RateLimitRecovery{MaxBackoff: 999},
+				},
+				"no-override": config.Endpoint{
+					Provider: "infura",
+					Role:     "primary",
+					Type:     "full",
+					HTTPURL:  "http://no-override",
+				},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	server := NewServer(cfg, valkeyClient, createTestConfig())
+
+	tests := []struct {
+		name       string
+		endpointID string
+		signal     health.RateLimitSignal
+		expected   int
+	}{
+		{"retry-after takes priority over daily quota", "no-override", health.RateLimitSignal{RetryAfter: 42 * time.Second, IsDailyQuota: true}, 42},
+		{"daily quota uses endpoint's own MaxBackoff override", "with-override", health.RateLimitSignal{IsDailyQuota: true}, 999},
+		{"daily quota without override uses default MaxBackoff", "no-override", health.RateLimitSignal{IsDailyQuota: true}, config.DefaultRateLimitRecovery().MaxBackoff},
+		{"plain rate limit signal leaves 0 for scheduler to guess InitialBackoff", "no-override", health.RateLimitSignal{IsRateLimited: true}, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := server.initialBackoffForSignal("chainA", tt.endpointID, tt.signal); got != tt.expected {
+				t.Errorf("initialBackoffForSignal() = %d, want %d", got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestBodyCarriesRateLimitSignal tests the pure JSON-RPC body scanner used to close the
+// blind spot where a provider (e.g. Alchemy on batch requests) signals rate limiting
+// only inside a 200 response body, not via HTTP status.
+func TestBodyCarriesRateLimitSignal(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		expected bool
+	}{
+		{"single object with rate limit error", `{"jsonrpc":"2.0","id":1,"error":{"code":-32005,"message":"Request limit exceeded"}}`, true},
+		{"single object success", `{"jsonrpc":"2.0","id":1,"result":"0x1"}`, false},
+		{"batch with one rate limited element", `[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"error":{"code":-32005,"message":"limit"}}]`, true},
+		{"batch all success", `[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"}]`, false},
+		{"batch with unrelated error", `[{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}]`, false},
+		{"non-JSON body", `not json at all`, false},
+		{"unrelated single JSON-RPC error", `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sig := bodyCarriesRateLimitSignal("alchemy", []byte(tt.body), nil)
+			if sig.IsRateLimited != tt.expected {
+				t.Errorf("bodyCarriesRateLimitSignal() = %v, want %v", sig.IsRateLimited, tt.expected)
+			}
+		})
+	}
+}
+
+// TestDefaultForwardRequestWithBodyFunc429ParsesRetryAfter tests that a 429 response
+// carrying a Retry-After header seeds RateLimitState.CurrentBackoff precisely instead of
+// leaving it to the scheduler's guessed InitialBackoff.
+func TestDefaultForwardRequestWithBodyFunc429ParsesRetryAfter(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer ts.Close()
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"chainA": {
+				"ep1": config.Endpoint{Provider: "alchemy", HTTPURL: ts.URL, Role: "primary", Type: "full"},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	server := NewServer(cfg, valkeyClient, createTestConfig())
+
+	err := server.defaultForwardRequestWithBodyFunc(httptest.NewRecorder(), context.Background(), "POST", ts.URL, nil, http.Header{})
+	if err == nil {
+		t.Fatal("Expected error from 429 response")
+	}
+
+	state, stateErr := valkeyClient.GetRateLimitState(context.Background(), "chainA", "ep1")
+	if stateErr != nil {
+		t.Fatalf("Failed to get rate limit state: %v", stateErr)
+	}
+	if !state.RateLimited {
+		t.Error("Expected endpoint to be marked as rate limited")
+	}
+	if state.CurrentBackoff != 5 {
+		t.Errorf("Expected CurrentBackoff to be seeded to 5 from Retry-After, got %d", state.CurrentBackoff)
+	}
+}
+
+// TestDefaultForwardRequestWithBodyFunc402InfuraSeedsFromMaxBackoff tests that Infura's
+// HTTP 402 daily-credit-cap signal seeds CurrentBackoff from the endpoint's configured
+// MaxBackoff rather than the scheduler's normal short InitialBackoff.
+func TestDefaultForwardRequestWithBodyFunc402InfuraSeedsFromMaxBackoff(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusPaymentRequired)
+	}))
+	defer ts.Close()
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"chainA": {
+				"ep1": config.Endpoint{
+					Provider:          "infura",
+					HTTPURL:           ts.URL,
+					Role:              "primary",
+					Type:              "full",
+					RateLimitRecovery: &config.RateLimitRecovery{MaxBackoff: 12345},
+				},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	server := NewServer(cfg, valkeyClient, createTestConfig())
+
+	err := server.defaultForwardRequestWithBodyFunc(httptest.NewRecorder(), context.Background(), "POST", ts.URL, nil, http.Header{})
+	if err == nil {
+		t.Fatal("Expected error from 402 response")
+	}
+
+	state, stateErr := valkeyClient.GetRateLimitState(context.Background(), "chainA", "ep1")
+	if stateErr != nil {
+		t.Fatalf("Failed to get rate limit state: %v", stateErr)
+	}
+	if !state.RateLimited {
+		t.Error("Expected endpoint to be marked as rate limited")
+	}
+	if state.CurrentBackoff != 12345 {
+		t.Errorf("Expected CurrentBackoff to be seeded from the endpoint's MaxBackoff override (12345), got %d", state.CurrentBackoff)
+	}
+}
+
+// TestDefaultForwardRequestWithBodyFunc402NonInfuraNotRateLimited tests that a 402 from a
+// non-Infura provider is NOT treated as a rate-limit signal, since 402 is only a documented
+// Infura convention.
+func TestDefaultForwardRequestWithBodyFunc402NonInfuraNotRateLimited(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusPaymentRequired)
+	}))
+	defer ts.Close()
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"chainA": {
+				"ep1": config.Endpoint{Provider: "alchemy", HTTPURL: ts.URL, Role: "primary", Type: "full"},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	server := NewServer(cfg, valkeyClient, createTestConfig())
+
+	err := server.defaultForwardRequestWithBodyFunc(httptest.NewRecorder(), context.Background(), "POST", ts.URL, nil, http.Header{})
+	if err == nil {
+		t.Fatal("Expected error from 402 response")
+	}
+
+	state, stateErr := valkeyClient.GetRateLimitState(context.Background(), "chainA", "ep1")
+	if stateErr != nil {
+		t.Fatalf("Failed to get rate limit state: %v", stateErr)
+	}
+	if state.RateLimited {
+		t.Error("Expected a non-Infura 402 to NOT be treated as a rate-limit signal")
+	}
+}
+
+// TestDefaultForwardRequestWithBodyFuncDetectsEmbeddedBatchRateLimit tests that a 200
+// response carrying a rate-limit error embedded in one element of a JSON-RPC batch array
+// is treated as a failed attempt (retried against a different endpoint), rather than
+// forwarded to the client with the embedded error silently mixed in.
+func TestDefaultForwardRequestWithBodyFuncDetectsEmbeddedBatchRateLimit(t *testing.T) {
+	batchBody := `[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"error":{"code":-32005,"message":"Request limit exceeded"}}]`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(batchBody))
+	}))
+	defer ts.Close()
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"chainA": {
+				"ep1": config.Endpoint{Provider: "alchemy", HTTPURL: ts.URL, Role: "primary", Type: "full"},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	// Pre-populate as healthy so we can confirm the 2xx transaction is NOT marked
+	// unhealthy (only flagged as rate limited) - it genuinely succeeded at the HTTP level.
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
+		"chainA:ep1": {HasHTTP: true, HealthyHTTP: true},
+	})
+	appConfig := createTestConfig()
+	appConfig.EndpointFailureThreshold = 1
+	server := NewServer(cfg, valkeyClient, appConfig)
+
+	rec := httptest.NewRecorder()
+	err := server.defaultForwardRequestWithBodyFunc(rec, context.Background(), "POST", ts.URL, nil, http.Header{})
+	if err == nil {
+		t.Fatal("Expected an error so the caller retries with a different endpoint")
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("Expected nothing written to the client, got %q", rec.Body.String())
+	}
+
+	state, stateErr := valkeyClient.GetRateLimitState(context.Background(), "chainA", "ep1")
+	if stateErr != nil {
+		t.Fatalf("Failed to get rate limit state: %v", stateErr)
+	}
+	if !state.RateLimited {
+		t.Error("Expected endpoint to be marked rate limited from the embedded batch error")
+	}
+
+	status, statusErr := valkeyClient.GetEndpointStatus(context.Background(), "chainA", "ep1")
+	if statusErr != nil {
+		t.Fatalf("Failed to get endpoint status: %v", statusErr)
+	}
+	if !status.HealthyHTTP {
+		t.Error("Expected HealthyHTTP to remain true - a 2xx response should not be marked unhealthy, only rate limited")
+	}
+}
+
+// TestDefaultForwardRequestWithBodyFuncSkipsEmbeddedScanForNonAlchemyProvider guards
+// against buffering-and-scanning every provider's 2xx JSON responses: since only Alchemy
+// is documented to embed a rate-limit error in an HTTP-200 batch response, a non-Alchemy
+// provider's response carrying the same shape must be forwarded to the client verbatim
+// and unscanned, not buffered into memory and treated as a rate-limit signal.
+func TestDefaultForwardRequestWithBodyFuncSkipsEmbeddedScanForNonAlchemyProvider(t *testing.T) {
+	batchBody := `[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"error":{"code":-32005,"message":"Request limit exceeded"}}]`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(batchBody))
+	}))
+	defer ts.Close()
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"chainA": {
+				"ep1": config.Endpoint{Provider: "drpc", HTTPURL: ts.URL, Role: "primary", Type: "full"},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	server := NewServer(cfg, valkeyClient, createTestConfig())
+
+	rec := httptest.NewRecorder()
+	err := server.defaultForwardRequestWithBodyFunc(rec, context.Background(), "POST", ts.URL, nil, http.Header{})
+	if err != nil {
+		t.Fatalf("Expected no error - a non-Alchemy provider's body should never be scanned, got: %v", err)
+	}
+	if rec.Body.String() != batchBody {
+		t.Errorf("Expected the batch body to be forwarded verbatim, got %q", rec.Body.String())
+	}
+
+	state, stateErr := valkeyClient.GetRateLimitState(context.Background(), "chainA", "ep1")
+	if stateErr != nil {
+		t.Fatalf("Failed to get rate limit state: %v", stateErr)
+	}
+	if state.RateLimited {
+		t.Error("Expected a non-Alchemy provider's embedded error to NOT be treated as a rate-limit signal")
+	}
+}
+
+// TestDefaultForwardRequestWithBodyFuncFailsOpenWhenBodyExceedsScanCap tests the
+// intentional fail-open behavior when an Alchemy 2xx JSON body exceeds
+// maxRateLimitScanBodyBytes: rather than fully buffering an unbounded body in memory,
+// the scan is skipped entirely and the body is streamed through unmodified - even if it
+// carries an embedded rate-limit error the scan would otherwise have caught. This
+// guards the tradeoff described at maxRateLimitScanBodyBytes's declaration against a
+// silent regression (e.g. accidentally treating a truncated scan as proof of no
+// embedded error, or losing bytes from the streamed tail).
+func TestDefaultForwardRequestWithBodyFuncFailsOpenWhenBodyExceedsScanCap(t *testing.T) {
+	// An embedded rate-limit error placed first, followed by enough padding to push the
+	// total body past maxRateLimitScanBodyBytes - so the scan never gets far enough to see
+	// it, and the whole oversized body must stream through untouched.
+	padding := strings.Repeat("a", int(maxRateLimitScanBodyBytes))
+	oversizedBody := fmt.Sprintf(
+		`[{"jsonrpc":"2.0","id":1,"error":{"code":-32005,"message":"Request limit exceeded"}},{"jsonrpc":"2.0","id":2,"result":"0x%s"}]`,
+		padding,
+	)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(oversizedBody))
+	}))
+	defer ts.Close()
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"chainA": {
+				"ep1": config.Endpoint{Provider: "alchemy", HTTPURL: ts.URL, Role: "primary", Type: "full"},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	server := NewServer(cfg, valkeyClient, createTestConfig())
+
+	rec := httptest.NewRecorder()
+	err := server.defaultForwardRequestWithBodyFunc(rec, context.Background(), "POST", ts.URL, nil, http.Header{})
+	if err != nil {
+		t.Fatalf("Expected no error - an oversized body must fail open and stream through, got: %v", err)
+	}
+	if rec.Body.String() != oversizedBody {
+		t.Errorf("Expected the oversized body to be forwarded verbatim (got length %d, want %d)", rec.Body.Len(), len(oversizedBody))
+	}
+
+	state, stateErr := valkeyClient.GetRateLimitState(context.Background(), "chainA", "ep1")
+	if stateErr != nil {
+		t.Fatalf("Failed to get rate limit state: %v", stateErr)
+	}
+	if state.RateLimited {
+		t.Error("Expected the embedded rate-limit error beyond the scan cap to go undetected, not mark the endpoint rate limited")
+	}
+}
+
+func TestProviderNeedsEmbeddedRateLimitScan(t *testing.T) {
+	tests := []struct {
+		provider string
+		expected bool
+	}{
+		{"alchemy", true},
+		{"Alchemy", true},
+		{"infura", false},
+		{"drpc", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			if got := providerNeedsEmbeddedRateLimitScan(tt.provider); got != tt.expected {
+				t.Errorf("providerNeedsEmbeddedRateLimitScan(%q) = %v, want %v", tt.provider, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestDefaultForwardRequestWithBodyFuncNoDuplicateHeadersAcrossRetries guards against a
+// regression where response headers were copied onto w unconditionally, before the
+// embedded-rate-limit body scan decided whether to abort. Since handleRequestHTTP's
+// retry loop reuses the same http.ResponseWriter across attempts, an aborted attempt's
+// headers were left sitting in w's header map and then added to (not replaced by) the
+// next successful attempt's headers - producing duplicate header values in the response
+// actually sent to the client.
+func TestDefaultForwardRequestWithBodyFuncNoDuplicateHeadersAcrossRetries(t *testing.T) {
+	rateLimitedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Test-Header", "from-rate-limited")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"error":{"code":-32005,"message":"Request limit exceeded"}}]`))
+	}))
+	defer rateLimitedServer.Close()
+
+	healthyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Test-Header", "from-healthy")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x2"}`))
+	}))
+	defer healthyServer.Close()
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"ethereum": {
+				"flaky":    config.Endpoint{Provider: "alchemy", HTTPURL: rateLimitedServer.URL, Role: "primary", Type: "full"},
+				"reliable": config.Endpoint{Provider: "drpc", HTTPURL: healthyServer.URL, Role: "primary", Type: "full"},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	server := NewServer(cfg, valkeyClient, createTestConfig())
+
+	// Simulate exactly what handleRequestHTTP's retry loop does: the same
+	// http.ResponseWriter passed to a first attempt that aborts (embedded rate-limit
+	// signal, no write), then to a second attempt that succeeds and writes for real.
+	w := httptest.NewRecorder()
+
+	if err := server.defaultForwardRequestWithBodyFunc(w, context.Background(), "POST", rateLimitedServer.URL, nil, http.Header{}); err == nil {
+		t.Fatal("Expected the first attempt (embedded rate-limit signal) to return an error")
+	}
+
+	if err := server.defaultForwardRequestWithBodyFunc(w, context.Background(), "POST", healthyServer.URL, nil, http.Header{}); err != nil {
+		t.Fatalf("Expected the second attempt to succeed, got error: %v", err)
+	}
+
+	values := w.Header().Values("X-Test-Header")
+	if len(values) != 1 {
+		t.Fatalf("Expected exactly one X-Test-Header value in the final response, got %v (duplicate headers leaked across retries)", values)
+	}
+	if values[0] != "from-healthy" {
+		t.Errorf("Expected the surviving header to be from the endpoint that actually succeeded, got %q", values[0])
+	}
+}
+
+// TestDefaultProxyWebSocketHandshake429ParsesRetryAfter tests that a 429 during the WS
+// handshake dial (before any client upgrade) carries a Retry-After header through to the
+// returned RateLimitError's Signal field.
+func TestDefaultProxyWebSocketHandshake429ParsesRetryAfter(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer ts.Close()
+
+	backendURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"chainA": {
+				"ep1": config.Endpoint{Provider: "alchemy", WSURL: backendURL, Role: "primary", Type: "full"},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	server := NewServer(cfg, valkeyClient, createTestConfig())
+
+	err := server.defaultProxyWebSocket(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil), backendURL)
+	if err == nil {
+		t.Fatal("Expected an error from the failed WS handshake")
+	}
+	rlErr, ok := err.(*RateLimitError)
+	if !ok {
+		t.Fatalf("Expected *RateLimitError, got %T: %v", err, err)
+	}
+	if rlErr.Signal.RetryAfter != 7*time.Second {
+		t.Errorf("Expected RetryAfter to be 7s, got %v", rlErr.Signal.RetryAfter)
+	}
 }

@@ -3,6 +3,8 @@ package config
 import (
 	"encoding/json"
 	"os"
+
+	"github.com/rs/zerolog/log"
 )
 
 // RateLimitRecovery represents the configuration for rate limit recovery
@@ -15,11 +17,32 @@ type RateLimitRecovery struct {
 	ResetAfter        int     `json:"reset_after"`        // Time in seconds after which to reset backoff and start from scratch
 }
 
+// CapacityLimit represents a self-imposed throughput ceiling for an endpoint, used to
+// proactively throttle requests before the provider's own rate limiter would trigger.
+// There is no default: a numeric ceiling is only meaningful relative to an operator's
+// specific paid plan with that specific provider, so it must be explicitly configured.
+type CapacityLimit struct {
+	MaxRequests   int `json:"max_requests"`   // Requests allowed per window
+	WindowSeconds int `json:"window_seconds"` // Width of the window, in seconds
+}
+
+// CapacityLearning tunes the AIMD control loop used to adaptively estimate an
+// endpoint's safe throughput ceiling from observed rate-limit hits, when no static
+// CapacityLimit is configured. See DefaultCapacityLearning for the default values.
+type CapacityLearning struct {
+	DecreaseFactor   float64 `json:"decrease_factor"`   // Multiplier applied to the ceiling on a confirmed rate-limit hit (e.g. 0.5 halves it)
+	IncreaseInterval int     `json:"increase_interval"` // Seconds of sustained clean time per additive-increase step
+	MinEstimate      int     `json:"min_estimate"`      // Floor the learned ceiling can never decrease below
+	WindowSeconds    int     `json:"window_seconds"`    // Default learning window width, used when there's no static CapacityLimit to inherit one from
+}
+
 // Endpoint represents a single RPC endpoint configuration.
 // It contains all the necessary information to connect to and use an RPC provider.
 type Endpoint struct {
 	Provider          string             `json:"provider"`            // Name of the RPC provider (e.g., "alchemy", "infura")
 	RateLimitRecovery *RateLimitRecovery `json:"rate_limit_recovery"` // Rate limit recovery configuration (optional)
+	Capacity          *CapacityLimit     `json:"capacity"`            // Self-imposed throughput ceiling (optional; nil disables proactive throttling)
+	CapacityLearning  *CapacityLearning  `json:"capacity_learning"`   // Adaptive capacity learning tuning override (optional; only used when Capacity is unset)
 	Role              string             `json:"role"`                // Role of the endpoint: "primary" or "fallback"
 	SkipSyncCheck     bool               `json:"skip_sync_check"`     // Skip eth_syncing check for this endpoint (default: false)
 	Type              string             `json:"type"`                // Type of node: "full" or "archive"
@@ -70,11 +93,46 @@ func LoadConfig(path string) (*Config, error) {
 	for chainName, chainEndpoints := range config.Endpoints {
 		for endpointID, endpoint := range chainEndpoints {
 			substituteEnvVarsInEndpoint(&endpoint)
+			validateEndpointCapacity(chainName, endpointID, &endpoint)
 			config.Endpoints[chainName][endpointID] = endpoint
 		}
 	}
 
 	return &config, nil
+}
+
+// validateEndpointCapacity catches an endpoint's static Capacity being configured with a
+// non-positive WindowSeconds or MaxRequests (e.g. either field omitted entirely, which
+// JSON-decodes to the int zero value). WindowSeconds ends up as a divisor when computing
+// the Valkey bucket key for capacity counting (see capacityBucketKey in
+// internal/store/valkey.go), so a zero or negative value would panic on the endpoint's
+// very first request. A MaxRequests of zero (or negative) makes the "count >= max"
+// gating check in getEndpointsByRole true on the very first request, silently and
+// permanently excluding the endpoint with no distinguishing error. Rather than crash or
+// silently starve the endpoint, disable proactive capacity throttling for it (matching
+// today's behavior for an endpoint with no capacity configured at all) and warn loudly
+// so the operator notices the misconfiguration.
+func validateEndpointCapacity(chain, endpointID string, endpoint *Endpoint) {
+	if endpoint.Capacity == nil {
+		return
+	}
+	if endpoint.Capacity.WindowSeconds <= 0 {
+		log.Warn().
+			Str("chain", chain).
+			Str("endpoint", endpointID).
+			Int("window_seconds", endpoint.Capacity.WindowSeconds).
+			Msg("Endpoint's capacity.window_seconds must be positive - disabling proactive capacity throttling for this endpoint")
+		endpoint.Capacity = nil
+		return
+	}
+	if endpoint.Capacity.MaxRequests <= 0 {
+		log.Warn().
+			Str("chain", chain).
+			Str("endpoint", endpointID).
+			Int("max_requests", endpoint.Capacity.MaxRequests).
+			Msg("Endpoint's capacity.max_requests must be positive - disabling proactive capacity throttling for this endpoint")
+		endpoint.Capacity = nil
+	}
 }
 
 // GetEndpointsForChain returns all endpoints for a specific chain.
@@ -148,4 +206,37 @@ func DefaultRateLimitRecovery() RateLimitRecovery {
 		RequiredSuccesses: 2,     // Need 2 consecutive successes to mark the endpoint as recovered
 		ResetAfter:        86400, // Reset backoff after 1 day
 	}
+}
+
+// DefaultCapacityLearning returns the default adaptive capacity learning configuration.
+func DefaultCapacityLearning() CapacityLearning {
+	return CapacityLearning{
+		DecreaseFactor:   0.5, // Halve the estimate on a confirmed rate-limit hit
+		IncreaseInterval: 60,  // Grow once per minute of sustained clean traffic
+		MinEstimate:      1,   // Never learn a ceiling below 1 request/window
+		WindowSeconds:    60,  // Default learning window when no static CapacityLimit exists
+	}
+}
+
+// ResolveCapacityLearning merges an optional per-endpoint override onto the package
+// defaults, replacing only the fields the operator explicitly set (non-zero) - mirrors
+// the RateLimitRecovery merge pattern used in rate_limit_scheduler.go.
+func ResolveCapacityLearning(override *CapacityLearning) CapacityLearning {
+	resolved := DefaultCapacityLearning()
+	if override == nil {
+		return resolved
+	}
+	if override.DecreaseFactor != 0 {
+		resolved.DecreaseFactor = override.DecreaseFactor
+	}
+	if override.IncreaseInterval != 0 {
+		resolved.IncreaseInterval = override.IncreaseInterval
+	}
+	if override.MinEstimate != 0 {
+		resolved.MinEstimate = override.MinEstimate
+	}
+	if override.WindowSeconds != 0 {
+		resolved.WindowSeconds = override.WindowSeconds
+	}
+	return resolved
 }

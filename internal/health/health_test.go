@@ -164,6 +164,128 @@ func TestCheckHealthWithTimeout(t *testing.T) {
 	}
 }
 
+// TestMakeRPCCallDetects429WithRetryAfter tests that makeRPCCall's 429 handling parses a
+// Retry-After header and forwards it (and chain/endpointID/protocol) to HandleRateLimitFunc.
+func TestMakeRPCCallDetects429WithRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "9")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	var gotChain, gotEndpointID, gotProtocol string
+	var gotSignal RateLimitSignal
+	checker := &Checker{
+		valkeyClient: store.NewMockValkeyClient(),
+		HandleRateLimitFunc: func(chain, endpointID, protocol string, signal RateLimitSignal) {
+			gotChain, gotEndpointID, gotProtocol, gotSignal = chain, endpointID, protocol, signal
+		},
+	}
+
+	_, err := checker.makeRPCCall(context.Background(), server.URL, "eth_blockNumber", "ethereum", "ep1", "alchemy")
+	if err == nil {
+		t.Fatal("Expected error from 429 response")
+	}
+
+	if gotChain != "ethereum" || gotEndpointID != "ep1" || gotProtocol != "http" {
+		t.Errorf("HandleRateLimitFunc called with unexpected args: chain=%s endpointID=%s protocol=%s", gotChain, gotEndpointID, gotProtocol)
+	}
+	if !gotSignal.IsRateLimited {
+		t.Error("Expected IsRateLimited to be true")
+	}
+	if gotSignal.RetryAfter != 9*time.Second {
+		t.Errorf("Expected RetryAfter to be 9s, got %v", gotSignal.RetryAfter)
+	}
+}
+
+// TestMakeRPCCallDetects402DailyCapForInfura tests that a 402 from an Infura endpoint is
+// classified as a daily-quota rate-limit signal.
+func TestMakeRPCCallDetects402DailyCapForInfura(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusPaymentRequired)
+	}))
+	defer server.Close()
+
+	var gotSignal RateLimitSignal
+	called := false
+	checker := &Checker{
+		valkeyClient: store.NewMockValkeyClient(),
+		HandleRateLimitFunc: func(chain, endpointID, protocol string, signal RateLimitSignal) {
+			called = true
+			gotSignal = signal
+		},
+	}
+
+	_, err := checker.makeRPCCall(context.Background(), server.URL, "eth_blockNumber", "ethereum", "ep1", "infura")
+	if err == nil {
+		t.Fatal("Expected error from 402 response")
+	}
+	if !called {
+		t.Fatal("Expected HandleRateLimitFunc to be called")
+	}
+	if !gotSignal.IsDailyQuota {
+		t.Error("Expected IsDailyQuota to be true for an Infura 402")
+	}
+}
+
+// TestMakeRPCCallDetectsEmbeddedRateLimitErrorIn200Response tests the periodic
+// health-check path's version of the same blind spot closed on the live proxy path: a
+// 200 response whose JSON-RPC body carries a rate-limit error code.
+func TestMakeRPCCallDetectsEmbeddedRateLimitErrorIn200Response(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32005,"message":"Request limit exceeded"}}`))
+	}))
+	defer server.Close()
+
+	called := false
+	checker := &Checker{
+		valkeyClient: store.NewMockValkeyClient(),
+		HandleRateLimitFunc: func(chain, endpointID, protocol string, signal RateLimitSignal) {
+			called = true
+		},
+	}
+
+	_, err := checker.makeRPCCall(context.Background(), server.URL, "eth_blockNumber", "ethereum", "ep1", "alchemy")
+	if err == nil {
+		t.Fatal("Expected an error for the embedded JSON-RPC error")
+	}
+	if !called {
+		t.Error("Expected HandleRateLimitFunc to be called for a 200 response with an embedded rate-limit error")
+	}
+}
+
+// TestMakeRPCCallSuccessPathUnaffected is a regression guard: a clean success response
+// must not trigger HandleRateLimitFunc and must still return the parsed result.
+func TestMakeRPCCallSuccessPathUnaffected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x123"}`))
+	}))
+	defer server.Close()
+
+	called := false
+	checker := &Checker{
+		valkeyClient: store.NewMockValkeyClient(),
+		HandleRateLimitFunc: func(chain, endpointID, protocol string, signal RateLimitSignal) {
+			called = true
+		},
+	}
+
+	result, err := checker.makeRPCCall(context.Background(), server.URL, "eth_blockNumber", "ethereum", "ep1", "alchemy")
+	if err != nil {
+		t.Fatalf("Expected no error for a clean success response, got %v", err)
+	}
+	if called {
+		t.Error("Expected HandleRateLimitFunc NOT to be called for a clean success response")
+	}
+	if result != "0x123" {
+		t.Errorf("Expected result '0x123', got %v", result)
+	}
+}
+
 func TestStartEphemeralChecksDisabled(t *testing.T) {
 	checker := &Checker{
 		ephemeralChecksEnabled: false,

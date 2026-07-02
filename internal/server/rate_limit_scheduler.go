@@ -238,9 +238,20 @@ func (rls *RateLimitScheduler) performRecoveryCheck(ctx context.Context, chain, 
 	state.RecoveryAttempts++
 	state.LastRecoveryCheck = time.Now()
 
-	// Update current backoff for next iteration
-	if state.CurrentBackoff == 0 {
-		state.CurrentBackoff = rateLimitConfig.InitialBackoff
+	// Update current backoff for next iteration. Gate on RecoveryAttempts, not
+	// CurrentBackoff == 0: handleRateLimit can seed CurrentBackoff to a precise nonzero
+	// value (from a Retry-After header or Infura's daily-quota MaxBackoff), and a bare
+	// "== 0" check would then look like escalation had already happened, multiplying the
+	// backoff after only a single probe instead of giving the seeded value one repeat
+	// wait first - the same treatment a guessed InitialBackoff gets below.
+	if state.RecoveryAttempts == 1 {
+		// First attempt for this episode: only fall back to InitialBackoff if nothing
+		// more precise was seeded: a signal-seeded value is left untouched, so the
+		// second attempt still waits the exact seeded duration once more before this
+		// same "else" branch below starts multiplying it.
+		if state.CurrentBackoff == 0 {
+			state.CurrentBackoff = rateLimitConfig.InitialBackoff
+		}
 	} else {
 		newBackoff := int(float64(state.CurrentBackoff) * rateLimitConfig.BackoffMultiplier)
 		state.CurrentBackoff = min(newBackoff, rateLimitConfig.MaxBackoff)
@@ -375,7 +386,7 @@ func (rls *RateLimitScheduler) checkEndpointHealth(ctx context.Context, endpoint
 			Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).
 			Int("code", rpcResp.Error.Code).
 			Str("message", rpcResp.Error.Message)
-		if isJSONRPCRateLimitCode(rpcResp.Error.Code) {
+		if health.IsJSONRPCRateLimitCode(rpcResp.Error.Code) {
 			evt.Msg("Recovery check received JSON-RPC rate-limit error")
 		} else {
 			evt.Msg("Recovery check received JSON-RPC error")
@@ -392,12 +403,6 @@ func (rls *RateLimitScheduler) checkEndpointHealth(ctx context.Context, endpoint
 
 	log.Debug().Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Recovery check successful")
 	return true
-}
-
-// isJSONRPCRateLimitCode reports whether a JSON-RPC error code indicates rate limiting.
-// -32005 is the standard "Request limit exceeded" code used by Infura, Alchemy, and others.
-func isJSONRPCRateLimitCode(code int) bool {
-	return code == -32005
 }
 
 // shouldResetBackoff determines if the backoff cycle should be reset

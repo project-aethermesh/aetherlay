@@ -286,6 +286,97 @@ func TestCombinedRequestCounts(t *testing.T) {
 	}
 }
 
+func TestIncrementAndGetCapacityCount(t *testing.T) {
+	client := NewMockValkeyClient()
+
+	ctx := context.Background()
+	chain := "test-chain"
+	endpoint := uniqueTestKey("https://test.example.com")
+
+	for i := 0; i < 3; i++ {
+		count, err := client.IncrementCapacityCount(ctx, chain, endpoint, 10)
+		if err != nil {
+			t.Fatalf("Increment failed: %v", err)
+		}
+		if count != int64(i+1) {
+			t.Errorf("Expected count %d, got %d", i+1, count)
+		}
+	}
+
+	count, err := client.GetCapacityCount(ctx, chain, endpoint, 10)
+	if err != nil {
+		t.Fatalf("Get capacity count failed: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("Expected capacity count to be 3, got %d", count)
+	}
+}
+
+func TestGetCapacityCountForUnusedEndpointReturnsZero(t *testing.T) {
+	client := NewMockValkeyClient()
+
+	ctx := context.Background()
+	count, err := client.GetCapacityCount(ctx, "test-chain", "https://unused.example.com", 10)
+	if err != nil {
+		t.Fatalf("Get capacity count failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("Expected capacity count to be 0, got %d", count)
+	}
+}
+
+// TestCapacityCountDoesNotPanicOnNonPositiveWindowSeconds guards against a regression of
+// a divide-by-zero panic: windowSeconds is used as a divisor to compute the capacity
+// bucket, so a caller passing 0 or a negative value (e.g. from a bug elsewhere, since
+// config.LoadConfig is the primary guard, not this function) must never crash the process.
+func TestCapacityCountDoesNotPanicOnNonPositiveWindowSeconds(t *testing.T) {
+	client := NewMockValkeyClient()
+	ctx := context.Background()
+
+	for _, windowSeconds := range []int{0, -1, -100} {
+		if _, err := client.IncrementCapacityCount(ctx, "test-chain", "ep1", windowSeconds); err != nil {
+			t.Fatalf("IncrementCapacityCount(windowSeconds=%d) failed: %v", windowSeconds, err)
+		}
+		if _, err := client.GetCapacityCount(ctx, "test-chain", "ep1", windowSeconds); err != nil {
+			t.Fatalf("GetCapacityCount(windowSeconds=%d) failed: %v", windowSeconds, err)
+		}
+	}
+}
+
+func TestCapacityCountWindowRollover(t *testing.T) {
+	client := NewMockValkeyClient()
+	ctx := context.Background()
+	chain := "test-chain"
+	endpoint := uniqueTestKey("https://test.example.com")
+
+	windowStart := time.Unix(1_700_000_000, 0)
+	client.NowFunc = func() time.Time { return windowStart }
+
+	for i := 0; i < 2; i++ {
+		if _, err := client.IncrementCapacityCount(ctx, chain, endpoint, 10); err != nil {
+			t.Fatalf("Increment failed: %v", err)
+		}
+	}
+	count, err := client.GetCapacityCount(ctx, chain, endpoint, 10)
+	if err != nil {
+		t.Fatalf("Get capacity count failed: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("Expected count 2 within the window, got %d", count)
+	}
+
+	// Jump forward past the window boundary (window width 10s) without a real sleep.
+	client.NowFunc = func() time.Time { return windowStart.Add(11 * time.Second) }
+
+	count, err = client.GetCapacityCount(ctx, chain, endpoint, 10)
+	if err != nil {
+		t.Fatalf("Get capacity count failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("Expected count to reset to 0 in the new window, got %d", count)
+	}
+}
+
 // TestNewValkeyClientTLSConfig is an integration test that checks the TLS configuration.
 // It requires a running Valkey server with TLS enabled on port 6380 and non-TLS on 6379.
 func TestNewValkeyClientTLSConfig(t *testing.T) {

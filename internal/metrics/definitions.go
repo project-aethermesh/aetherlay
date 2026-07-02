@@ -30,6 +30,18 @@ var (
 var (
 	// EndpointProxyRequestsTotal counts the total number of requests successfully forwarded to each endpoint.
 	EndpointProxyRequestsTotal *prometheus.CounterVec
+	// EndpointCapacityUtilization tracks an endpoint's self-imposed capacity usage as a
+	// fraction (count/max_requests) of its configured ceiling for the current window.
+	EndpointCapacityUtilization *prometheus.GaugeVec
+	// EndpointCapacitySkippedTotal counts how often an endpoint was excluded from
+	// selection for being at its configured capacity ceiling.
+	EndpointCapacitySkippedTotal *prometheus.CounterVec
+	// EndpointCapacityEstimatedCeiling tracks the currently learned safe throughput
+	// ceiling (requests/window) for endpoints with no static capacity configured.
+	EndpointCapacityEstimatedCeiling *prometheus.GaugeVec
+	// EndpointCapacityEstimateDecreasedTotal counts how often the learned capacity
+	// estimate was decreased in response to a confirmed rate-limit hit.
+	EndpointCapacityEstimateDecreasedTotal *prometheus.CounterVec
 )
 
 // init initializes all metrics with error handling
@@ -86,6 +98,50 @@ func initEndpointMetrics() {
 	)
 	if EndpointProxyRequestsTotal == nil {
 		log.Warn().Msg("Failed to register metric aetherlay_endpoint_proxy_requests_total")
+	}
+
+	EndpointCapacityUtilization = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "aetherlay_endpoint_capacity_utilization",
+			Help: "Fraction of an endpoint's configured capacity ceiling used in the current window.",
+		},
+		[]string{"chain", "endpoint"},
+	)
+	if EndpointCapacityUtilization == nil {
+		log.Warn().Msg("Failed to register metric aetherlay_endpoint_capacity_utilization")
+	}
+
+	EndpointCapacitySkippedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "aetherlay_endpoint_capacity_skipped_total",
+			Help: "Total number of times an endpoint was excluded from selection for being at its configured capacity ceiling.",
+		},
+		[]string{"chain", "endpoint"},
+	)
+	if EndpointCapacitySkippedTotal == nil {
+		log.Warn().Msg("Failed to register metric aetherlay_endpoint_capacity_skipped_total")
+	}
+
+	EndpointCapacityEstimatedCeiling = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "aetherlay_endpoint_capacity_estimated_ceiling",
+			Help: "Currently learned safe throughput ceiling (requests/window) for an endpoint with no static capacity configured.",
+		},
+		[]string{"chain", "endpoint"},
+	)
+	if EndpointCapacityEstimatedCeiling == nil {
+		log.Warn().Msg("Failed to register metric aetherlay_endpoint_capacity_estimated_ceiling")
+	}
+
+	EndpointCapacityEstimateDecreasedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "aetherlay_endpoint_capacity_estimate_decreased_total",
+			Help: "Total number of times the learned capacity estimate was decreased in response to a confirmed rate-limit hit.",
+		},
+		[]string{"chain", "endpoint"},
+	)
+	if EndpointCapacityEstimateDecreasedTotal == nil {
+		log.Warn().Msg("Failed to register metric aetherlay_endpoint_capacity_estimate_decreased_total")
 	}
 }
 

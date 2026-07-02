@@ -19,7 +19,11 @@
       "role": "primary",
       "type": "full",
       "http_url": "https://eth.drpc.org",
-      "ws_url": "wss://eth.drpc.org"
+      "ws_url": "wss://eth.drpc.org",
+      "capacity": {
+        "max_requests": 100,
+        "window_seconds": 1
+      }
     },
     "publicnode-1": {
       "provider": "publicnode",
@@ -34,7 +38,13 @@
       "provider": "drpc",
       "role": "public",
       "type": "full",
-      "http_url": "https://arbitrum.drpc.org"
+      "http_url": "https://arbitrum.drpc.org",
+      "capacity_learning": {
+        "decrease_factor": 0.5,
+        "increase_interval": 60,
+        "min_estimate": 1,
+        "window_seconds": 60
+      }
     },
     "publicnode-1": {
       "provider": "public_node",
@@ -58,6 +68,10 @@
         "max_retries": 10,
         "required_successes": 3,
         "reset_after": 3600
+      },
+      "capacity": {
+        "max_requests": 190,
+        "window_seconds": 10
       }
     },
     "infura-staging": {

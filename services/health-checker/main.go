@@ -36,9 +36,36 @@ var testExitAfterSetup bool
 // exitCode is used to track the exit code for the process
 var exitCode int
 
+// standaloneInitialBackoff delegates to health.InitialBackoffForSignal, the same shared
+// implementation server.Server.initialBackoffForSignal calls, so the load balancer and
+// the standalone health checker seed recovery backoff identically from the same signal.
+func standaloneInitialBackoff(cfg *config.Config, chain, endpointID string, signal health.RateLimitSignal) int {
+	return health.InitialBackoffForSignal(cfg, chain, endpointID, signal)
+}
+
+// applyStandaloneLearnedCapacityDecrease resolves chain/endpointID to a config.Endpoint
+// and delegates to store.ApplyLearnedCapacityDecreaseIfEligible, the same shared
+// implementation server.Server.applyLearnedCapacityDecrease calls, so the load balancer
+// and the standalone health checker - two separate processes mutating the same
+// Valkey-persisted estimate - never diverge.
+func applyStandaloneLearnedCapacityDecrease(cfg *config.Config, valkeyClient store.ValkeyClientIface, capacityThrottlingEnabled, capacityLearningEnabled bool, chain, endpointID string, signal health.RateLimitSignal) {
+	chainEndpoints, ok := cfg.GetEndpointsForChain(chain)
+	if !ok {
+		return
+	}
+	ep, ok := chainEndpoints[endpointID]
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	store.ApplyLearnedCapacityDecreaseIfEligible(ctx, valkeyClient, chain, endpointID, ep, capacityThrottlingEnabled, capacityLearningEnabled, signal.IsDailyQuota)
+}
+
 // createStandaloneRateLimitHandler creates a simple rate limit handler for the standalone health checker
-func createStandaloneRateLimitHandler(valkeyClient store.ValkeyClientIface) func(chain, endpointID, protocol string) {
-	return func(chain, endpointID, protocol string) {
+func createStandaloneRateLimitHandler(cfg *config.Config, valkeyClient store.ValkeyClientIface, capacityThrottlingEnabled, capacityLearningEnabled bool) func(chain, endpointID, protocol string, signal health.RateLimitSignal) {
+	return func(chain, endpointID, protocol string, signal health.RateLimitSignal) {
 		log.Debug().Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Standalone health checker detected rate limit")
 
 		// Get current rate limit state
@@ -52,6 +79,7 @@ func createStandaloneRateLimitHandler(valkeyClient store.ValkeyClientIface) func
 		now := time.Now()
 		state.RateLimited = true
 		state.LastRecoveryCheck = now
+		state.CurrentBackoff = standaloneInitialBackoff(cfg, chain, endpointID, signal)
 
 		// Set first rate limited time if this is the first time
 		if state.FirstRateLimited.IsZero() {
@@ -63,7 +91,12 @@ func createStandaloneRateLimitHandler(valkeyClient store.ValkeyClientIface) func
 			return
 		}
 
-		log.Info().Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Standalone health checker marked endpoint as rate limited")
+		log.Info().Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Int("current_backoff", state.CurrentBackoff).Msg("Standalone health checker marked endpoint as rate limited")
+
+		// Check for rate limits first (this signal), then approximate the endpoint's
+		// safe throughput ceiling from it - only engages for endpoints with no static
+		// Capacity, and shares the exact same math as the load balancer's own path.
+		applyStandaloneLearnedCapacityDecrease(cfg, valkeyClient, capacityThrottlingEnabled, capacityLearningEnabled, chain, endpointID, signal)
 	}
 }
 
@@ -73,6 +106,8 @@ func RunHealthChecker(
 	corsHeaders string,
 	corsMethods string,
 	corsOrigin string,
+	capacityLearningEnabled bool,
+	capacityThrottlingEnabled bool,
 	ephemeralChecksEnabled bool,
 	ephemeralChecksHealthyThreshold int,
 	ephemeralChecksInterval int,
@@ -170,7 +205,7 @@ func RunHealthChecker(
 	checker := health.NewChecker(cfg, valkeyClient, time.Duration(healthCheckInterval)*time.Second, time.Duration(ephemeralChecksInterval)*time.Second, ephemeralChecksHealthyThreshold, healthCheckSyncStatus, healthCheckConcurrency, ephemeralChecksEnabled)
 
 	// Set up simple rate limit handler for standalone health checker
-	checker.HandleRateLimitFunc = createStandaloneRateLimitHandler(valkeyClient)
+	checker.HandleRateLimitFunc = createStandaloneRateLimitHandler(cfg, valkeyClient, capacityThrottlingEnabled, capacityLearningEnabled)
 
 	if testCheckerPatch != nil {
 		testCheckerPatch(checker)
@@ -237,6 +272,8 @@ func main() {
 		config.CorsHeaders,
 		config.CorsMethods,
 		config.CorsOrigin,
+		config.CapacityLearningEnabled,
+		config.CapacityThrottlingEnabled,
 		config.EphemeralChecksEnabled,
 		config.EphemeralChecksHealthyThreshold,
 		config.EphemeralChecksInterval,
