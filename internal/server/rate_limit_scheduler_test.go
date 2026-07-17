@@ -383,3 +383,80 @@ func TestShouldResetBackoff(t *testing.T) {
 		t.Error("Expected no reset for zero time")
 	}
 }
+
+// TestPerformRecoveryCheckPreservesSeededBackoffForFirstAttempt guards against a
+// regression where a CurrentBackoff seeded to a precise nonzero value (e.g. from a
+// Retry-After header, via handleRateLimit's initialBackoffForSignal) collided with this
+// function's "== 0" sentinel for "first attempt," causing the backoff to escalate one
+// generation earlier than it would for a guessed InitialBackoff. The seeded value must
+// be given one repeat wait, exactly like InitialBackoff is, before multiplying starts.
+func TestPerformRecoveryCheckPreservesSeededBackoffForFirstAttempt(t *testing.T) {
+	// Endpoint that always fails the recovery health check, so CurrentBackoff's value
+	// after each call reflects only the backoff-update logic, not a success-reset.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"ethereum": {
+				"test-endpoint": config.Endpoint{
+					Provider: "test-provider",
+					Role:     "primary",
+					Type:     "full",
+					HTTPURL:  server.URL,
+				},
+			},
+		},
+	}
+
+	mockValkey := store.NewMockValkeyClient()
+	// Simulate handleRateLimit having just seeded CurrentBackoff=5 from a Retry-After
+	// header (RecoveryAttempts=0, a fresh episode - never decremented/reset elsewhere).
+	mockValkey.SetRateLimitState(context.Background(), "ethereum", "test-endpoint", store.RateLimitState{
+		RateLimited:      true,
+		CurrentBackoff:   5,
+		RecoveryAttempts: 0,
+		FirstRateLimited: time.Now(),
+	})
+
+	scheduler := NewRateLimitScheduler(cfg, mockValkey)
+	endpoint := cfg.Endpoints["ethereum"]["test-endpoint"]
+	rateLimitConfig := config.RateLimitRecovery{
+		BackoffMultiplier: 2.0,
+		InitialBackoff:    300,
+		MaxBackoff:        7200,
+		MaxRetries:        10,
+		RequiredSuccesses: 2,
+		ResetAfter:        86400,
+	}
+
+	// First recovery attempt: the seeded precise value must survive untouched, not be
+	// multiplied as if a prior attempt had already happened.
+	shouldContinue, err := scheduler.performRecoveryCheck(context.Background(), "ethereum", "test-endpoint", endpoint, rateLimitConfig)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !shouldContinue {
+		t.Fatal("Expected monitoring to continue after the first failed attempt")
+	}
+	state, _ := mockValkey.GetRateLimitState(context.Background(), "ethereum", "test-endpoint")
+	if state.CurrentBackoff != 5 {
+		t.Errorf("Expected CurrentBackoff to remain 5 after the first attempt, got %d", state.CurrentBackoff)
+	}
+
+	// Second recovery attempt: now escalation is expected, exactly as it would be for a
+	// guessed InitialBackoff after its own second attempt.
+	shouldContinue, err = scheduler.performRecoveryCheck(context.Background(), "ethereum", "test-endpoint", endpoint, rateLimitConfig)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !shouldContinue {
+		t.Fatal("Expected monitoring to continue after the second failed attempt")
+	}
+	state, _ = mockValkey.GetRateLimitState(context.Background(), "ethereum", "test-endpoint")
+	if state.CurrentBackoff != 10 {
+		t.Errorf("Expected CurrentBackoff to escalate to 10 (5*2.0) on the second attempt, got %d", state.CurrentBackoff)
+	}
+}

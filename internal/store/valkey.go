@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,14 +14,16 @@ import (
 
 const (
 	// Key prefixes for Valkey storage
-	healthPrefix    = "health:"
-	metricsPrefix   = "metrics:"
-	rateLimitPrefix = "rate_limit:"
-	proxyRequests   = "proxy_requests"
-	healthRequests  = "health_requests"
-	requests24hKey  = "requests_24h"
-	requests1mKey   = "requests_1m"
-	requestsAllKey  = "requests_all"
+	healthPrefix           = "health:"
+	metricsPrefix          = "metrics:"
+	rateLimitPrefix        = "rate_limit:"
+	capacityPrefix         = "capacity:"
+	capacityEstimatePrefix = "capacity_estimate:"
+	proxyRequests          = "proxy_requests"
+	healthRequests         = "health_requests"
+	requests24hKey         = "requests_24h"
+	requests1mKey          = "requests_1m"
+	requestsAllKey         = "requests_all"
 )
 
 // EndpointStatus represents the health status and metrics of an endpoint.
@@ -66,6 +70,10 @@ type ValkeyClientIface interface {
 	GetCombinedRequestCounts(ctx context.Context, chain, endpoint string) (int64, int64, int64, error)
 	GetRateLimitState(ctx context.Context, chain, endpoint string) (*RateLimitState, error)
 	SetRateLimitState(ctx context.Context, chain, endpoint string, state RateLimitState) error
+	IncrementCapacityCount(ctx context.Context, chain, endpoint string, windowSeconds int) (int64, error)
+	GetCapacityCount(ctx context.Context, chain, endpoint string, windowSeconds int) (int64, error)
+	GetCapacityEstimate(ctx context.Context, chain, endpoint string) (*CapacityEstimate, error)
+	SetCapacityEstimate(ctx context.Context, chain, endpoint string, estimate CapacityEstimate) error
 	CleanupStaleEndpoints(ctx context.Context, activeEndpoints map[string][]string) (int, error)
 	Ping(ctx context.Context) error
 	Close() error
@@ -250,6 +258,39 @@ func (r *ValkeyClient) GetCombinedRequestCounts(ctx context.Context, chain, endp
 	return p24h + h24h, p1m + h1m, pAll + hAll, nil
 }
 
+// parseChainEndpointFromKey extracts the chain and endpoint from a scanned Valkey key,
+// given the prefix used to find it. Endpoint IDs are often URLs (e.g.
+// "https://test.example.com:8545") and can contain colons of their own, so only the
+// chain - which never contains a colon - is safe to cut from the left.
+//
+// Key formats:
+//
+//	health:{chain}:{endpoint}
+//	metrics:{chain}:{endpoint}:{requestType}
+//	rate_limit:{chain}:{endpoint}
+//	capacity_estimate:{chain}:{endpoint}
+func parseChainEndpointFromKey(key, prefix string) (chain, endpoint string, ok bool) {
+	withoutPrefix := key[len(prefix):]
+	chain, rest, ok := strings.Cut(withoutPrefix, ":")
+	if !ok {
+		return "", "", false
+	}
+
+	endpoint = rest
+	if prefix == metricsPrefix {
+		// Metrics keys have a trailing ":{requestType}" suffix. requestType
+		// (proxy_requests/health_requests) never contains a colon, so the last colon is
+		// the boundary regardless of colons in the endpoint.
+		idx := strings.LastIndex(rest, ":")
+		if idx == -1 {
+			return "", "", false
+		}
+		endpoint = rest[:idx]
+	}
+
+	return chain, endpoint, true
+}
+
 // CleanupStaleEndpoints removes all Valkey keys for endpoints that are no longer in the active config.
 // activeEndpoints maps chain names to slices of endpoint IDs that are currently configured.
 // Returns the number of keys deleted and any error encountered.
@@ -262,7 +303,7 @@ func (r *ValkeyClient) CleanupStaleEndpoints(ctx context.Context, activeEndpoint
 		}
 	}
 
-	prefixes := []string{healthPrefix, metricsPrefix, rateLimitPrefix}
+	prefixes := []string{healthPrefix, metricsPrefix, rateLimitPrefix, capacityEstimatePrefix}
 	var staleKeys []string
 
 	for _, prefix := range prefixes {
@@ -280,17 +321,10 @@ func (r *ValkeyClient) CleanupStaleEndpoints(ctx context.Context, activeEndpoint
 			}
 
 			for _, key := range scanResult.Elements {
-				// Parse chain and endpoint from the key.
-				// Key formats:
-				//   health:{chain}:{endpoint}
-				//   metrics:{chain}:{endpoint}:...
-				//   rate_limit:{chain}:{endpoint}
-				withoutPrefix := key[len(prefix):]
-				chain, rest, ok := strings.Cut(withoutPrefix, ":")
+				chain, endpoint, ok := parseChainEndpointFromKey(key, prefix)
 				if !ok {
 					continue
 				}
-				endpoint, _, _ := strings.Cut(rest, ":")
 
 				if _, ok := active[chain+":"+endpoint]; !ok {
 					staleKeys = append(staleKeys, key)
@@ -380,4 +414,67 @@ func (r *ValkeyClient) SetRateLimitState(ctx context.Context, chain, endpoint st
 	// Simple SET operation with expiration, last write wins
 	cmd := r.client.B().Set().Key(key).Value(string(jsonBytes)).Ex(24 * time.Hour).Build()
 	return r.client.Do(ctx, cmd).Error()
+}
+
+// capacityBucketKey returns the Valkey key for the current fixed window of width
+// windowSeconds, e.g. window 10 buckets time into 10-second slices. The window
+// resets every windowSeconds because each slice gets its own key - unlike
+// IncrementRequestCount's rolling TTL, this key naturally stops being written to
+// once the window elapses, so a fresh window always starts at zero.
+func capacityBucketKey(chain, endpoint string, windowSeconds int) string {
+	// windowSeconds is a divisor below; config.LoadConfig is the primary guard against a
+	// non-positive value reaching here, but this function is reachable through the public
+	// ValkeyClientIface, so it defends itself too rather than panicking on bad input.
+	if windowSeconds <= 0 {
+		windowSeconds = 1
+	}
+	bucket := time.Now().Unix() / int64(windowSeconds)
+	return capacityPrefix + chain + ":" + endpoint + ":" + strconv.FormatInt(bucket, 10)
+}
+
+// IncrementCapacityCount increments the self-imposed capacity counter for an endpoint
+// within the current fixed window of width windowSeconds, and returns the new count.
+// Used to proactively throttle requests below a configured ceiling, independent of
+// any provider-reported rate limit state.
+func (r *ValkeyClient) IncrementCapacityCount(ctx context.Context, chain, endpoint string, windowSeconds int) (int64, error) {
+	if windowSeconds <= 0 {
+		return 0, fmt.Errorf("IncrementCapacityCount: windowSeconds must be positive, got %d", windowSeconds)
+	}
+	key := capacityBucketKey(chain, endpoint, windowSeconds)
+
+	cmds := []valkey.Completed{
+		r.client.B().Incr().Key(key).Build(),
+		r.client.B().Expire().Key(key).Seconds(int64(2 * windowSeconds)).Build(),
+	}
+
+	results := r.client.DoMulti(ctx, cmds...)
+	if err := results[0].Error(); err != nil {
+		return 0, err
+	}
+	count, err := results[0].AsInt64()
+	if err != nil {
+		return 0, err
+	}
+	if err := results[1].Error(); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// GetCapacityCount returns the current count for an endpoint's capacity window,
+// or 0 if nothing has been recorded in the current window yet.
+func (r *ValkeyClient) GetCapacityCount(ctx context.Context, chain, endpoint string, windowSeconds int) (int64, error) {
+	if windowSeconds <= 0 {
+		return 0, fmt.Errorf("GetCapacityCount: windowSeconds must be positive, got %d", windowSeconds)
+	}
+	key := capacityBucketKey(chain, endpoint, windowSeconds)
+	result := r.client.Do(ctx, r.client.B().Get().Key(key).Build())
+
+	if valkey.IsValkeyNil(result.Error()) {
+		return 0, nil
+	}
+	if err := result.Error(); err != nil {
+		return 0, err
+	}
+	return result.AsInt64()
 }

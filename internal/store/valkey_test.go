@@ -286,6 +286,191 @@ func TestCombinedRequestCounts(t *testing.T) {
 	}
 }
 
+func TestIncrementAndGetCapacityCount(t *testing.T) {
+	client := NewMockValkeyClient()
+
+	ctx := context.Background()
+	chain := "test-chain"
+	endpoint := uniqueTestKey("https://test.example.com")
+
+	for i := 0; i < 3; i++ {
+		count, err := client.IncrementCapacityCount(ctx, chain, endpoint, 10)
+		if err != nil {
+			t.Fatalf("Increment failed: %v", err)
+		}
+		if count != int64(i+1) {
+			t.Errorf("Expected count %d, got %d", i+1, count)
+		}
+	}
+
+	count, err := client.GetCapacityCount(ctx, chain, endpoint, 10)
+	if err != nil {
+		t.Fatalf("Get capacity count failed: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("Expected capacity count to be 3, got %d", count)
+	}
+}
+
+func TestGetCapacityCountForUnusedEndpointReturnsZero(t *testing.T) {
+	client := NewMockValkeyClient()
+
+	ctx := context.Background()
+	count, err := client.GetCapacityCount(ctx, "test-chain", "https://unused.example.com", 10)
+	if err != nil {
+		t.Fatalf("Get capacity count failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("Expected capacity count to be 0, got %d", count)
+	}
+}
+
+// TestCapacityCountRejectsNonPositiveWindowSeconds verifies that both IncrementCapacityCount
+// and GetCapacityCount return an error for invalid windowSeconds values rather than
+// silently clamping or panicking, so callers receive a clear signal and can fail-open
+// gracefully, and no invalid write is accepted into the wrong bucket.
+func TestCapacityCountRejectsNonPositiveWindowSeconds(t *testing.T) {
+	client := NewMockValkeyClient()
+	ctx := context.Background()
+
+	for _, windowSeconds := range []int{0, -1, -100} {
+		if _, err := client.IncrementCapacityCount(ctx, "test-chain", "ep1", windowSeconds); err == nil {
+			t.Errorf("IncrementCapacityCount(windowSeconds=%d) expected error, got nil", windowSeconds)
+		}
+		if _, err := client.GetCapacityCount(ctx, "test-chain", "ep1", windowSeconds); err == nil {
+			t.Errorf("GetCapacityCount(windowSeconds=%d) expected error, got nil", windowSeconds)
+		}
+	}
+}
+
+func TestCapacityCountWindowRollover(t *testing.T) {
+	client := NewMockValkeyClient()
+	ctx := context.Background()
+	chain := "test-chain"
+	endpoint := uniqueTestKey("https://test.example.com")
+
+	windowStart := time.Unix(1_700_000_000, 0)
+	client.NowFunc = func() time.Time { return windowStart }
+
+	for i := 0; i < 2; i++ {
+		if _, err := client.IncrementCapacityCount(ctx, chain, endpoint, 10); err != nil {
+			t.Fatalf("Increment failed: %v", err)
+		}
+	}
+	count, err := client.GetCapacityCount(ctx, chain, endpoint, 10)
+	if err != nil {
+		t.Fatalf("Get capacity count failed: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("Expected count 2 within the window, got %d", count)
+	}
+
+	// Jump forward past the window boundary (window width 10s) without a real sleep.
+	client.NowFunc = func() time.Time { return windowStart.Add(11 * time.Second) }
+
+	count, err = client.GetCapacityCount(ctx, chain, endpoint, 10)
+	if err != nil {
+		t.Fatalf("Get capacity count failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("Expected count to reset to 0 in the new window, got %d", count)
+	}
+}
+
+// TestParseChainEndpointFromKey guards against a regression where colons inside a
+// URL-shaped endpoint ID (the common case, e.g. "https://test.example.com:8545") were
+// mistaken for field separators and truncated the endpoint, which made
+// CleanupStaleEndpoints treat still-active endpoints as stale and delete their keys.
+func TestParseChainEndpointFromKey(t *testing.T) {
+	tests := []struct {
+		name         string
+		key          string
+		prefix       string
+		wantChain    string
+		wantEndpoint string
+		wantOK       bool
+	}{
+		{
+			name:         "health key with plain endpoint",
+			key:          "health:ethereum:alchemy-1",
+			prefix:       healthPrefix,
+			wantChain:    "ethereum",
+			wantEndpoint: "alchemy-1",
+			wantOK:       true,
+		},
+		{
+			name:         "health key with URL endpoint containing colons",
+			key:          "health:ethereum:https://test.example.com:8545",
+			prefix:       healthPrefix,
+			wantChain:    "ethereum",
+			wantEndpoint: "https://test.example.com:8545",
+			wantOK:       true,
+		},
+		{
+			name:         "rate_limit key with URL endpoint containing colons",
+			key:          "rate_limit:ethereum:https://test.example.com:8545",
+			prefix:       rateLimitPrefix,
+			wantChain:    "ethereum",
+			wantEndpoint: "https://test.example.com:8545",
+			wantOK:       true,
+		},
+		{
+			name:         "capacity_estimate key with URL endpoint containing colons",
+			key:          "capacity_estimate:ethereum:https://test.example.com:8545",
+			prefix:       capacityEstimatePrefix,
+			wantChain:    "ethereum",
+			wantEndpoint: "https://test.example.com:8545",
+			wantOK:       true,
+		},
+		{
+			name:         "metrics key with plain endpoint and trailing requestType",
+			key:          "metrics:ethereum:alchemy-1:proxy_requests",
+			prefix:       metricsPrefix,
+			wantChain:    "ethereum",
+			wantEndpoint: "alchemy-1",
+			wantOK:       true,
+		},
+		{
+			name:         "metrics key with URL endpoint containing colons and trailing requestType",
+			key:          "metrics:ethereum:https://test.example.com:8545:health_requests",
+			prefix:       metricsPrefix,
+			wantChain:    "ethereum",
+			wantEndpoint: "https://test.example.com:8545",
+			wantOK:       true,
+		},
+		{
+			name:   "key with no separator after chain is rejected",
+			key:    "health:ethereum",
+			prefix: healthPrefix,
+			wantOK: false,
+		},
+		{
+			name:   "metrics key missing requestType suffix is rejected",
+			key:    "metrics:ethereum:alchemy-1",
+			prefix: metricsPrefix,
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chain, endpoint, ok := parseChainEndpointFromKey(tt.key, tt.prefix)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if chain != tt.wantChain {
+				t.Errorf("chain = %q, want %q", chain, tt.wantChain)
+			}
+			if endpoint != tt.wantEndpoint {
+				t.Errorf("endpoint = %q, want %q", endpoint, tt.wantEndpoint)
+			}
+		})
+	}
+}
+
 // TestNewValkeyClientTLSConfig is an integration test that checks the TLS configuration.
 // It requires a running Valkey server with TLS enabled on port 6380 and non-TLS on 6379.
 func TestNewValkeyClientTLSConfig(t *testing.T) {

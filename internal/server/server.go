@@ -18,6 +18,7 @@ import (
 
 	"aetherlay/internal/cache"
 	"aetherlay/internal/config"
+	"aetherlay/internal/health"
 	"aetherlay/internal/helpers"
 	"aetherlay/internal/metrics"
 	"aetherlay/internal/store"
@@ -31,6 +32,7 @@ import (
 type RateLimitError struct {
 	StatusCode int
 	Message    string
+	Signal     health.RateLimitSignal
 }
 
 // Error returns the rate limit error message.
@@ -423,7 +425,7 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 		}
 
 		// Get all available endpoints with public-first logic
-		allEndpoints := s.getAvailableEndpoints(chain, archive, false)
+		allEndpoints := s.getAvailableEndpoints(ctx, chain, archive, false)
 
 		log.Debug().Str("chain", chain).Bool("archive", archive).Int("available_endpoints", len(allEndpoints)).Msg("Retrieved available endpoints for HTTP request")
 
@@ -449,7 +451,7 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 			}
 
 			// Select the best endpoint based on requests count and endpoint type
-			endpoint := s.selectBestEndpoint(chain, allEndpoints)
+			endpoint := s.selectBestEndpoint(ctx, chain, allEndpoints)
 			if endpoint == nil {
 				log.Debug().Str("chain", chain).Int("retry", retryCount).Msg("No suitable endpoint found for HTTP request")
 				break
@@ -471,6 +473,8 @@ func (s *Server) handleRequestHTTP(chain string) http.HandlerFunc {
 
 			// Create per-try timeout context that respects the overall timeout
 			tryCtx, tryCancel := context.WithTimeout(ctx, s.requestTimeoutPerTry)
+
+			s.recordCapacityUsage(chain, endpoint.Endpoint, endpoint.ID)
 
 			// Create a fresh request with a new body reader for each retry attempt
 			err := s.forwardRequestWithBody(w, tryCtx, r.Method, endpoint.Endpoint.HTTPURL, bodyBytes, r.Header)
@@ -583,7 +587,7 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 			archive := r.URL.Query().Get("archive") == "true"
 
 			// Get all available endpoints with public-first logic
-			allEndpoints := s.getAvailableEndpoints(chain, archive, true)
+			allEndpoints := s.getAvailableEndpoints(ctx, chain, archive, true)
 
 			log.Debug().Str("chain", chain).Bool("archive", archive).Int("available_endpoints", len(allEndpoints)).Msg("Retrieved available endpoints for WebSocket request")
 
@@ -608,7 +612,7 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 				}
 
 				// Select the best endpoint based on request counts
-				endpoint := s.selectBestEndpoint(chain, allEndpoints)
+				endpoint := s.selectBestEndpoint(ctx, chain, allEndpoints)
 				if endpoint == nil || endpoint.Endpoint.WSURL == "" {
 					log.Debug().Str("chain", chain).Int("retry", retryCount).Msg("No suitable WebSocket endpoint found")
 					break
@@ -631,6 +635,8 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 				// Create per-try timeout context that respects the overall timeout
 				tryCtx, tryCancel := context.WithTimeout(ctx, s.requestTimeoutPerTry)
 				reqWithCtx := r.WithContext(tryCtx)
+
+				s.recordCapacityUsage(chain, endpoint.Endpoint, endpoint.ID)
 
 				err := s.proxyWebSocket(w, reqWithCtx, endpoint.Endpoint.WSURL)
 				tryCancel() // Always cancel the per-try context
@@ -692,10 +698,10 @@ func (s *Server) handleRequestWS(chain string) http.HandlerFunc {
 						break
 					}
 
-					// Check if this is a 429 rate limiting error during handshake
-					if _, ok := err.(*RateLimitError); ok {
+					// Check if this is a rate limiting error during handshake (429, or Infura's 402 daily cap)
+					if rlErr, ok := err.(*RateLimitError); ok {
 						log.Debug().Str("chain", chain).Str("endpoint", endpoint.ID).Int("retry", retryCount).Msg("WebSocket handshake rate limited")
-						s.handleRateLimit(chain, endpoint.ID, "ws")
+						s.handleRateLimit(chain, endpoint.ID, "ws", rlErr.Signal)
 						// Remove the rate-limited endpoint from the list
 						var remainingEndpoints []EndpointWithID
 						for _, ep := range allEndpoints {
@@ -815,7 +821,7 @@ type EndpointWithID struct {
 }
 
 // getAvailableEndpoints returns available endpoints for a chain and protocol with support for public-first hierarchy
-func (s *Server) getAvailableEndpoints(chain string, archive bool, ws bool) []EndpointWithID {
+func (s *Server) getAvailableEndpoints(ctx context.Context, chain string, archive bool, ws bool) []EndpointWithID {
 	var endpoints []EndpointWithID
 
 	chainEndpoints, exists := s.config.GetEndpointsForChain(chain)
@@ -824,9 +830,9 @@ func (s *Server) getAvailableEndpoints(chain string, archive bool, ws bool) []En
 	}
 
 	// Get all endpoint types
-	publicEndpoints := s.getEndpointsByRole(chainEndpoints, "public", chain, archive, ws)
-	primaryEndpoints := s.getEndpointsByRole(chainEndpoints, "primary", chain, archive, ws)
-	fallbackEndpoints := s.getEndpointsByRole(chainEndpoints, "fallback", chain, archive, ws)
+	publicEndpoints := s.getEndpointsByRole(ctx, chainEndpoints, "public", chain, archive, ws)
+	primaryEndpoints := s.getEndpointsByRole(ctx, chainEndpoints, "primary", chain, archive, ws)
+	fallbackEndpoints := s.getEndpointsByRole(ctx, chainEndpoints, "fallback", chain, archive, ws)
 
 	// Append endpoints in priority order based on PUBLIC_FIRST setting
 	if s.appConfig.PublicFirst {
@@ -847,7 +853,7 @@ func (s *Server) getAvailableEndpoints(chain string, archive bool, ws bool) []En
 }
 
 // getEndpointsByRole returns healthy endpoints for a specific role
-func (s *Server) getEndpointsByRole(chainEndpoints config.ChainEndpoints, role string, chain string, archive bool, ws bool) []EndpointWithID {
+func (s *Server) getEndpointsByRole(ctx context.Context, chainEndpoints config.ChainEndpoints, role string, chain string, archive bool, ws bool) []EndpointWithID {
 	var endpoints []EndpointWithID
 
 	for endpointID, endpoint := range chainEndpoints {
@@ -858,7 +864,7 @@ func (s *Server) getEndpointsByRole(chainEndpoints config.ChainEndpoints, role s
 				if !cacheHit {
 					// Cache miss, fetch from Valkey and populate cache
 					var err error
-					status, err = s.valkeyClient.GetEndpointStatus(context.Background(), chain, endpointID)
+					status, err = s.valkeyClient.GetEndpointStatus(ctx, chain, endpointID)
 					if err != nil {
 						continue
 					}
@@ -866,10 +872,35 @@ func (s *Server) getEndpointsByRole(chainEndpoints config.ChainEndpoints, role s
 				}
 
 				// Check if endpoint is rate limited
-				rateLimitState, err := s.valkeyClient.GetRateLimitState(context.Background(), chain, endpointID)
+				rateLimitState, err := s.valkeyClient.GetRateLimitState(ctx, chain, endpointID)
 				if err == nil && rateLimitState.RateLimited {
 					log.Debug().Str("chain", chain).Str("endpoint", endpointID).Str("role", role).Msg("Skipping rate-limited endpoint")
 					continue
+				}
+
+				// Proactively skip an endpoint that has hit its capacity ceiling (static
+				// or learned) for the current window, so selection routes to another
+				// endpoint before the provider's own rate limiter would trigger.
+				// Independent of RateLimited above: this is a self-imposed budget, not
+				// a provider signal.
+				if s.appConfig.CapacityThrottlingEnabled {
+					if maxRequests, windowSeconds, hasCeiling := s.effectiveCapacityCeiling(ctx, chain, endpointID, endpoint); hasCeiling {
+						capCtx, capCancel := context.WithTimeout(ctx, 2*time.Second)
+						count, err := s.valkeyClient.GetCapacityCount(capCtx, chain, endpointID, windowSeconds)
+						capCancel()
+						if err == nil {
+							if metrics.EndpointCapacityUtilization != nil {
+								metrics.EndpointCapacityUtilization.WithLabelValues(chain, endpointID).Set(float64(count) / float64(maxRequests))
+							}
+							if count >= maxRequests {
+								log.Debug().Str("chain", chain).Str("endpoint", endpointID).Str("role", role).Msg("Skipping endpoint at its capacity ceiling")
+								if metrics.EndpointCapacitySkippedTotal != nil {
+									metrics.EndpointCapacitySkippedTotal.WithLabelValues(chain, endpointID).Inc()
+								}
+								continue
+							}
+						}
+					}
 				}
 
 				if ws {
@@ -889,7 +920,7 @@ func (s *Server) getEndpointsByRole(chainEndpoints config.ChainEndpoints, role s
 }
 
 // selectBestEndpoint selects the best endpoint based on endpoint type priority and request counts
-func (s *Server) selectBestEndpoint(chain string, endpoints []EndpointWithID) *EndpointWithID {
+func (s *Server) selectBestEndpoint(ctx context.Context, chain string, endpoints []EndpointWithID) *EndpointWithID {
 	if len(endpoints) == 0 {
 		return nil
 	}
@@ -904,7 +935,7 @@ func (s *Server) selectBestEndpoint(chain string, endpoints []EndpointWithID) *E
 
 	// Try each endpoint type in priority order
 	for _, role := range priorityOrder {
-		bestEndpoint := s.selectBestEndpointByRole(chain, endpoints, role)
+		bestEndpoint := s.selectBestEndpointByRole(ctx, chain, endpoints, role)
 		if bestEndpoint != nil {
 			return bestEndpoint
 		}
@@ -913,31 +944,102 @@ func (s *Server) selectBestEndpoint(chain string, endpoints []EndpointWithID) *E
 	return nil
 }
 
-// selectBestEndpointByRole selects the best endpoint of a specific role based on request counts
-func (s *Server) selectBestEndpointByRole(chain string, endpoints []EndpointWithID, role string) *EndpointWithID {
-	var bestEndpoint *EndpointWithID
-	var minRequests int64 = -1
+// endpointCeiling caches a resolved capacity ceiling (static or learned) for one
+// candidate, so selectBestEndpointByRole doesn't re-resolve it (and re-read Valkey for
+// the learned case) once to decide allHaveCeiling and again to compute its score.
+type endpointCeiling struct {
+	maxRequests   int64
+	windowSeconds int
+	ok            bool
+}
 
+// selectBestEndpointByRole selects the best endpoint of a specific role based on request counts.
+// When every candidate endpoint in this role has a resolvable capacity ceiling - static
+// Capacity, or a learned estimate once adaptive learning has evidence for it - selection
+// is instead weighted by utilization relative to each endpoint's own ceiling - projected
+// out to a 24h-equivalent budget so it's comparable to the existing r24h counter - so a
+// higher-capacity endpoint isn't penalized for having a higher raw request count than a
+// lower-capacity one. If any candidate has no ceiling at all yet, this falls back to the
+// original behavior (lowest raw 24h count wins) to avoid comparing endpoints on
+// incompatible units.
+func (s *Server) selectBestEndpointByRole(ctx context.Context, chain string, endpoints []EndpointWithID, role string) *EndpointWithID {
+	var candidateIndices []int
+	ceilings := make(map[int]endpointCeiling)
+	allHaveCeiling := true
 	for i := range endpoints {
-		// Skip endpoints that don't match the requested role
 		if endpoints[i].Endpoint.Role != role {
 			continue
 		}
+		candidateIndices = append(candidateIndices, i)
+		maxRequests, windowSeconds, ok := s.effectiveCapacityCeiling(ctx, chain, endpoints[i].ID, endpoints[i].Endpoint)
+		ceilings[i] = endpointCeiling{maxRequests: maxRequests, windowSeconds: windowSeconds, ok: ok}
+		if !ok {
+			allHaveCeiling = false
+		}
+	}
 
-		r24h, _, _, err := s.valkeyClient.GetCombinedRequestCounts(context.Background(), chain, endpoints[i].ID)
+	var bestEndpoint *EndpointWithID
+	var minScore float64 = -1
+
+	for _, i := range candidateIndices {
+		r24h, _, _, err := s.valkeyClient.GetCombinedRequestCounts(ctx, chain, endpoints[i].ID)
 		// Skip endpoints where we can't get request count data
 		if err != nil {
 			continue
 		}
 
-		// Select endpoint with lowest 24h request count (or first one if minRequests is uninitialized)
-		if minRequests == -1 || r24h < minRequests {
-			minRequests = r24h
+		score := float64(r24h)
+		if allHaveCeiling {
+			c := ceilings[i]
+			if c.windowSeconds > 0 {
+				dailyBudget := float64(c.maxRequests) * (86400.0 / float64(c.windowSeconds))
+				if dailyBudget > 0 {
+					score = float64(r24h) / dailyBudget
+				}
+			}
+		}
+
+		// Select endpoint with the lowest score (or first one if minScore is uninitialized)
+		if minScore == -1 || score < minScore {
+			minScore = score
 			bestEndpoint = &endpoints[i]
 		}
 	}
 
 	return bestEndpoint
+}
+
+// effectiveCapacityCeiling resolves the ceiling (requests/window) to gate and weight an
+// endpoint against, whichever source is authoritative:
+//  1. Static Capacity configured -> today's exact values, unchanged - adaptive learning
+//     never engages for this endpoint.
+//  2. No static Capacity, adaptive learning enabled, and a learned estimate exists ->
+//     the estimate's ceiling, grown lazily via store.EffectiveMaxRequests.
+//  3. Otherwise -> ok=false: no ceiling at all, never proactively skipped. Absence of
+//     evidence isn't evidence of a limit - the endpoint remains fully covered by the
+//     independent, reactive RateLimitState check the instant it's actually rate limited.
+func (s *Server) effectiveCapacityCeiling(ctx context.Context, chain, endpointID string, ep config.Endpoint) (maxRequests int64, windowSeconds int, ok bool) {
+	if ep.Capacity != nil {
+		if ep.Capacity.MaxRequests <= 0 || ep.Capacity.WindowSeconds <= 0 {
+			return 0, 0, false
+		}
+		return int64(ep.Capacity.MaxRequests), ep.Capacity.WindowSeconds, true
+	}
+	if !s.appConfig.CapacityLearningEnabled {
+		return 0, 0, false
+	}
+	estCtx, estCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer estCancel()
+	estimate, err := s.valkeyClient.GetCapacityEstimate(estCtx, chain, endpointID)
+	if err != nil || !estimate.HasEstimate {
+		return 0, 0, false
+	}
+	params := config.ResolveCapacityLearning(ep.CapacityLearning)
+	maxReqs := store.EffectiveMaxRequests(*estimate, params, time.Now())
+	if maxReqs <= 0 || estimate.WindowSeconds <= 0 {
+		return 0, 0, false
+	}
+	return maxReqs, estimate.WindowSeconds, true
 }
 
 // removeEndpointByID removes an endpoint from a slice by its ID
@@ -1151,11 +1253,11 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 
 		// For all other non-2xx responses (400 already handled above), mark endpoint as unhealthy
 		if found {
-			if resp.StatusCode == 429 {
-				// For 429 (Too Many Requests), use the rate limit handler
+			sig := health.DetectRateLimit(s.providerForEndpoint(chain, endpointID), resp.StatusCode, resp.Header, nil)
+			if sig.IsRateLimited {
 				s.markEndpointUnhealthyProtocol(chain, endpointID, "http")
-				s.handleRateLimit(chain, endpointID, "http")
-				log.Debug().Str("url", helpers.RedactAPIKey(targetURL)).Int("status_code", resp.StatusCode).Msg("Endpoint returned 429 (Too Many Requests), handling rate limit")
+				s.handleRateLimit(chain, endpointID, "http", sig)
+				log.Debug().Str("url", helpers.RedactAPIKey(targetURL)).Int("status_code", resp.StatusCode).Bool("daily_quota", sig.IsDailyQuota).Msg("Endpoint returned a rate-limit signal, handling rate limit")
 			} else {
 				s.markEndpointUnhealthyProtocol(chain, endpointID, "http")
 				log.Debug().Str("url", helpers.RedactAPIKey(targetURL)).Int("status_code", resp.StatusCode).Msg("Endpoint returned non-2xx status, marked unhealthy")
@@ -1166,9 +1268,64 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	// Copy response headers
-	for key, values := range resp.Header {
-		// Skip CORS headers to avoid duplication
+	// For JSON responses from a provider known to need it, buffer (within a bounded size)
+	// and scan the body for an embedded rate-limit error before forwarding. Some providers
+	// (currently Alchemy, on batch requests) return HTTP 200 with the rate-limit signal
+	// only inside the JSON-RPC body - invisible to a status-code-only check. This is
+	// scoped to those providers specifically: buffering every 2xx JSON response
+	// regardless of provider would delay time-to-first-byte and hold up to
+	// maxRateLimitScanBodyBytes in memory per in-flight request, for providers that never
+	// exhibit this behavior. Responses from other providers, and oversized bodies from
+	// providers that do need the scan, are streamed through unmodified and uninspected.
+	//
+	// Headers are copied onto w only once we've committed to writing this specific
+	// response (immediately before each w.WriteHeader below), not unconditionally up
+	// front: handleRequestHTTP's retry loop reuses the same w across attempts, so copying
+	// headers before knowing whether this attempt aborts (the embedded-signal branch
+	// below returns an error without ever calling WriteHeader) would leave them sitting
+	// in w's header map, where a subsequent successful retry's headers would be added on
+	// top of rather than replacing them - e.g. two Content-Length values in the response
+	// actually sent to the client.
+	chain, endpointID, endpointFound := s.findChainAndEndpointByURL(targetURL)
+	if endpointFound && isJSONContentType(resp.Header.Get("Content-Type")) && providerNeedsEmbeddedRateLimitScan(s.providerForEndpoint(chain, endpointID)) {
+		buffered, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRateLimitScanBodyBytes+1))
+		if readErr == nil && int64(len(buffered)) <= maxRateLimitScanBodyBytes {
+			if sig := bodyCarriesRateLimitSignal(s.providerForEndpoint(chain, endpointID), buffered, resp.Header); sig.IsRateLimited {
+				// The HTTP transaction itself succeeded (2xx) - don't mark the endpoint
+				// unhealthy, just flag it as rate limited so selection avoids it, and
+				// retry the same buffered request body against a different endpoint.
+				s.handleRateLimit(chain, endpointID, "http", sig)
+				log.Debug().Str("url", helpers.RedactAPIKey(targetURL)).Bool("daily_quota", sig.IsDailyQuota).Msg("2xx response carried an embedded rate-limit signal, retrying with a different endpoint")
+				return fmt.Errorf("rate limited: embedded JSON-RPC rate-limit error in 2xx response")
+			}
+			copyResponseHeaders(w, resp.Header)
+			w.WriteHeader(resp.StatusCode)
+			_, err = w.Write(buffered)
+			return err
+		}
+		// Exceeded the scan cap (or a read error occurred): stream the buffered prefix
+		// plus whatever remains, unmodified and uninspected.
+		copyResponseHeaders(w, resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		_, err = io.Copy(w, io.MultiReader(bytes.NewReader(buffered), resp.Body))
+		return err
+	}
+
+	// Set response status
+	copyResponseHeaders(w, resp.Header)
+	w.WriteHeader(resp.StatusCode)
+
+	// Copy response body
+	_, err = io.Copy(w, resp.Body)
+	return err
+}
+
+// copyResponseHeaders copies resp's headers onto w, skipping CORS headers (already set
+// by the CORS middleware). Callers must only invoke this once they've committed to
+// writing this specific response - see the comment at defaultForwardRequestWithBodyFunc's
+// call sites for why copying headers before that commitment is unsafe.
+func copyResponseHeaders(w http.ResponseWriter, respHeader http.Header) {
+	for key, values := range respHeader {
 		if strings.HasPrefix(key, "Access-Control-") {
 			continue
 		}
@@ -1176,13 +1333,115 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 			w.Header().Add(key, value)
 		}
 	}
+}
 
-	// Set response status
-	w.WriteHeader(resp.StatusCode)
+// maxRateLimitScanBodyBytes bounds how much of a 2xx response body is buffered to scan
+// for an embedded JSON-RPC rate-limit error. Single-request rate-limit bodies are tiny;
+// this cap exists so large legitimate responses aren't fully buffered in memory.
+const maxRateLimitScanBodyBytes = 10 * 1024 * 1024
 
-	// Copy response body
-	_, err = io.Copy(w, resp.Body)
-	return err
+// isJSONContentType reports whether a Content-Type header value looks like JSON.
+func isJSONContentType(contentType string) bool {
+	return strings.Contains(contentType, "application/json") || strings.Contains(contentType, "text/json")
+}
+
+// providerForEndpoint looks up the configured provider name for a chain/endpoint, used to
+// select provider-specific rate-limit detection behavior (see health.DetectRateLimit).
+func (s *Server) providerForEndpoint(chain, endpointID string) string {
+	chainEndpoints, ok := s.config.GetEndpointsForChain(chain)
+	if !ok {
+		return ""
+	}
+	return chainEndpoints[endpointID].Provider
+}
+
+// capacityWindowSeconds resolves the window width to track usage against for the WRITE
+// path (recordCapacityUsage's usage counter). It must agree with whatever window
+// effectiveCapacityCeiling's READ path is watching, or gating silently stops working -
+// writes and reads would land in different Valkey bucket keys (see capacityBucketKey,
+// which derives the bucket from windowSeconds itself). So: static Capacity's window if
+// configured (unchanged, always stable); else the frozen window already recorded on a
+// learned estimate, if one has been seeded (matching effectiveCapacityCeiling exactly);
+// else the live-resolved adaptive-learning window as a bootstrap default before any
+// estimate exists yet to freeze against.
+func (s *Server) capacityWindowSeconds(chain, endpointID string, endpoint config.Endpoint) int {
+	if endpoint.Capacity != nil {
+		return endpoint.Capacity.WindowSeconds
+	}
+	if s.appConfig.CapacityLearningEnabled {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		estimate, err := s.valkeyClient.GetCapacityEstimate(ctx, chain, endpointID)
+		cancel()
+		if err == nil && estimate.HasEstimate {
+			return estimate.WindowSeconds
+		}
+	}
+	return config.ResolveCapacityLearning(endpoint.CapacityLearning).WindowSeconds
+}
+
+// recordCapacityUsage increments an endpoint's self-imposed capacity counter for the
+// current window, on every dispatch attempt regardless of outcome - a failed/429'd
+// attempt still spent a real unit of the provider's quota. No-op when capacity
+// throttling is disabled entirely, or when the endpoint has no static Capacity and
+// adaptive learning is also disabled.
+func (s *Server) recordCapacityUsage(chain string, endpoint config.Endpoint, endpointID string) {
+	if !s.appConfig.CapacityThrottlingEnabled {
+		return
+	}
+	if endpoint.Capacity == nil && !s.appConfig.CapacityLearningEnabled {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := s.valkeyClient.IncrementCapacityCount(ctx, chain, endpointID, s.capacityWindowSeconds(chain, endpointID, endpoint)); err != nil {
+		log.Debug().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to record capacity usage")
+	}
+}
+
+// applyLearnedCapacityDecrease is called from handleRateLimit on every confirmed
+// rate-limit signal. It delegates to store.ApplyLearnedCapacityDecreaseIfEligible, the
+// same shared implementation the standalone health checker calls, so the two processes -
+// both mutating the same Valkey-persisted estimate - never diverge.
+func (s *Server) applyLearnedCapacityDecrease(chain, endpointID string, endpoint config.Endpoint, signal health.RateLimitSignal) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	store.ApplyLearnedCapacityDecreaseIfEligible(ctx, s.valkeyClient, chain, endpointID, endpoint, s.appConfig.CapacityThrottlingEnabled, s.appConfig.CapacityLearningEnabled, signal.IsDailyQuota)
+}
+
+// bodyCarriesRateLimitSignal reports whether a 2xx JSON-RPC response body (a single
+// object or a batch array) contains an embedded rate-limit error - the case that makes
+// Alchemy's HTTP-200-with-one-batch-item-429 blind spot visible, since HTTP status alone
+// can't see it. Returns a zero-value signal if the body isn't a recognizable JSON-RPC
+// response or carries no rate-limit error.
+// providerNeedsEmbeddedRateLimitScan reports whether a provider is known to sometimes
+// return a 2xx HTTP response with a rate-limit error embedded in the JSON-RPC body
+// instead of a non-2xx status code. Currently only Alchemy, on batch requests - the
+// specific quirk bodyCarriesRateLimitSignal exists to detect. Gating on this list keeps
+// the buffer-and-scan cost (up to maxRateLimitScanBodyBytes held in memory, delaying
+// time-to-first-byte) off every other provider's 2xx JSON responses.
+func providerNeedsEmbeddedRateLimitScan(provider string) bool {
+	return strings.EqualFold(provider, "alchemy")
+}
+
+func bodyCarriesRateLimitSignal(provider string, body []byte, headers http.Header) health.RateLimitSignal {
+	var single health.RpcResponse
+	if err := json.Unmarshal(body, &single); err == nil && single.Error != nil {
+		return health.DetectRateLimit(provider, http.StatusOK, headers, &single)
+	}
+
+	var batch []health.RpcResponse
+	if err := json.Unmarshal(body, &batch); err == nil {
+		for i := range batch {
+			if batch[i].Error == nil {
+				continue
+			}
+			if sig := health.DetectRateLimit(provider, http.StatusOK, headers, &batch[i]); sig.IsRateLimited {
+				return sig
+			}
+		}
+	}
+
+	return health.RateLimitSignal{}
 }
 
 // Liveness-detection knobs for the proxied WebSocket. Vars (not consts) so
@@ -1327,15 +1586,16 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 
 		// Check for non-2xx status codes during handshake
 		if resp != nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
-			if resp.StatusCode == 429 {
-				// For 429 (Too Many Requests), mark unhealthy and return RateLimitError as signal
+			if sig := health.DetectRateLimit(s.providerForEndpoint(chain, endpointID), resp.StatusCode, resp.Header, nil); sig.IsRateLimited {
+				// For a rate-limit signal (429, or Infura's 402 daily cap), mark unhealthy and return RateLimitError as signal
 				if found {
 					s.markEndpointUnhealthyProtocol(chain, endpointID, "ws")
 				}
-				log.Debug().Str("url", helpers.RedactAPIKey(backendURL)).Int("status_code", resp.StatusCode).Msg("WebSocket handshake rate limited")
+				log.Debug().Str("url", helpers.RedactAPIKey(backendURL)).Int("status_code", resp.StatusCode).Bool("daily_quota", sig.IsDailyQuota).Msg("WebSocket handshake rate limited")
 				return &RateLimitError{
 					StatusCode: resp.StatusCode,
 					Message:    fmt.Sprintf("WebSocket handshake was rate-limited: HTTP %d", resp.StatusCode),
+					Signal:     sig,
 				}
 			}
 
@@ -1510,12 +1770,14 @@ func (s *Server) defaultProxyWebSocket(w http.ResponseWriter, r *http.Request, b
 }
 
 // GetRateLimitHandler returns the rate limit handler function for the health checker
-func (s *Server) GetRateLimitHandler() func(chain, endpointID, protocol string) {
+func (s *Server) GetRateLimitHandler() func(chain, endpointID, protocol string, signal health.RateLimitSignal) {
 	return s.handleRateLimit
 }
 
-// handleRateLimit handles rate limiting for an endpoint
-func (s *Server) handleRateLimit(chain, endpointID, protocol string) {
+// handleRateLimit handles rate limiting for an endpoint. The signal carries whatever
+// recovery timing hint the provider gave (a Retry-After header, or Infura's daily-quota
+// distinction), so the backoff can be seeded precisely instead of guessed.
+func (s *Server) handleRateLimit(chain, endpointID, protocol string, signal health.RateLimitSignal) {
 	log.Debug().Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Handling rate limit")
 
 	// Set the endpoint as rate limited in Valkey
@@ -1531,7 +1793,7 @@ func (s *Server) handleRateLimit(chain, endpointID, protocol string) {
 	state.RecoveryAttempts = 0
 	state.LastRecoveryCheck = now
 	state.ConsecutiveSuccess = 0
-	state.CurrentBackoff = 0 // Will be set to initial backoff on first attempt
+	state.CurrentBackoff = s.initialBackoffForSignal(chain, endpointID, signal)
 
 	// Set first rate limited time if this is the first time
 	if state.FirstRateLimited.IsZero() {
@@ -1543,8 +1805,23 @@ func (s *Server) handleRateLimit(chain, endpointID, protocol string) {
 		return
 	}
 
-	log.Info().Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Msg("Endpoint marked as rate limited")
+	log.Info().Str("chain", chain).Str("endpoint", endpointID).Str("protocol", protocol).Int("current_backoff", state.CurrentBackoff).Msg("Endpoint marked as rate limited")
+
+	// Check for rate limits first (this signal), then approximate the endpoint's safe
+	// throughput ceiling from it - only engages for endpoints with no static Capacity.
+	if chainEndpoints, ok := s.config.GetEndpointsForChain(chain); ok {
+		if ep, ok := chainEndpoints[endpointID]; ok {
+			s.applyLearnedCapacityDecrease(chain, endpointID, ep, signal)
+		}
+	}
 
 	// Start rate limit recovery monitoring
 	s.rateLimitScheduler.StartMonitoring(chain, endpointID)
+}
+
+// initialBackoffForSignal delegates to health.InitialBackoffForSignal, the same shared
+// implementation the standalone health checker calls, so the two processes seed recovery
+// backoff identically from the same signal.
+func (s *Server) initialBackoffForSignal(chain, endpointID string, signal health.RateLimitSignal) int {
+	return health.InitialBackoffForSignal(s.config, chain, endpointID, signal)
 }

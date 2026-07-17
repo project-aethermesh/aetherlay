@@ -91,7 +91,7 @@ type Checker struct {
 	ephemeralChecksThreshold int
 
 	// Rate limit handler function provided by server
-	HandleRateLimitFunc func(chain, endpointID, protocol string)
+	HandleRateLimitFunc func(chain, endpointID, protocol string, signal RateLimitSignal)
 
 	// For testability: allow patching health check methods
 	CheckHTTPHealthFunc func(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) bool
@@ -396,7 +396,7 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 }
 
 // makeRPCCall makes a single JSON-RPC call and returns the result
-func (c *Checker) makeRPCCall(ctx context.Context, url, method, chain, endpointID string) (any, error) {
+func (c *Checker) makeRPCCall(ctx context.Context, url, method, chain, endpointID, provider string) (any, error) {
 	payload := []byte(`{"jsonrpc":"2.0","method":"` + method + `","params":[],"id":1}`)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))
 	if err != nil {
@@ -413,17 +413,18 @@ func (c *Checker) makeRPCCall(ctx context.Context, url, method, chain, endpointI
 
 	// Check for "bad" HTTP status codes
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Handle 429 (Too Many Requests) specially
-		if resp.StatusCode == 429 && c.HandleRateLimitFunc != nil {
+		// Handle a rate-limit signal (429, or Infura's 402 daily cap) specially
+		if sig := DetectRateLimit(provider, resp.StatusCode, resp.Header, nil); sig.IsRateLimited && c.HandleRateLimitFunc != nil {
 			log.Debug().
 				Str("endpoint", helpers.RedactAPIKey(url)).
 				Str("chain", chain).
 				Str("endpoint_id", endpointID).
 				Int("status_code", resp.StatusCode).
 				Str("method", method).
-				Msg("RPC call detected 429, handing over to rate limit handler")
+				Bool("daily_quota", sig.IsDailyQuota).
+				Msg("RPC call detected a rate-limit signal, handing over to rate limit handler")
 
-			c.HandleRateLimitFunc(chain, endpointID, "http")
+			c.HandleRateLimitFunc(chain, endpointID, "http", sig)
 		}
 
 		// Read and log up to 512 bytes of the failed response's body
@@ -467,6 +468,20 @@ func (c *Checker) makeRPCCall(ctx context.Context, url, method, chain, endpointI
 			Str("method", method).
 			Msg("RPC call failed: could not parse JSON-RPC response")
 		return nil, err
+	}
+
+	// A rate-limited endpoint can return HTTP 200 with the error embedded in the JSON-RPC
+	// body (e.g. Alchemy's -32005). Without this, a rate-limited endpoint would just be
+	// marked plain-unhealthy and kept polling at the normal interval - working against
+	// the provider's own limit instead of backing off.
+	if sig := DetectRateLimit(provider, http.StatusOK, resp.Header, &response); sig.IsRateLimited && c.HandleRateLimitFunc != nil {
+		log.Debug().
+			Str("endpoint", helpers.RedactAPIKey(url)).
+			Str("chain", chain).
+			Str("endpoint_id", endpointID).
+			Str("method", method).
+			Msg("RPC call received a 200 response with an embedded rate-limit error, handing over to rate limit handler")
+		c.HandleRateLimitFunc(chain, endpointID, "http", sig)
 	}
 
 	// Check for errors inside the response
@@ -696,14 +711,14 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 	log.Info().Str("chain", chain).Str("endpoint_id", endpointID).Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Running HTTP health check")
 
 	// Always make the eth_blockNumber call
-	blockResult, blockErr := c.makeRPCCall(ctx, endpoint.HTTPURL, "eth_blockNumber", chain, endpointID)
+	blockResult, blockErr := c.makeRPCCall(ctx, endpoint.HTTPURL, "eth_blockNumber", chain, endpointID, endpoint.Provider)
 	c.incrementHealthRequestCount(ctx, chain, endpointID)
 
 	// Only make the eth_syncing call if sync status checking is enabled and not skipped for this endpoint
 	var syncResult any
 	var syncErr error
 	if c.healthCheckSyncStatus && !endpoint.SkipSyncCheck {
-		syncResult, syncErr = c.makeRPCCall(ctx, endpoint.HTTPURL, "eth_syncing", chain, endpointID)
+		syncResult, syncErr = c.makeRPCCall(ctx, endpoint.HTTPURL, "eth_syncing", chain, endpointID, endpoint.Provider)
 		c.incrementHealthRequestCount(ctx, chain, endpointID)
 	}
 
