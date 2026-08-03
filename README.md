@@ -212,10 +212,41 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 
 ## Health Check Configuration
 
-The service checks the health of an endpoint by sending these requests to it:
+The service checks the health of an endpoint by sending these requests to it. Which requests are sent depends on the endpoint's `chain_type` (see [Chain Types](#chain-types) below):
 
-- `eth_blockNumber` - Checks for successful response and that the block is not `0`.
-- `eth_syncing` (unless you disable it by setting `HEALTH_CHECK_SYNC_STATUS=false`) - Checks for successful response and that the node is not syncing (i.e., it has already fully synced, so you get the latest data from it).
+- **`evm`** (default):
+  - `eth_blockNumber` - Checks for successful response and that the block is not `0`.
+  - `eth_syncing` (unless you disable it by setting `HEALTH_CHECK_SYNC_STATUS=false`) - Checks for successful response and that the node is not syncing (i.e., it has already fully synced, so you get the latest data from it).
+- **`solana`**:
+  - `getSlot` - Checks for successful response and that the slot is not `0`.
+  - `getHealth` (unless you disable it by setting `HEALTH_CHECK_SYNC_STATUS=false`) - Checks for a successful `"ok"` response.
+
+In both cases, the sync/health-status call is treated as optional: if an endpoint doesn't implement it (a JSON-RPC "method not found" error), it's assumed healthy rather than being marked down over a missing optional method. You can also skip it for a specific endpoint with `"skip_sync_check": true`.
+
+### Chain Types
+
+Each endpoint can declare a `chain_type`, which selects the JSON-RPC dialect used for health checks (and the rate-limit recovery probe):
+
+```json
+{
+  "solana-mainnet": {
+    "drpc-1": {
+      "provider": "drpc",
+      "role": "primary",
+      "chain_type": "solana",
+      "http_url": "https://lb.drpc.live/solana/${DRPC_API_KEY}",
+      "ws_url": "wss://lb.drpc.live/solana/${DRPC_API_KEY}"
+    }
+  }
+}
+```
+
+- **`evm`** (default): standard Ethereum-style JSON-RPC. Omitting `chain_type` entirely is equivalent to `"evm"`, so existing configs need no changes.
+- **`solana`**: Solana's JSON-RPC dialect. Use this for any Solana (or Solana-compatible) endpoint.
+
+An unrecognized `chain_type` value is logged as a warning and treated as `"evm"`, rather than silently breaking health checks.
+
+Proxying itself is chain-agnostic regardless of `chain_type` - request bodies are forwarded as-is, so any JSON-RPC-speaking chain works over `/<chain>` once its endpoints pass health checks.
 
 ### Integrated Health Checks
 

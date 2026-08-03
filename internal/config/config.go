@@ -36,6 +36,13 @@ type CapacityLearning struct {
 	WindowSeconds    int     `json:"window_seconds"`    // Default learning window width, used when there's no static CapacityLimit to inherit one from
 }
 
+// Chain type identifiers, used to select the JSON-RPC dialect (health-check methods,
+// result formats, etc.) for an endpoint. See Endpoint.ChainType.
+const (
+	ChainTypeEVM    = "evm"    // Ethereum-style JSON-RPC (eth_blockNumber, eth_syncing, hex-encoded results)
+	ChainTypeSolana = "solana" // Solana JSON-RPC (getSlot, getHealth, plain-number results)
+)
+
 // Endpoint represents a single RPC endpoint configuration.
 // It contains all the necessary information to connect to and use an RPC provider.
 type Endpoint struct {
@@ -43,8 +50,9 @@ type Endpoint struct {
 	RateLimitRecovery *RateLimitRecovery `json:"rate_limit_recovery"` // Rate limit recovery configuration (optional)
 	Capacity          *CapacityLimit     `json:"capacity"`            // Self-imposed throughput ceiling (optional; nil disables proactive throttling)
 	CapacityLearning  *CapacityLearning  `json:"capacity_learning"`   // Adaptive capacity learning tuning override (optional; only used when Capacity is unset)
+	ChainType         string             `json:"chain_type"`          // JSON-RPC dialect of the endpoint: "evm" (default) or "solana"
 	Role              string             `json:"role"`                // Role of the endpoint: "primary" or "fallback"
-	SkipSyncCheck     bool               `json:"skip_sync_check"`     // Skip eth_syncing check for this endpoint (default: false)
+	SkipSyncCheck     bool               `json:"skip_sync_check"`     // Skip the sync/health-status check call for this endpoint (default: false)
 	Type              string             `json:"type"`                // Type of node: "full" or "archive"
 	HTTPURL           string             `json:"http_url"`            // HTTP/HTTPS URL for RPC requests
 	WSURL             string             `json:"ws_url"`              // WebSocket URL for real-time connections
@@ -93,6 +101,7 @@ func LoadConfig(path string) (*Config, error) {
 	for chainName, chainEndpoints := range config.Endpoints {
 		for endpointID, endpoint := range chainEndpoints {
 			substituteEnvVarsInEndpoint(&endpoint)
+			validateEndpointChainType(chainName, endpointID, &endpoint)
 			validateEndpointCapacity(chainName, endpointID, &endpoint)
 			validateEndpointCapacityLearning(chainName, endpointID, &endpoint)
 			config.Endpoints[chainName][endpointID] = endpoint
@@ -100,6 +109,26 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+// validateEndpointChainType defaults an unset ChainType to ChainTypeEVM, preserving
+// backwards compatibility with configs written before chain_type existed. An
+// unrecognized value is reset to the default and logged loudly rather than silently
+// mis-selecting a health-check dialect (e.g. probing a Solana node with eth_blockNumber).
+func validateEndpointChainType(chain, endpointID string, endpoint *Endpoint) {
+	switch endpoint.ChainType {
+	case "":
+		endpoint.ChainType = ChainTypeEVM
+	case ChainTypeEVM, ChainTypeSolana:
+		// valid, nothing to do
+	default:
+		log.Warn().
+			Str("chain", chain).
+			Str("endpoint", endpointID).
+			Str("chain_type", endpoint.ChainType).
+			Msg("Endpoint's chain_type is not recognized - defaulting to \"evm\"")
+		endpoint.ChainType = ChainTypeEVM
+	}
 }
 
 // validateEndpointCapacity catches an endpoint's static Capacity being configured with a
