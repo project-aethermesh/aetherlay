@@ -175,7 +175,7 @@ func TestCheckHTTPHealthSolanaEndpointUnhealthy(t *testing.T) {
 	}
 }
 
-// TestCheckHTTPHealthSolanaEndpointSkipsSyncCheckMethod is a regression guard against
+// TestCheckHTTPHealthSolanaEndpointWithoutSyncCheck is a regression guard against
 // the EVM code path leaking back in: hitting a Solana endpoint with eth_blockNumber
 // instead of getSlot would always fail, since the fixture server only understands
 // getSlot/getHealth.
