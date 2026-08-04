@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -613,13 +614,11 @@ func ParseBlockNumber(blockResult any) (blockNumber int64, isHealthy bool) {
 // float64 by encoding/json for an `any` target - and validates it's > 0.
 func ParseSolanaSlot(blockResult any) (blockNumber int64, isHealthy bool) {
 	slot, ok := blockResult.(float64)
-	if !ok {
+	if !ok || slot <= 0 || slot != math.Trunc(slot) {
 		return 0, false
 	}
 
-	blockNumber = int64(slot)
-	isHealthy = blockNumber > 0
-	return blockNumber, isHealthy
+	return int64(slot), true
 }
 
 // ParseBlockResult parses a block-height/slot result for the given chain type and

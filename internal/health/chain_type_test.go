@@ -46,6 +46,12 @@ func TestParseSolanaSlot(t *testing.T) {
 	if _, healthy := ParseSolanaSlot(nil); healthy {
 		t.Error("a nil slot result should be unhealthy")
 	}
+	if _, healthy := ParseSolanaSlot(float64(123.5)); healthy {
+		t.Error("a fractional slot result should be unhealthy")
+	}
+	if _, healthy := ParseSolanaSlot(float64(-5)); healthy {
+		t.Error("a negative slot result should be unhealthy")
+	}
 }
 
 func TestParseBlockResultDispatchesByChainType(t *testing.T) {
