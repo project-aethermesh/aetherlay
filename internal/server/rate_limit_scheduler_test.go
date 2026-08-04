@@ -150,6 +150,39 @@ func TestCheckEndpointHealthRateLimited(t *testing.T) {
 	}
 }
 
+func TestCheckEndpointHealthSolanaSuccess(t *testing.T) {
+	// Create a test HTTP server that returns a valid Solana getSlot response
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"jsonrpc":"2.0","result":123456,"id":1}`))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"solana": {
+				"test-endpoint": config.Endpoint{
+					Provider:  "test-provider",
+					Role:      "primary",
+					ChainType: config.ChainTypeSolana,
+					HTTPURL:   server.URL,
+				},
+			},
+		},
+	}
+
+	mockValkey := store.NewMockValkeyClient()
+	scheduler := NewRateLimitScheduler(cfg, mockValkey)
+
+	endpoint := cfg.Endpoints["solana"]["test-endpoint"]
+	healthy := scheduler.checkEndpointHealth(context.Background(), endpoint)
+
+	if !healthy {
+		t.Error("Expected Solana endpoint to be healthy")
+	}
+}
+
 func TestPerformRecoveryCheckStopsWhenNotRateLimited(t *testing.T) {
 	cfg := &config.Config{
 		Endpoints: map[string]config.ChainEndpoints{
