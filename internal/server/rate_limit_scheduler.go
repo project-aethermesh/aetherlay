@@ -341,7 +341,8 @@ func (rls *RateLimitScheduler) checkEndpointHealth(ctx context.Context, endpoint
 	}
 
 	// Create a proper JSON-RPC request (same as regular health checks)
-	payload := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
+	blockMethod := health.BlockNumberMethod(endpoint.ChainType)
+	payload := []byte(`{"jsonrpc":"2.0","method":"` + blockMethod + `","params":[],"id":1}`)
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint.HTTPURL, bytes.NewBuffer(payload))
 	if err != nil {
 		log.Debug().Err(err).Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Failed to create recovery check request")
@@ -364,7 +365,7 @@ func (rls *RateLimitScheduler) checkEndpointHealth(ctx context.Context, endpoint
 		return false
 	}
 
-	// Successful response to the eth_blockNumber call should always be 200
+	// Successful response to the block/slot call should always be 200
 	if resp.StatusCode != 200 {
 		log.Debug().Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Int("status", resp.StatusCode).Msg("Recovery check failed with error status")
 		return false
@@ -397,8 +398,8 @@ func (rls *RateLimitScheduler) checkEndpointHealth(ctx context.Context, endpoint
 		return false
 	}
 
-	// Validate the eth_blockNumber result
-	_, isHealthy := health.ParseBlockNumber(rpcResp.Result)
+	// Validate the block/slot result
+	_, isHealthy := health.ParseBlockResult(endpoint.ChainType, rpcResp.Result)
 	if !isHealthy {
 		log.Debug().Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Recovery check received null or unparseable block number")
 		return false

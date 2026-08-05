@@ -89,5 +89,20 @@
         "reset_after": 3600
       }
     }
+  },
+  "solana": {
+    "drpc-1": {
+      "provider": "drpc",
+      "role": "primary",
+      "chain_type": "solana",
+      "http_url": "https://lb.drpc.live/solana/${DRPC_API_KEY}",
+      "ws_url": "wss://lb.drpc.live/solana/${DRPC_API_KEY}"
+    },
+    "publicnode-1": {
+      "provider": "publicnode",
+      "role": "fallback",
+      "chain_type": "solana",
+      "http_url": "https://solana-rpc.publicnode.com"
+    }
   }
 }

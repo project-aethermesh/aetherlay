@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -147,6 +148,47 @@ func TestCheckEndpointHealthRateLimited(t *testing.T) {
 
 	if healthy {
 		t.Error("Expected endpoint to be unhealthy due to rate limiting")
+	}
+}
+
+func TestCheckEndpointHealthSolanaSuccess(t *testing.T) {
+	// Create a test HTTP server that returns a valid Solana getSlot response
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+		if method, _ := req["method"].(string); method != "getSlot" {
+			t.Fatalf("expected recovery check to call getSlot for a Solana endpoint, got %q", method)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"jsonrpc":"2.0","result":123456,"id":1}`))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"solana": {
+				"test-endpoint": config.Endpoint{
+					Provider:  "test-provider",
+					Role:      "primary",
+					ChainType: config.ChainTypeSolana,
+					HTTPURL:   server.URL,
+				},
+			},
+		},
+	}
+
+	mockValkey := store.NewMockValkeyClient()
+	scheduler := NewRateLimitScheduler(cfg, mockValkey)
+
+	endpoint := cfg.Endpoints["solana"]["test-endpoint"]
+	healthy := scheduler.checkEndpointHealth(context.Background(), endpoint)
+
+	if !healthy {
+		t.Error("Expected Solana endpoint to be healthy")
 	}
 }
 

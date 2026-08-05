@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -25,6 +26,49 @@ import (
 // ErrMethodNotFound indicates that the RPC method is not supported by the endpoint
 var ErrMethodNotFound = errors.New("method not found")
 
+// JSON-RPC methods used for health checks, keyed by chain type. Block/slot methods are
+// always required; sync/health methods are only called when sync-status checking is
+// enabled and are tolerated as "not found" (see optionalHealthCheckMethods below).
+const (
+	methodEVMBlockNumber = "eth_blockNumber" // Returns the current block height (hex-encoded)
+	methodEVMSyncing     = "eth_syncing"     // Returns false when fully synced, or a sync-progress object
+
+	methodSolanaSlot   = "getSlot"   // Returns the current slot (a plain JSON number)
+	methodSolanaHealth = "getHealth" // Returns "ok" when healthy, or a JSON-RPC error otherwise
+)
+
+// optionalHealthCheckMethods lists sync/health-status methods that may legitimately be
+// unsupported by an endpoint; a "method not found" response for one of these is treated
+// as "assume healthy" rather than a hard failure.
+var optionalHealthCheckMethods = map[string]bool{
+	methodEVMSyncing:   true,
+	methodSolanaHealth: true,
+}
+
+// blockNumberMethod returns the JSON-RPC method used to fetch the current block height
+// (EVM) or slot (Solana) for the given endpoint's chain type.
+func blockNumberMethod(chainType string) string {
+	if chainType == config.ChainTypeSolana {
+		return methodSolanaSlot
+	}
+	return methodEVMBlockNumber
+}
+
+// syncStatusMethod returns the JSON-RPC method used to determine sync/health status for
+// the given endpoint's chain type.
+func syncStatusMethod(chainType string) string {
+	if chainType == config.ChainTypeSolana {
+		return methodSolanaHealth
+	}
+	return methodEVMSyncing
+}
+
+// BlockNumberMethod exposes blockNumberMethod for callers outside this package (e.g. the
+// rate-limit recovery scheduler's own probe request).
+func BlockNumberMethod(chainType string) string {
+	return blockNumberMethod(chainType)
+}
+
 // RpcResponse represents a JSON-RPC response
 type RpcResponse struct {
 	Result any `json:"result"`
@@ -43,7 +87,7 @@ func checkRPCError(response *RpcResponse, method, protocol, chain, endpointID, u
 	// Check for "method not found" errors
 	methodNotFound := response.Error.Code == -32601 || containsMethodNotFound(response.Error.Message)
 
-	if methodNotFound && method == "eth_syncing" {
+	if methodNotFound && optionalHealthCheckMethods[method] {
 		log.Debug().
 			Str("chain", chain).
 			Str("endpoint", helpers.RedactAPIKey(url)).
@@ -51,7 +95,7 @@ func checkRPCError(response *RpcResponse, method, protocol, chain, endpointID, u
 			Int("error_code", response.Error.Code).
 			Str("error_message", response.Error.Message).
 			Str("method", method).
-			Msg("eth_syncing not supported by the endpoint, assuming it is fully synced")
+			Msg("Sync/health-status method not supported by the endpoint, assuming it is healthy")
 		return ErrMethodNotFound
 	}
 
@@ -566,6 +610,27 @@ func ParseBlockNumber(blockResult any) (blockNumber int64, isHealthy bool) {
 	return 0, false
 }
 
+// ParseSolanaSlot parses a Solana getSlot result - a plain JSON number, decoded as
+// float64 by encoding/json for an `any` target - and validates it's > 0.
+func ParseSolanaSlot(blockResult any) (blockNumber int64, isHealthy bool) {
+	slot, ok := blockResult.(float64)
+	if !ok || slot <= 0 || slot != math.Trunc(slot) {
+		return 0, false
+	}
+
+	return int64(slot), true
+}
+
+// ParseBlockResult parses a block-height/slot result for the given chain type and
+// validates it's > 0, dispatching to the hex-encoded EVM format or the plain-number
+// Solana format as appropriate.
+func ParseBlockResult(chainType string, blockResult any) (blockNumber int64, isHealthy bool) {
+	if chainType == config.ChainTypeSolana {
+		return ParseSolanaSlot(blockResult)
+	}
+	return ParseBlockNumber(blockResult)
+}
+
 // parseSyncStatus checks if the node is syncing
 // A node is considered to be healthy if result is false (i.e., node is not syncing)
 func parseSyncStatus(syncResult any) bool {
@@ -578,10 +643,27 @@ func parseSyncStatus(syncResult any) bool {
 	return false
 }
 
+// parseSolanaHealth checks a Solana getHealth result. A healthy node returns the string
+// "ok"; anything else (including a JSON-RPC error, already surfaced separately as
+// syncErr by the caller) is treated as unhealthy.
+func parseSolanaHealth(syncResult any) bool {
+	status, ok := syncResult.(string)
+	return ok && status == "ok"
+}
+
+// parseSyncStatusForChainType checks sync/health status for the given chain type,
+// dispatching to the boolean eth_syncing format or the "ok" string getHealth format.
+func parseSyncStatusForChainType(chainType string, syncResult any) bool {
+	if chainType == config.ChainTypeSolana {
+		return parseSolanaHealth(syncResult)
+	}
+	return parseSyncStatus(syncResult)
+}
+
 // checkHealthParams checks all health parameters and logs detailed info
-func (c *Checker) checkHealthParams(chain, endpointID, url, protocol string, syncResult, blockResult any) (healthy bool, blockNumber int64) {
+func (c *Checker) checkHealthParams(chain, endpointID, url, protocol, chainType string, syncResult, blockResult any) (healthy bool, blockNumber int64) {
 	// Parse results
-	blockNumber, blockHealthy := ParseBlockNumber(blockResult)
+	blockNumber, blockHealthy := ParseBlockResult(chainType, blockResult)
 
 	// Block number check is always required
 	healthy = blockHealthy
@@ -591,7 +673,7 @@ func (c *Checker) checkHealthParams(chain, endpointID, url, protocol string, syn
 		// If syncResult is nil (method not supported), assume node is healthy (not syncing)
 		syncHealthy := true
 		if syncResult != nil {
-			syncHealthy = parseSyncStatus(syncResult)
+			syncHealthy = parseSyncStatusForChainType(chainType, syncResult)
 		}
 		healthy = healthy && syncHealthy
 
@@ -710,32 +792,34 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 
 	log.Info().Str("chain", chain).Str("endpoint_id", endpointID).Str("url", helpers.RedactAPIKey(endpoint.HTTPURL)).Msg("Running HTTP health check")
 
-	// Always make the eth_blockNumber call
-	blockResult, blockErr := c.makeRPCCall(ctx, endpoint.HTTPURL, "eth_blockNumber", chain, endpointID, endpoint.Provider)
+	// Always make the block/slot call
+	blockMethod := blockNumberMethod(endpoint.ChainType)
+	blockResult, blockErr := c.makeRPCCall(ctx, endpoint.HTTPURL, blockMethod, chain, endpointID, endpoint.Provider)
 	c.incrementHealthRequestCount(ctx, chain, endpointID)
 
-	// Only make the eth_syncing call if sync status checking is enabled and not skipped for this endpoint
+	// Only make the sync/health-status call if sync status checking is enabled and not skipped for this endpoint
 	var syncResult any
 	var syncErr error
 	if c.healthCheckSyncStatus && !endpoint.SkipSyncCheck {
-		syncResult, syncErr = c.makeRPCCall(ctx, endpoint.HTTPURL, "eth_syncing", chain, endpointID, endpoint.Provider)
+		syncMethod := syncStatusMethod(endpoint.ChainType)
+		syncResult, syncErr = c.makeRPCCall(ctx, endpoint.HTTPURL, syncMethod, chain, endpointID, endpoint.Provider)
 		c.incrementHealthRequestCount(ctx, chain, endpointID)
 	}
 
-	// If eth_blockNumber call failed, the endpoint is unhealthy
+	// If the block/slot call failed, the endpoint is unhealthy
 	if blockErr != nil {
 		c.updateHealthMetrics(chain, endpointID, false)
 		return false
 	}
 
-	// If sync status checking is enabled and eth_syncing failed (but not due to method not found), the endpoint is unhealthy
+	// If sync status checking is enabled and the sync/health call failed (but not due to method not found), the endpoint is unhealthy
 	if c.healthCheckSyncStatus && syncErr != nil && !errors.Is(syncErr, ErrMethodNotFound) {
 		c.updateHealthMetrics(chain, endpointID, false)
 		return false
 	}
 
 	// Check all health parameters
-	healthy, blockNumber := c.checkHealthParams(chain, endpointID, endpoint.HTTPURL, "HTTP", syncResult, blockResult)
+	healthy, blockNumber := c.checkHealthParams(chain, endpointID, endpoint.HTTPURL, "HTTP", endpoint.ChainType, syncResult, blockResult)
 
 	// Update metrics and status in Valkey
 	c.updateHealthMetrics(chain, endpointID, healthy)
@@ -760,32 +844,34 @@ func (c *Checker) checkWSHealth(ctx context.Context, chain, endpointID string, e
 
 	log.Info().Str("chain", chain).Str("endpoint_id", endpointID).Str("url", helpers.RedactAPIKey(endpoint.WSURL)).Msg("Running WS health check")
 
-	// Always make the eth_blockNumber call
-	blockResult, blockErr := c.makeWSRPCCall(endpoint.WSURL, "eth_blockNumber", chain, endpointID)
+	// Always make the block/slot call
+	blockMethod := blockNumberMethod(endpoint.ChainType)
+	blockResult, blockErr := c.makeWSRPCCall(endpoint.WSURL, blockMethod, chain, endpointID)
 	c.incrementHealthRequestCount(ctx, chain, endpointID)
 
-	// Only make the eth_syncing call if sync status checking is enabled and not skipped for this endpoint
+	// Only make the sync/health-status call if sync status checking is enabled and not skipped for this endpoint
 	var syncResult any
 	var syncErr error
 	if c.healthCheckSyncStatus && !endpoint.SkipSyncCheck {
-		syncResult, syncErr = c.makeWSRPCCall(endpoint.WSURL, "eth_syncing", chain, endpointID)
+		syncMethod := syncStatusMethod(endpoint.ChainType)
+		syncResult, syncErr = c.makeWSRPCCall(endpoint.WSURL, syncMethod, chain, endpointID)
 		c.incrementHealthRequestCount(ctx, chain, endpointID)
 	}
 
-	// If eth_blockNumber call failed, the endpoint is unhealthy
+	// If the block/slot call failed, the endpoint is unhealthy
 	if blockErr != nil {
 		c.updateHealthMetrics(chain, endpointID, false)
 		return false
 	}
 
-	// If sync status checking is enabled and eth_syncing failed (but not due to method not found), the endpoint is unhealthy
+	// If sync status checking is enabled and the sync/health call failed (but not due to method not found), the endpoint is unhealthy
 	if c.healthCheckSyncStatus && syncErr != nil && !errors.Is(syncErr, ErrMethodNotFound) {
 		c.updateHealthMetrics(chain, endpointID, false)
 		return false
 	}
 
 	// Check all health parameters
-	healthy, blockNumber := c.checkHealthParams(chain, endpointID, endpoint.WSURL, "WS", syncResult, blockResult)
+	healthy, blockNumber := c.checkHealthParams(chain, endpointID, endpoint.WSURL, "WS", endpoint.ChainType, syncResult, blockResult)
 
 	// Update metrics and status in Valkey
 	c.updateHealthMetrics(chain, endpointID, healthy)

@@ -61,7 +61,7 @@ func TestMiddleware(t *testing.T) {
 		{
 			name:           "POST request with error",
 			method:         "POST",
-			path:           "/v1/chain/bitcoin/send",
+			path:           "/v1/chain/fake/send",
 			route:          "/v1/chain/{chain}/send",
 			statusCode:     500,
 			expectedCode:   "500",

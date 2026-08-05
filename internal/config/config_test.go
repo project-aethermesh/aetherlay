@@ -718,3 +718,64 @@ func TestLoadConfigResetsNegativeCapacityLearningIncreaseIntervalAndMinEstimate(
 		t.Errorf("Expected valid min_estimate to be untouched (2), got %d", valid.CapacityLearning.MinEstimate)
 	}
 }
+
+// TestChainTypeDefaultsAndNormalization covers backwards compat (omitted chain_type
+// defaults to "evm"), the new "solana" value being preserved, and an unrecognized value
+// being reset to the default rather than silently mis-selecting a health-check dialect.
+func TestChainTypeDefaultsAndNormalization(t *testing.T) {
+	tmpFile := "test_chain_type.json"
+	content := `{
+		"ethereum": {
+			"omitted": {
+				"provider": "test",
+				"role": "primary",
+				"http_url": "https://example.com"
+			},
+			"explicit-evm": {
+				"provider": "test",
+				"role": "primary",
+				"chain_type": "evm",
+				"http_url": "https://example.com"
+			},
+			"unrecognized": {
+				"provider": "test",
+				"role": "primary",
+				"chain_type": "fake",
+				"http_url": "https://example.com"
+			}
+		},
+		"solana-mainnet": {
+			"solana-1": {
+				"provider": "test",
+				"role": "primary",
+				"chain_type": "solana",
+				"http_url": "https://example.com"
+			}
+		}
+	}`
+	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+	defer os.Remove(tmpFile)
+
+	cfg, err := LoadConfig(tmpFile)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	eth := cfg.Endpoints["ethereum"]
+	if eth["omitted"].ChainType != ChainTypeEVM {
+		t.Errorf("Expected omitted chain_type to default to %q, got %q", ChainTypeEVM, eth["omitted"].ChainType)
+	}
+	if eth["explicit-evm"].ChainType != ChainTypeEVM {
+		t.Errorf("Expected explicit chain_type %q to be preserved, got %q", ChainTypeEVM, eth["explicit-evm"].ChainType)
+	}
+	if eth["unrecognized"].ChainType != ChainTypeEVM {
+		t.Errorf("Expected unrecognized chain_type to be reset to %q, got %q", ChainTypeEVM, eth["unrecognized"].ChainType)
+	}
+
+	solana := cfg.Endpoints["solana-mainnet"]
+	if solana["solana-1"].ChainType != ChainTypeSolana {
+		t.Errorf("Expected chain_type %q to be preserved, got %q", ChainTypeSolana, solana["solana-1"].ChainType)
+	}
+}
