@@ -32,10 +32,27 @@ var ErrMethodNotFound = errors.New("method not found")
 const (
 	methodEVMBlockNumber = "eth_blockNumber" // Returns the current block height (hex-encoded)
 	methodEVMSyncing     = "eth_syncing"     // Returns false when fully synced, or a sync-progress object
+	methodEVMEstimateGas = "eth_estimateGas" // Returns the gas a call would consume (hex-encoded)
 
 	methodSolanaSlot   = "getSlot"   // Returns the current slot (a plain JSON number)
 	methodSolanaHealth = "getHealth" // Returns "ok" when healthy, or a JSON-RPC error otherwise
 )
+
+// Addresses used by the execution-correctness probe. Both are fixed by the EVM spec, so
+// the probe needs no per-chain configuration.
+const (
+	// probeAddrNoCode is the zero address: reachable, and codeless, on every EVM chain,
+	// so a call to it costs intrinsic gas and nothing else.
+	probeAddrNoCode = "0x0000000000000000000000000000000000000000"
+	// probeAddrPrecompile is the identity (datacopy) precompile. Every conformant EVM
+	// has code to run here, so reaching it exercises the node's execution path.
+	probeAddrPrecompile = "0x0000000000000000000000000000000000000004"
+)
+
+// probeParams is the eth_estimateGas argument list for an empty, zero-value call to addr.
+func probeParams(addr string) string {
+	return `[{"from":"` + probeAddrNoCode + `","to":"` + addr + `","value":"0x0"}]`
+}
 
 // optionalHealthCheckMethods lists sync/health-status methods that may legitimately be
 // unsupported by an endpoint; a "method not found" response for one of these is treated
@@ -126,6 +143,8 @@ type Checker struct {
 	config                 *config.Config
 	concurrency            int
 	ephemeralChecksEnabled bool
+	executionMaxRatio      int
+	healthCheckExecution   bool
 	healthCheckSyncStatus  bool
 	interval               time.Duration
 	valkeyClient           store.ValkeyClientIface
@@ -153,11 +172,13 @@ type ephemeralState struct {
 }
 
 // NewChecker creates a new health checker
-func NewChecker(cfg *config.Config, valkeyClient store.ValkeyClientIface, interval time.Duration, ephemeralChecksInterval time.Duration, ephemeralChecksThreshold int, healthCheckSyncStatus bool, concurrency int, ephemeralChecksEnabled bool) *Checker {
+func NewChecker(cfg *config.Config, valkeyClient store.ValkeyClientIface, interval time.Duration, ephemeralChecksInterval time.Duration, ephemeralChecksThreshold int, healthCheckSyncStatus bool, healthCheckExecution bool, executionMaxRatio int, concurrency int, ephemeralChecksEnabled bool) *Checker {
 	c := &Checker{
 		config:                   cfg,
 		concurrency:              concurrency,
 		ephemeralChecksEnabled:   ephemeralChecksEnabled,
+		executionMaxRatio:        executionMaxRatio,
+		healthCheckExecution:     healthCheckExecution,
 		healthCheckSyncStatus:    healthCheckSyncStatus,
 		interval:                 interval,
 		valkeyClient:             valkeyClient,
@@ -439,9 +460,15 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 	c.updateStatus(ctx, chain, endpointID, status)
 }
 
-// makeRPCCall makes a single JSON-RPC call and returns the result
+// makeRPCCall makes a single parameterless JSON-RPC call and returns the result
 func (c *Checker) makeRPCCall(ctx context.Context, url, method, chain, endpointID, provider string) (any, error) {
-	payload := []byte(`{"jsonrpc":"2.0","method":"` + method + `","params":[],"id":1}`)
+	return c.makeRPCCallWithParams(ctx, url, method, "[]", chain, endpointID, provider)
+}
+
+// makeRPCCallWithParams makes a single JSON-RPC call with the given params (a JSON array,
+// serialized) and returns the result
+func (c *Checker) makeRPCCallWithParams(ctx context.Context, url, method, params, chain, endpointID, provider string) (any, error) {
+	payload := []byte(`{"jsonrpc":"2.0","method":"` + method + `","params":` + params + `,"id":1}`)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))
 	if err != nil {
 		return nil, err
@@ -608,6 +635,101 @@ func ParseBlockNumber(blockResult any) (blockNumber int64, isHealthy bool) {
 	}
 
 	return 0, false
+}
+
+// ParseHexQuantity parses a hex-encoded JSON-RPC quantity (e.g. "0x5208") and validates
+// it is positive.
+func ParseHexQuantity(result any) (value int64, ok bool) {
+	s, isStr := result.(string)
+	if !isStr || len(s) < 3 || s[:2] != "0x" {
+		return 0, false
+	}
+
+	parsed, err := strconv.ParseInt(s[2:], 16, 64)
+	if err != nil || parsed <= 0 {
+		return 0, false
+	}
+
+	return parsed, true
+}
+
+// executionCheckApplies reports whether the execution-correctness probe should run for an
+// endpoint. The probe is EVM-only: it is built out of eth_estimateGas and the EVM
+// precompile addresses, neither of which Solana has an equivalent for.
+func (c *Checker) executionCheckApplies(endpoint config.Endpoint) bool {
+	return c.healthCheckExecution &&
+		!endpoint.SkipExecutionCheck &&
+		endpoint.ChainType != config.ChainTypeSolana &&
+		c.executionMaxRatio > 0
+}
+
+// checkExecutionHealth verifies that an endpoint executes calls correctly, not just that
+// it is alive and at the chain tip.
+//
+// The block-height and sync-status checks only establish liveness. A node that answers
+// both correctly can still return a canned number for eth_estimateGas, and callers have
+// no way to tell: the response is a well-formed quantity, so it flows straight through to
+// a signed transaction with a garbage gas limit.
+//
+// The probe issues two eth_estimateGas calls to the same endpoint, one to a codeless
+// address and one to the identity precompile, and compares them to each other. Both are
+// empty zero-value calls, so a healthy node answers them within a small factor: intrinsic
+// gas, plus a few hundred units of call overhead for the precompile. Comparing the two
+// legs against each other rather than against a fixed constant keeps the check portable,
+// because chains that inflate estimates to cover data-availability costs inflate both
+// legs equally.
+//
+// Returns skipped=true when the endpoint does not answer the probe at all. Providers
+// legitimately restrict eth_estimateGas, and ejecting an endpoint over a capability it
+// never advertised would be worse than not checking it.
+func (c *Checker) checkExecutionHealth(ctx context.Context, chain, endpointID string, endpoint config.Endpoint) (healthy bool, skipped bool) {
+	baselineResult, err := c.makeRPCCallWithParams(ctx, endpoint.HTTPURL, methodEVMEstimateGas, probeParams(probeAddrNoCode), chain, endpointID, endpoint.Provider)
+	c.incrementHealthRequestCount(ctx, chain, endpointID)
+	if err != nil {
+		return true, true
+	}
+
+	probeResult, err := c.makeRPCCallWithParams(ctx, endpoint.HTTPURL, methodEVMEstimateGas, probeParams(probeAddrPrecompile), chain, endpointID, endpoint.Provider)
+	c.incrementHealthRequestCount(ctx, chain, endpointID)
+	if err != nil {
+		return true, true
+	}
+
+	baseline, baselineOK := ParseHexQuantity(baselineResult)
+	probe, probeOK := ParseHexQuantity(probeResult)
+	if !baselineOK || !probeOK {
+		log.Error().
+			Str("chain", chain).
+			Str("endpoint", helpers.RedactAPIKey(endpoint.HTTPURL)).
+			Str("endpoint_id", endpointID).
+			Str("method", methodEVMEstimateGas).
+			Msg("Execution check failed: endpoint returned a malformed gas estimate")
+		return false, false
+	}
+
+	// Divide rather than multiply the baseline: an endpoint returning a near-max int64
+	// would overflow the product into a negative number and pass the check.
+	if probe/baseline > int64(c.executionMaxRatio) {
+		log.Error().
+			Int64("baseline_gas", baseline).
+			Str("chain", chain).
+			Str("endpoint", helpers.RedactAPIKey(endpoint.HTTPURL)).
+			Str("endpoint_id", endpointID).
+			Int("max_ratio", c.executionMaxRatio).
+			Int64("probe_gas", probe).
+			Msg("Execution check failed: endpoint's gas estimate for an empty precompile call is implausibly larger than for an empty transfer, so it is not executing calls correctly")
+		return false, false
+	}
+
+	log.Debug().
+		Int64("baseline_gas", baseline).
+		Str("chain", chain).
+		Str("endpoint", helpers.RedactAPIKey(endpoint.HTTPURL)).
+		Str("endpoint_id", endpointID).
+		Int64("probe_gas", probe).
+		Msg("Execution check succeeded: gas estimates are self-consistent")
+
+	return true, false
 }
 
 // ParseSolanaSlot parses a Solana getSlot result - a plain JSON number, decoded as
@@ -820,6 +942,15 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 
 	// Check all health parameters
 	healthy, blockNumber := c.checkHealthParams(chain, endpointID, endpoint.HTTPURL, "HTTP", endpoint.ChainType, syncResult, blockResult)
+
+	// Liveness says nothing about whether the node executes calls correctly, so probe
+	// that separately. Only worth running once the endpoint is otherwise healthy.
+	if healthy && c.executionCheckApplies(endpoint) {
+		executionHealthy, skipped := c.checkExecutionHealth(ctx, chain, endpointID, endpoint)
+		if !skipped {
+			healthy = executionHealthy
+		}
+	}
 
 	// Update metrics and status in Valkey
 	c.updateHealthMetrics(chain, endpointID, healthy)

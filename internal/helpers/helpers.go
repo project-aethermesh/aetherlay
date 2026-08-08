@@ -25,6 +25,8 @@ type Config struct {
 	EphemeralChecksInterval         int
 	HealthCacheTTL                  int
 	HealthCheckConcurrency          int
+	HealthCheckExecution            bool
+	HealthCheckExecutionMaxRatio    int
 	HealthCheckInterval             int
 	HealthCheckSyncStatus           bool
 	HealthCheckerGracePeriod        int
@@ -66,6 +68,8 @@ func ParseFlags() *Config {
 	flag.IntVar(&config.HealthCacheTTL, "health-cache-ttl", 10, "Health status cache TTL in seconds")
 	flag.IntVar(&config.HealthCheckConcurrency, "health-check-concurrency", 20, "Maximum number of concurrent health checks during startup")
 	flag.IntVar(&config.HealthCheckInterval, "health-check-interval", 30, "Health check interval in seconds")
+	flag.BoolVar(&config.HealthCheckExecution, "health-check-execution", true, "Verify that endpoints execute calls correctly, not just that they are alive. Endpoints returning implausible gas estimates are considered to be unhealthy.")
+	flag.IntVar(&config.HealthCheckExecutionMaxRatio, "health-check-execution-max-ratio", 10, "How many times larger an empty precompile call's gas estimate may be than an empty transfer's before the endpoint is considered to be unhealthy")
 	flag.BoolVar(&config.HealthCheckSyncStatus, "health-check-sync-status", true, "Consider the sync status of the endpoints when deciding whether an endpoint is healthy or not.")
 	flag.IntVar(&config.HealthCheckerGracePeriod, "health-checker-grace-period", 60, "Grace period in seconds for health checker downtime after initial check passes")
 	flag.IntVar(&config.HealthCheckerServerPort, "health-checker-server-port", 8080, "Health checker HTTP server port")
@@ -144,6 +148,8 @@ func (c *Config) LoadConfiguration() *LoadedConfig {
 		HealthCacheTTL:                  c.GetIntValue("health-cache-ttl", c.HealthCacheTTL, "HEALTH_CACHE_TTL", 10),
 		HealthCheckConcurrency:          c.GetIntValue("health-check-concurrency", c.HealthCheckConcurrency, "HEALTH_CHECK_CONCURRENCY", 20),
 		HealthCheckInterval:             c.GetIntValue("health-check-interval", c.HealthCheckInterval, "HEALTH_CHECK_INTERVAL", 30),
+		HealthCheckExecution:            c.GetBoolValue("health-check-execution", c.HealthCheckExecution, "HEALTH_CHECK_EXECUTION", true),
+		HealthCheckExecutionMaxRatio:    c.GetIntValue("health-check-execution-max-ratio", c.HealthCheckExecutionMaxRatio, "HEALTH_CHECK_EXECUTION_MAX_RATIO", 10),
 		HealthCheckSyncStatus:           c.GetBoolValue("health-check-sync-status", c.HealthCheckSyncStatus, "HEALTH_CHECK_SYNC_STATUS", true),
 		HealthCheckerGracePeriod:        c.GetIntValue("health-checker-grace-period", c.HealthCheckerGracePeriod, "HEALTH_CHECKER_GRACE_PERIOD", 60),
 		HealthCheckerServerPort:         c.GetIntValue("health-checker-server-port", c.HealthCheckerServerPort, "HEALTH_CHECKER_SERVER_PORT", 8080),
@@ -190,6 +196,8 @@ type LoadedConfig struct {
 	EphemeralChecksInterval         int
 	HealthCacheTTL                  int
 	HealthCheckConcurrency          int
+	HealthCheckExecution            bool
+	HealthCheckExecutionMaxRatio    int
 	HealthCheckInterval             int
 	HealthCheckSyncStatus           bool
 	HealthCheckerGracePeriod        int

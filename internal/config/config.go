@@ -46,16 +46,17 @@ const (
 // Endpoint represents a single RPC endpoint configuration.
 // It contains all the necessary information to connect to and use an RPC provider.
 type Endpoint struct {
-	Provider          string             `json:"provider"`            // Name of the RPC provider (e.g., "alchemy", "infura")
-	RateLimitRecovery *RateLimitRecovery `json:"rate_limit_recovery"` // Rate limit recovery configuration (optional)
-	Capacity          *CapacityLimit     `json:"capacity"`            // Self-imposed throughput ceiling (optional; nil disables proactive throttling)
-	CapacityLearning  *CapacityLearning  `json:"capacity_learning"`   // Adaptive capacity learning tuning override (optional; only used when Capacity is unset)
-	ChainType         string             `json:"chain_type"`          // JSON-RPC dialect of the endpoint: "evm" (default) or "solana"
-	Role              string             `json:"role"`                // Role of the endpoint: "primary" or "fallback"
-	SkipSyncCheck     bool               `json:"skip_sync_check"`     // Skip the sync/health-status check call for this endpoint (default: false)
-	Type              string             `json:"type"`                // Type of node: "full" or "archive"
-	HTTPURL           string             `json:"http_url"`            // HTTP/HTTPS URL for RPC requests
-	WSURL             string             `json:"ws_url"`              // WebSocket URL for real-time connections
+	Provider           string             `json:"provider"`             // Name of the RPC provider (e.g., "alchemy", "infura")
+	RateLimitRecovery  *RateLimitRecovery `json:"rate_limit_recovery"`  // Rate limit recovery configuration (optional)
+	Capacity           *CapacityLimit     `json:"capacity"`             // Self-imposed throughput ceiling (optional; nil disables proactive throttling)
+	CapacityLearning   *CapacityLearning  `json:"capacity_learning"`    // Adaptive capacity learning tuning override (optional; only used when Capacity is unset)
+	ChainType          string             `json:"chain_type"`           // JSON-RPC dialect of the endpoint: "evm" (default) or "solana"
+	Role               string             `json:"role"`                 // Role of the endpoint: "primary" or "fallback"
+	SkipExecutionCheck bool               `json:"skip_execution_check"` // Skip the execution-correctness check for this endpoint (default: false)
+	SkipSyncCheck      bool               `json:"skip_sync_check"`      // Skip the sync/health-status check call for this endpoint (default: false)
+	Type               string             `json:"type"`                 // Type of node: "full" or "archive"
+	HTTPURL            string             `json:"http_url"`             // HTTP/HTTPS URL for RPC requests
+	WSURL              string             `json:"ws_url"`               // WebSocket URL for real-time connections
 }
 
 // ChainEndpoints represents all endpoints for a specific blockchain.

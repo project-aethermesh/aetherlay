@@ -189,6 +189,8 @@ The load balancer implements intelligent retry logic with configurable timeouts:
 | `EPHEMERAL_CHECKS_INTERVAL` | `30` | Interval in seconds for ephemeral health checks |
 | `HEALTH_CACHE_TTL` | `10` | Health status cache TTL in seconds |
 | `HEALTH_CHECK_CONCURRENCY` | `20` | Maximum number of concurrent health checks during startup |
+| `HEALTH_CHECK_EXECUTION` | `true` | Verify that EVM endpoints execute calls correctly, not just that they are alive. Endpoints returning implausible gas estimates are considered to be unhealthy. |
+| `HEALTH_CHECK_EXECUTION_MAX_RATIO` | `10` | How many times larger an empty precompile call's gas estimate may be than an empty transfer's before the endpoint is considered to be unhealthy |
 | `HEALTH_CHECK_INTERVAL` | `30` | Health check interval in seconds |
 | `HEALTH_CHECK_SYNC_STATUS` | `true` | Consider the sync status of the endpoints when deciding whether an endpoint is healthy or not. When enabled, endpoints that are syncing are considered to be unhealthy. |
 | `HEALTH_CHECKER_GRACE_PERIOD` | `60` | Grace period in seconds for health checker downtime after initial check passes. During this period, the load balancer will remain ready even if the health checker is temporarily unavailable. |
@@ -217,11 +219,22 @@ The service checks the health of an endpoint by sending these requests to it. Wh
 - **`evm`** (default):
   - `eth_blockNumber` - Checks for successful response and that the block is not `0`.
   - `eth_syncing` (unless you disable it by setting `HEALTH_CHECK_SYNC_STATUS=false`) - Checks for successful response and that the node is not syncing (i.e., it has already fully synced, so you get the latest data from it).
+  - `eth_estimateGas`, twice (unless you disable it by setting `HEALTH_CHECK_EXECUTION=false`) - Checks that the node actually executes calls. See [Execution Correctness](#execution-correctness) below.
 - **`solana`**:
   - `getSlot` - Checks for successful response and that the slot is not `0`.
   - `getHealth` (unless you disable it by setting `HEALTH_CHECK_SYNC_STATUS=false`) - Checks for a successful `"ok"` response.
 
 In both cases, the sync/health-status call is treated as optional: if an endpoint doesn't implement it (a JSON-RPC "method not found" error), it's assumed healthy rather than being marked down over a missing optional method. You can also skip it for a specific endpoint with `"skip_sync_check": true`.
+
+### Execution Correctness
+
+Block height and sync status only establish that an endpoint is *alive*. An endpoint that answers both correctly can still be broken in a way that liveness cannot see: returning a canned constant for `eth_estimateGas` instead of executing the call. The response is a well-formed quantity, so nothing downstream can tell it apart from a real estimate, and it flows straight into a signed transaction with a garbage gas limit.
+
+To catch this, EVM endpoints get two extra `eth_estimateGas` calls per check: an empty, zero-value call to a codeless address, and the same call to the identity precompile at `0x0000000000000000000000000000000000000004`. On a healthy node the second costs intrinsic gas plus a few hundred units of call overhead, so the two answers land within a small factor of each other. An endpoint whose precompile leg exceeds its baseline leg by more than `HEALTH_CHECK_EXECUTION_MAX_RATIO` is marked unhealthy.
+
+The two legs are compared against each other rather than against a fixed constant, which keeps the check portable: chains that inflate estimates to cover data-availability costs inflate both legs equally, so their ratio stays near 1.
+
+Like the sync check, this is treated as optional. An endpoint that refuses `eth_estimateGas` is assumed healthy rather than being ejected over a capability it never advertised, and you can skip it for a specific endpoint with `"skip_execution_check": true`. The check does not apply to `solana` endpoints.
 
 ### Chain Types
 

@@ -116,6 +116,8 @@ func RunHealthChecker(
 	healthCheckConcurrency int,
 	healthCheckInterval int,
 	healthCheckSyncStatus bool,
+	healthCheckExecution bool,
+	healthCheckExecutionMaxRatio int,
 	healthCheckerServerPort int,
 	metricsEnabled bool,
 	metricsPort int,
@@ -204,7 +206,7 @@ func RunHealthChecker(
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	checker := health.NewChecker(cfg, valkeyClient, time.Duration(healthCheckInterval)*time.Second, time.Duration(ephemeralChecksInterval)*time.Second, ephemeralChecksHealthyThreshold, healthCheckSyncStatus, healthCheckConcurrency, ephemeralChecksEnabled)
+	checker := health.NewChecker(cfg, valkeyClient, time.Duration(healthCheckInterval)*time.Second, time.Duration(ephemeralChecksInterval)*time.Second, ephemeralChecksHealthyThreshold, healthCheckSyncStatus, healthCheckExecution, healthCheckExecutionMaxRatio, healthCheckConcurrency, ephemeralChecksEnabled)
 
 	// Set up simple rate limit handler for standalone health checker
 	checker.HandleRateLimitFunc = createStandaloneRateLimitHandler(cfg, valkeyClient, capacityThrottlingEnabled, capacityLearningEnabled)
@@ -282,6 +284,8 @@ func main() {
 		config.HealthCheckConcurrency,
 		config.HealthCheckInterval,
 		config.HealthCheckSyncStatus,
+		config.HealthCheckExecution,
+		config.HealthCheckExecutionMaxRatio,
 		config.HealthCheckerServerPort,
 		config.MetricsEnabled,
 		config.MetricsPort,
