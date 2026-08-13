@@ -48,3 +48,6 @@ configs/endpoints.json
 
 # Local benchmarks
 benchmarks/
+
+# Misc
+*.bak
