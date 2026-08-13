@@ -30,10 +30,17 @@ const (
 // EndpointStatus represents the health status and metrics of an endpoint.
 // It contains information about the endpoint's health, protocol support, and request counts.
 type EndpointStatus struct {
-	LastHealthCheck  time.Time `json:"last_health_check"` // When the last health check was performed
-	Requests24h      int64     `json:"requests_24h"`      // Number of requests in the last 24 hours
-	Requests1Month   int64     `json:"requests_1_month"`  // Number of requests in the last month
-	RequestsLifetime int64     `json:"requests_lifetime"` // Total number of requests since start
+	// LastHTTPHealthCheck and LastWSHealthCheck are tracked separately, not as one shared
+	// timestamp: StartEphemeralChecks runs a protocol's first-ever check before the
+	// other's, so a single shared field would go non-zero after the first protocol
+	// checked and make the second protocol's own first-ever check look like a prior
+	// observation, keeping it stuck unhealthy on a passing probe instead of accepting it
+	// immediately (see resolveHealthTransition's hasPriorCheck parameter).
+	LastHTTPHealthCheck time.Time `json:"last_http_health_check"` // When the last HTTP health check was performed
+	LastWSHealthCheck   time.Time `json:"last_ws_health_check"`   // When the last WS health check was performed
+	Requests24h         int64     `json:"requests_24h"`           // Number of requests in the last 24 hours
+	Requests1Month      int64     `json:"requests_1_month"`       // Number of requests in the last month
+	RequestsLifetime    int64     `json:"requests_lifetime"`      // Total number of requests since start
 
 	// Protocol support and health flags
 	HasHTTP     bool `json:"has_http"`     // Whether the endpoint supports HTTP/HTTPS
@@ -47,8 +54,9 @@ type EndpointStatus struct {
 
 // NewEndpointStatus creates a new endpoint status with default values.
 // All health flags are set to false and request counts are initialized to 0.
-// LastHealthCheck is left at its zero value; it's the signal callers use to tell a
-// never-checked endpoint apart from one that was actually observed unhealthy.
+// LastHTTPHealthCheck and LastWSHealthCheck are left at their zero value; that's the
+// signal callers use to tell a never-checked protocol apart from one that was actually
+// observed unhealthy.
 func NewEndpointStatus() EndpointStatus {
 	return EndpointStatus{
 		BlockNumber:      0,

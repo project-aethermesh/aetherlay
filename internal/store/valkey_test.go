@@ -51,14 +51,15 @@ func TestUpdateAndGetEndpointStatus(t *testing.T) {
 
 	// Create a test status
 	status := EndpointStatus{
-		LastHealthCheck:  time.Now(),
-		Requests24h:      10,
-		Requests1Month:   100,
-		RequestsLifetime: 1000,
-		HasHTTP:          true,
-		HasWS:            true,
-		HealthyHTTP:      true,
-		HealthyWS:        false,
+		LastHTTPHealthCheck: time.Now(),
+		LastWSHealthCheck:   time.Now(),
+		Requests24h:         10,
+		Requests1Month:      100,
+		RequestsLifetime:    1000,
+		HasHTTP:             true,
+		HasWS:               true,
+		HealthyHTTP:         true,
+		HealthyWS:           false,
 	}
 
 	// Update the status

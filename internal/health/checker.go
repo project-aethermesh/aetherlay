@@ -411,16 +411,22 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 	}
 
 	status := store.NewEndpointStatus()
-	status.LastHealthCheck = time.Now()
+	now := time.Now()
+	status.LastHTTPHealthCheck = now
+	status.LastWSHealthCheck = now
 
 	// Fetch the currently stored health status so this write's healthy transitions can
 	// be resolved the same way checkHTTPHealth/checkWSHealth already resolved theirs for
 	// this same probe round, instead of blindly persisting the raw probe result again.
-	var wasHealthyHTTP, wasHealthyWS, hasPriorCheck bool
+	// hasPriorCheckHTTP/hasPriorCheckWS are tracked separately: HTTP and WS run in
+	// parallel here, but StartEphemeralChecks' own startup sweep runs them sequentially,
+	// so only one protocol's prior-check marker may be set at a time for a new endpoint.
+	var wasHealthyHTTP, wasHealthyWS, hasPriorCheckHTTP, hasPriorCheckWS bool
 	if prevStatus, err := c.valkeyClient.GetEndpointStatus(ctx, chain, endpointID); err == nil && prevStatus != nil {
 		wasHealthyHTTP = prevStatus.HealthyHTTP
 		wasHealthyWS = prevStatus.HealthyWS
-		hasPriorCheck = !prevStatus.LastHealthCheck.IsZero()
+		hasPriorCheckHTTP = !prevStatus.LastHTTPHealthCheck.IsZero()
+		hasPriorCheckWS = !prevStatus.LastWSHealthCheck.IsZero()
 	}
 
 	// Create channels to collect results from parallel health checks
@@ -442,8 +448,8 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 	// Collect results
 	status.HasHTTP = endpoint.HTTPURL != ""
 	status.HasWS = endpoint.WSURL != ""
-	status.HealthyHTTP = c.resolveHealthTransition(hasPriorCheck, wasHealthyHTTP, <-httpResult)
-	status.HealthyWS = c.resolveHealthTransition(hasPriorCheck, wasHealthyWS, <-wsResult)
+	status.HealthyHTTP = c.resolveHealthTransition(hasPriorCheckHTTP, wasHealthyHTTP, <-httpResult)
+	status.HealthyWS = c.resolveHealthTransition(hasPriorCheckWS, wasHealthyWS, <-wsResult)
 
 	// Get current request counts
 	r24h, r1m, rAll, err := c.valkeyClient.GetCombinedRequestCounts(ctx, chain, endpointID)
@@ -894,13 +900,13 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 	// Update metrics and status in Valkey
 	c.updateHealthMetrics(chain, endpointID, healthy)
 	c.updateEndpointStatusInValkey(ctx, chain, endpointID, func(status *store.EndpointStatus) {
-		hasPriorCheck := !status.LastHealthCheck.IsZero()
+		hasPriorCheck := !status.LastHTTPHealthCheck.IsZero()
 		if !blockCallFailed {
 			status.BlockNumber = blockNumber // Store the block number for future reference; keep the last known value on a failed call
 		}
 		status.HasHTTP = endpoint.HTTPURL != ""
 		status.HealthyHTTP = c.resolveHealthTransition(hasPriorCheck, status.HealthyHTTP, healthy)
-		status.LastHealthCheck = time.Now()
+		status.LastHTTPHealthCheck = time.Now()
 	})
 	return healthy
 }
@@ -948,13 +954,13 @@ func (c *Checker) checkWSHealth(ctx context.Context, chain, endpointID string, e
 	// Update metrics and status in Valkey
 	c.updateHealthMetrics(chain, endpointID, healthy)
 	c.updateEndpointStatusInValkey(ctx, chain, endpointID, func(status *store.EndpointStatus) {
-		hasPriorCheck := !status.LastHealthCheck.IsZero()
+		hasPriorCheck := !status.LastWSHealthCheck.IsZero()
 		if !blockCallFailed {
 			status.BlockNumber = blockNumber // Store the block number for future reference; keep the last known value on a failed call
 		}
 		status.HasWS = endpoint.WSURL != ""
 		status.HealthyWS = c.resolveHealthTransition(hasPriorCheck, status.HealthyWS, healthy)
-		status.LastHealthCheck = time.Now()
+		status.LastWSHealthCheck = time.Now()
 	})
 	return healthy
 }

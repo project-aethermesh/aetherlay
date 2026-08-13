@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"aetherlay/internal/config"
 	"aetherlay/internal/store"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestResolveHealthTransition(t *testing.T) {
@@ -48,7 +51,7 @@ func TestCheckHTTPHealthGuardKeepsUnhealthyOnPassingProbe(t *testing.T) {
 
 	valkeyClient := store.NewMockValkeyClient()
 	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
-		"solana-mainnet:test-1": {HasHTTP: true, HealthyHTTP: false, LastHealthCheck: time.Now().Add(-time.Minute)},
+		"solana-mainnet:test-1": {HasHTTP: true, HealthyHTTP: false, LastHTTPHealthCheck: time.Now().Add(-time.Minute)},
 	})
 	checker := &Checker{
 		valkeyClient:           valkeyClient,
@@ -79,7 +82,7 @@ func TestCheckHTTPHealthGuardFlipsToUnhealthyImmediately(t *testing.T) {
 
 	valkeyClient := store.NewMockValkeyClient()
 	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
-		"solana-mainnet:test-1": {HasHTTP: true, HealthyHTTP: true, LastHealthCheck: time.Now().Add(-time.Minute)},
+		"solana-mainnet:test-1": {HasHTTP: true, HealthyHTTP: true, LastHTTPHealthCheck: time.Now().Add(-time.Minute)},
 	})
 	checker := &Checker{
 		valkeyClient:           valkeyClient,
@@ -111,7 +114,7 @@ func TestCheckHTTPHealthPersistsUnhealthyOnHardBlockCallError(t *testing.T) {
 
 	valkeyClient := store.NewMockValkeyClient()
 	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
-		"solana-mainnet:test-1": {HasHTTP: true, HealthyHTTP: true, BlockNumber: 42, LastHealthCheck: time.Now().Add(-time.Minute)},
+		"solana-mainnet:test-1": {HasHTTP: true, HealthyHTTP: true, BlockNumber: 42, LastHTTPHealthCheck: time.Now().Add(-time.Minute)},
 	})
 	checker := &Checker{
 		valkeyClient:           valkeyClient,
@@ -144,7 +147,7 @@ func TestCheckHTTPHealthPersistsUnhealthyOnHardSyncCallError(t *testing.T) {
 
 	valkeyClient := store.NewMockValkeyClient()
 	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
-		"solana-mainnet:test-1": {HasHTTP: true, HealthyHTTP: true, LastHealthCheck: time.Now().Add(-time.Minute)},
+		"solana-mainnet:test-1": {HasHTTP: true, HealthyHTTP: true, LastHTTPHealthCheck: time.Now().Add(-time.Minute)},
 	})
 	checker := &Checker{
 		valkeyClient:           valkeyClient,
@@ -172,7 +175,7 @@ func TestCheckHTTPHealthGuardFallbackWhenEphemeralDisabled(t *testing.T) {
 
 	valkeyClient := store.NewMockValkeyClient()
 	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
-		"solana-mainnet:test-1": {HasHTTP: true, HealthyHTTP: false, LastHealthCheck: time.Now().Add(-time.Minute)},
+		"solana-mainnet:test-1": {HasHTTP: true, HealthyHTTP: false, LastHTTPHealthCheck: time.Now().Add(-time.Minute)},
 	})
 	checker := &Checker{
 		valkeyClient:           valkeyClient,
@@ -219,7 +222,7 @@ func TestCheckHTTPHealthFirstEverCheckBecomesHealthyImmediately(t *testing.T) {
 func TestCheckEndpointGuardKeepsUnhealthyOnPassingProbe(t *testing.T) {
 	valkeyClient := store.NewMockValkeyClient()
 	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
-		"solana-mainnet:test-1": {HasHTTP: true, HealthyHTTP: false, LastHealthCheck: time.Now().Add(-time.Minute)},
+		"solana-mainnet:test-1": {HasHTTP: true, HealthyHTTP: false, LastHTTPHealthCheck: time.Now().Add(-time.Minute)},
 	})
 	checker := &Checker{
 		valkeyClient:           valkeyClient,
@@ -339,5 +342,75 @@ func TestRunEphemeralCheckProtocolClearsCustomProbeStateOnRecovery(t *testing.T)
 	}
 	if state != nil {
 		t.Errorf("expected custom probe state to be cleared on confirmed recovery, got %+v", state)
+	}
+}
+
+// solanaWSTestServer mirrors solanaRPCTestServer but over a WebSocket connection, so
+// checkWSHealth can be exercised end-to-end.
+func solanaWSTestServer(t *testing.T, slot int64, healthy bool) *httptest.Server {
+	t.Helper()
+	upgrader := websocket.Upgrader{}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("failed to upgrade connection: %v", err)
+		}
+		defer conn.Close()
+
+		var req map[string]any
+		if err := conn.ReadJSON(&req); err != nil {
+			return
+		}
+		method, _ := req["method"].(string)
+
+		var resp map[string]any
+		switch method {
+		case "getSlot":
+			resp = map[string]any{"jsonrpc": "2.0", "id": 1, "result": slot}
+		case "getHealth":
+			if healthy {
+				resp = map[string]any{"jsonrpc": "2.0", "id": 1, "result": "ok"}
+			} else {
+				resp = map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32005, "message": "Node is unhealthy"}}
+			}
+		default:
+			resp = map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32601, "message": "Method not found"}}
+		}
+		conn.WriteJSON(resp)
+	}))
+}
+
+// TestCheckWSHealthTracksPriorCheckSeparatelyFromHTTP is a regression guard: HTTP and WS
+// prior-check state must not share a single timestamp. StartEphemeralChecks' own startup
+// sweep checks HTTP before WS for a given endpoint; if both protocols shared one marker,
+// WS's own first-ever check would look like a prior observation (because HTTP had just
+// set it) and get stuck unhealthy on a passing probe instead of being accepted right away.
+func TestCheckWSHealthTracksPriorCheckSeparatelyFromHTTP(t *testing.T) {
+	server := solanaWSTestServer(t, 123456, true)
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	valkeyClient := store.NewMockValkeyClient()
+	// HTTP has already been checked (LastHTTPHealthCheck set); WS never has.
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
+		"solana-mainnet:test-1": {HasWS: true, HealthyWS: false, LastHTTPHealthCheck: time.Now()},
+	})
+	checker := &Checker{
+		valkeyClient:           valkeyClient,
+		healthCheckSyncStatus:  true,
+		ephemeralChecksEnabled: true,
+	}
+	endpoint := config.Endpoint{Provider: "test", ChainType: config.ChainTypeSolana, WSURL: wsURL}
+
+	if healthy := checker.checkWSHealth(context.Background(), "solana-mainnet", "test-1", endpoint); !healthy {
+		t.Error("expected the probe itself to report healthy")
+	}
+
+	status, err := valkeyClient.GetEndpointStatus(context.Background(), "solana-mainnet", "test-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !status.HealthyWS {
+		t.Error("expected WS's own first-ever check to be accepted immediately, not gated because HTTP had already been checked")
 	}
 }
