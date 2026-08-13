@@ -453,8 +453,14 @@ func (r *ValkeyClient) GetCustomProbeState(ctx context.Context, chain, endpoint 
 	return &state, nil
 }
 
-// SetCustomProbeState stores the custom probe state for an endpoint in Valkey, with a
-// bounded expiration so a stale entry can never outlive the endpoint it refers to.
+// SetCustomProbeState stores the custom probe state for an endpoint in Valkey. It has no
+// expiration: an endpoint can legitimately stay unhealthy on the captured method for
+// longer than any fixed TTL, and a time-based expiry would let the periodic/ephemeral
+// checks silently fall back to the default probe (which the captured method may still
+// fail) while nothing about the endpoint has actually changed. The state is removed only
+// by ClearCustomProbeState on confirmed threshold-based recovery (see
+// Checker.runEphemeralCheckProtocol), or by CleanupStaleEndpoints once the endpoint is no
+// longer in the active config (customProbePrefix is included in its sweep).
 func (r *ValkeyClient) SetCustomProbeState(ctx context.Context, chain, endpoint string, state CustomProbeState) error {
 	key := customProbePrefix + chain + ":" + endpoint
 
@@ -463,7 +469,7 @@ func (r *ValkeyClient) SetCustomProbeState(ctx context.Context, chain, endpoint 
 		return err
 	}
 
-	cmd := r.client.B().Set().Key(key).Value(string(jsonBytes)).Ex(24 * time.Hour).Build()
+	cmd := r.client.B().Set().Key(key).Value(string(jsonBytes)).Build()
 	return r.client.Do(ctx, cmd).Error()
 }
 
