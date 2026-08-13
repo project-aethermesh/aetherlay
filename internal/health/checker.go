@@ -858,35 +858,35 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 		c.incrementHealthRequestCount(ctx, chain, endpointID)
 	}
 
-	// If the block/slot call failed, the endpoint is unhealthy
-	if blockErr != nil {
-		c.updateHealthMetrics(chain, endpointID, false)
-		return false
-	}
+	// A hard failure on either call means the endpoint is unhealthy. This used to return
+	// early here without ever persisting anything to Valkey, so an endpoint stuck
+	// failing this way could keep whatever stale HealthyHTTP value was already stored
+	// indefinitely. It now falls through to the same write path as every other outcome,
+	// same as a checkHealthParams failure would.
+	blockCallFailed := blockErr != nil
+	syncCallFailed := c.healthCheckSyncStatus && syncErr != nil && !errors.Is(syncErr, ErrMethodNotFound)
 
-	// If sync status checking is enabled and the sync/health call failed (but not due to method not found), the endpoint is unhealthy
-	if c.healthCheckSyncStatus && syncErr != nil && !errors.Is(syncErr, ErrMethodNotFound) {
-		c.updateHealthMetrics(chain, endpointID, false)
-		return false
-	}
+	var healthy bool
+	var blockNumber int64
+	if !blockCallFailed && !syncCallFailed {
+		// Check all health parameters
+		healthy, blockNumber = c.checkHealthParams(chain, endpointID, endpoint.HTTPURL, "HTTP", endpoint.ChainType, syncResult, blockResult)
 
-	// Check all health parameters
-	healthy, blockNumber := c.checkHealthParams(chain, endpointID, endpoint.HTTPURL, "HTTP", endpoint.ChainType, syncResult, blockResult)
-
-	// If a real proxied request recently failed on one of the allowlisted methods (see
-	// custom_probe.go and server.go's maybeSetCustomProbeMethod), additionally re-test
-	// that exact method with Aetherlay's own canned request. getSlot/getHealth passing
-	// says nothing about a failure isolated to a different method (e.g. getBlock); this
-	// check must also pass for the endpoint to be considered healthy.
-	if healthy {
-		if probeState, err := c.valkeyClient.GetCustomProbeState(ctx, chain, endpointID); err == nil && probeState != nil {
-			if builder, ok := customProbeBuilders[probeState.Method]; ok {
-				method, params := builder(blockNumber)
-				if _, callErr := c.makeRPCCallWithParams(ctx, endpoint.HTTPURL, method, params, chain, endpointID, endpoint.Provider); callErr != nil {
-					healthy = false
-					log.Warn().Str("chain", chain).Str("endpoint_id", endpointID).Str("method", method).Err(callErr).Msg("Custom probe re-test failed, endpoint still considered unhealthy for this method")
+		// If a real proxied request recently failed on one of the allowlisted methods
+		// (see custom_probe.go and server.go's maybeSetCustomProbeMethod), additionally
+		// re-test that exact method with Aetherlay's own canned request. getSlot/getHealth
+		// passing says nothing about a failure isolated to a different method (e.g.
+		// getBlock); this check must also pass for the endpoint to be considered healthy.
+		if healthy {
+			if probeState, err := c.valkeyClient.GetCustomProbeState(ctx, chain, endpointID); err == nil && probeState != nil {
+				if builder, ok := customProbeBuilders[probeState.Method]; ok {
+					method, params := builder(blockNumber)
+					if _, callErr := c.makeRPCCallWithParams(ctx, endpoint.HTTPURL, method, params, chain, endpointID, endpoint.Provider); callErr != nil {
+						healthy = false
+						log.Warn().Str("chain", chain).Str("endpoint_id", endpointID).Str("method", method).Err(callErr).Msg("Custom probe re-test failed, endpoint still considered unhealthy for this method")
+					}
+					c.incrementHealthRequestCount(ctx, chain, endpointID)
 				}
-				c.incrementHealthRequestCount(ctx, chain, endpointID)
 			}
 		}
 	}
@@ -895,7 +895,9 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 	c.updateHealthMetrics(chain, endpointID, healthy)
 	c.updateEndpointStatusInValkey(ctx, chain, endpointID, func(status *store.EndpointStatus) {
 		hasPriorCheck := !status.LastHealthCheck.IsZero()
-		status.BlockNumber = blockNumber // Store the block number for future reference
+		if !blockCallFailed {
+			status.BlockNumber = blockNumber // Store the block number for future reference; keep the last known value on a failed call
+		}
 		status.HasHTTP = endpoint.HTTPURL != ""
 		status.HealthyHTTP = c.resolveHealthTransition(hasPriorCheck, status.HealthyHTTP, healthy)
 		status.LastHealthCheck = time.Now()
@@ -929,26 +931,27 @@ func (c *Checker) checkWSHealth(ctx context.Context, chain, endpointID string, e
 		c.incrementHealthRequestCount(ctx, chain, endpointID)
 	}
 
-	// If the block/slot call failed, the endpoint is unhealthy
-	if blockErr != nil {
-		c.updateHealthMetrics(chain, endpointID, false)
-		return false
-	}
+	// A hard failure on either call means the endpoint is unhealthy. This used to return
+	// early here without ever persisting anything to Valkey, so an endpoint stuck
+	// failing this way could keep whatever stale HealthyWS value was already stored
+	// indefinitely. It now falls through to the same write path as every other outcome,
+	// same as a checkHealthParams failure would.
+	blockCallFailed := blockErr != nil
+	syncCallFailed := c.healthCheckSyncStatus && syncErr != nil && !errors.Is(syncErr, ErrMethodNotFound)
 
-	// If sync status checking is enabled and the sync/health call failed (but not due to method not found), the endpoint is unhealthy
-	if c.healthCheckSyncStatus && syncErr != nil && !errors.Is(syncErr, ErrMethodNotFound) {
-		c.updateHealthMetrics(chain, endpointID, false)
-		return false
+	var healthy bool
+	var blockNumber int64
+	if !blockCallFailed && !syncCallFailed {
+		healthy, blockNumber = c.checkHealthParams(chain, endpointID, endpoint.WSURL, "WS", endpoint.ChainType, syncResult, blockResult)
 	}
-
-	// Check all health parameters
-	healthy, blockNumber := c.checkHealthParams(chain, endpointID, endpoint.WSURL, "WS", endpoint.ChainType, syncResult, blockResult)
 
 	// Update metrics and status in Valkey
 	c.updateHealthMetrics(chain, endpointID, healthy)
 	c.updateEndpointStatusInValkey(ctx, chain, endpointID, func(status *store.EndpointStatus) {
 		hasPriorCheck := !status.LastHealthCheck.IsZero()
-		status.BlockNumber = blockNumber // Store the block number for future reference
+		if !blockCallFailed {
+			status.BlockNumber = blockNumber // Store the block number for future reference; keep the last known value on a failed call
+		}
 		status.HasWS = endpoint.WSURL != ""
 		status.HealthyWS = c.resolveHealthTransition(hasPriorCheck, status.HealthyWS, healthy)
 		status.LastHealthCheck = time.Now()

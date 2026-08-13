@@ -71,13 +71,9 @@ func TestCheckHTTPHealthGuardKeepsUnhealthyOnPassingProbe(t *testing.T) {
 }
 
 func TestCheckHTTPHealthGuardFlipsToUnhealthyImmediately(t *testing.T) {
-	// Slot 0 is an invalid/unhealthy result parsed by checkHealthParams itself, not an
-	// RPC-level error, so it goes through the same write path as a normal healthy
-	// result and exercises the guard, rather than one of checkHTTPHealth's early-return
-	// branches (a hard RPC error on the block or sync call). Those return before ever
-	// calling updateEndpointStatusInValkey, which is a separate, pre-existing gap
-	// unrelated to this guard, masked in the real periodic sweep by checkEndpoint's own
-	// outer write.
+	// Slot 0 is an invalid/unhealthy result parsed by checkHealthParams itself, not a
+	// hard RPC-level error on the block/sync call (see
+	// TestCheckHTTPHealthPersistsUnhealthyOnHardSyncCallError below for that path).
 	server := solanaRPCTestServer(t, 0, true)
 	defer server.Close()
 
@@ -100,6 +96,73 @@ func TestCheckHTTPHealthGuardFlipsToUnhealthyImmediately(t *testing.T) {
 	}
 	if status.HealthyHTTP {
 		t.Error("expected a failing probe to eject a previously-healthy endpoint immediately, with no debounce")
+	}
+}
+
+// TestCheckHTTPHealthPersistsUnhealthyOnHardBlockCallError covers a hard RPC error on the
+// block/slot call itself (a real 5xx from the endpoint, not just an invalid result), which
+// used to return before ever calling updateEndpointStatusInValkey, leaving a stale
+// HealthyHTTP value in Valkey indefinitely if the endpoint kept failing this way.
+func TestCheckHTTPHealthPersistsUnhealthyOnHardBlockCallError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
+		"solana-mainnet:test-1": {HasHTTP: true, HealthyHTTP: true, BlockNumber: 42, LastHealthCheck: time.Now().Add(-time.Minute)},
+	})
+	checker := &Checker{
+		valkeyClient:           valkeyClient,
+		healthCheckSyncStatus:  true,
+		ephemeralChecksEnabled: true,
+	}
+	endpoint := config.Endpoint{Provider: "test", ChainType: config.ChainTypeSolana, HTTPURL: server.URL}
+
+	if healthy := checker.checkHTTPHealth(context.Background(), "solana-mainnet", "test-1", endpoint); healthy {
+		t.Error("expected a hard error on the block call to report unhealthy")
+	}
+
+	status, err := valkeyClient.GetEndpointStatus(context.Background(), "solana-mainnet", "test-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status.HealthyHTTP {
+		t.Error("expected a hard error on the block call to persist HealthyHTTP=false, not leave the stale prior value in place")
+	}
+	if status.BlockNumber != 42 {
+		t.Errorf("expected the last known block number to be preserved when the block call itself fails, got %d", status.BlockNumber)
+	}
+}
+
+// TestCheckHTTPHealthPersistsUnhealthyOnHardSyncCallError is the same as above but for a
+// hard (non-method-not-found) JSON-RPC error on the sync/health-status call.
+func TestCheckHTTPHealthPersistsUnhealthyOnHardSyncCallError(t *testing.T) {
+	server := solanaRPCTestServer(t, 123456, false) // getSlot ok, getHealth returns a real JSON-RPC error
+	defer server.Close()
+
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
+		"solana-mainnet:test-1": {HasHTTP: true, HealthyHTTP: true, LastHealthCheck: time.Now().Add(-time.Minute)},
+	})
+	checker := &Checker{
+		valkeyClient:           valkeyClient,
+		healthCheckSyncStatus:  true,
+		ephemeralChecksEnabled: true,
+	}
+	endpoint := config.Endpoint{Provider: "test", ChainType: config.ChainTypeSolana, HTTPURL: server.URL}
+
+	if healthy := checker.checkHTTPHealth(context.Background(), "solana-mainnet", "test-1", endpoint); healthy {
+		t.Error("expected a hard error on the sync call to report unhealthy")
+	}
+
+	status, err := valkeyClient.GetEndpointStatus(context.Background(), "solana-mainnet", "test-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status.HealthyHTTP {
+		t.Error("expected a hard error on the sync call to persist HealthyHTTP=false, not leave the stale prior value in place")
 	}
 }
 
