@@ -108,9 +108,23 @@ k8s-delete:
 	kubectl delete -f k8s/health-checker.yaml
 	kubectl delete -f k8s/namespace.yaml
 
+# Build health checker for the local host (no GOOS/GOARCH override)
+.PHONY: build-hc-native
+build-hc-native:
+	@echo "Building Health Checker (native)..."
+	mkdir -p bin
+	go build -o bin/aetherlay-hc ./services/health-checker/main.go
+
+# Build load balancer for the local host (no GOOS/GOARCH override)
+.PHONY: build-lb-native
+build-lb-native:
+	@echo "Building RPC Load Balancer (native)..."
+	mkdir -p bin
+	go build -o bin/aetherlay-lb ./services/load-balancer/main.go
+
 # Run both services in the background
 .PHONY: run
-run: build
+run: build-hc-native build-lb-native
 	@echo "Starting both services..."
 	./bin/aetherlay-hc &
 	./bin/aetherlay-lb --metrics-port=9091 &
@@ -118,13 +132,13 @@ run: build
 
 # Run health checker
 .PHONY: run-hc
-run-hc: build-hc
+run-hc: build-hc-native
 	@echo "Running Health Checker..."
 	./bin/aetherlay-hc
 
 # Run load balancer
 .PHONY: run-lb
-run-lb: build-lb
+run-lb: build-lb-native
 	@echo "Running RPC Load Balancer..."
 	./bin/aetherlay-lb --metrics-port=9091
 
@@ -167,7 +181,9 @@ help:
 	@echo "Available targets:"
 	@echo "  build               - Build both services"
 	@echo "  build-hc            - Build health checker only"
+	@echo "  build-hc-native     - Build health checker for the local host (used by run/run-hc)"
 	@echo "  build-lb            - Build load balancer only"
+	@echo "  build-lb-native     - Build load balancer for the local host (used by run/run-lb)"
 	@echo "  clean               - Clean build artifacts"
 	@echo "  dev-setup           - Set up development environment"
 	@echo "  docker-build        - Build Docker images for both services"
