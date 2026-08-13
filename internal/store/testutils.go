@@ -38,7 +38,13 @@ func NewMockValkeyClient() *MockValkeyClient {
 	}
 }
 
-// GetEndpointStatus returns the status for a given chain and endpoint.
+// GetEndpointStatus returns the status for a given chain and endpoint. It returns a copy,
+// not the stored pointer, matching the real ValkeyClient (which always hands back a
+// freshly unmarshaled value). Callers that mutate the fields of an EndpointStatus they
+// got from a prior Get (checker.go, server.go's updateEndpointHealthState) always
+// explicitly write it back via UpdateEndpointStatus; if Get returned the live stored
+// pointer instead, that in-place mutation would race with any concurrent reader of the
+// same endpoint's status, such as a test polling health state from another goroutine.
 func (m *MockValkeyClient) GetEndpointStatus(_ context.Context, chain, endpointID string) (*EndpointStatus, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -47,7 +53,8 @@ func (m *MockValkeyClient) GetEndpointStatus(_ context.Context, chain, endpointI
 	if !ok {
 		return &EndpointStatus{}, nil
 	}
-	return status, nil
+	statusCopy := *status
+	return &statusCopy, nil
 }
 
 // UpdateEndpointStatus sets the status for a given chain and endpoint.
