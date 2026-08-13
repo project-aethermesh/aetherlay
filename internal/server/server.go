@@ -1221,7 +1221,7 @@ func extractRPCMethod(bodyBytes []byte) string {
 // accumulate enough consecutive successful re-checks to prove it recovered.
 func (s *Server) maybeSetCustomProbeMethod(chain, endpointID string, bodyBytes []byte) {
 	method := extractRPCMethod(bodyBytes)
-	if method == "" || !health.IsCustomProbeMethod(method) {
+	if method == "" || !health.IsCustomProbeMethod(method, s.chainTypeForEndpoint(chain, endpointID)) {
 		return
 	}
 
@@ -1413,6 +1413,17 @@ func (s *Server) providerForEndpoint(chain, endpointID string) string {
 		return ""
 	}
 	return chainEndpoints[endpointID].Provider
+}
+
+// chainTypeForEndpoint looks up the configured chain type for a chain/endpoint, used to
+// make sure a custom probe method is only ever captured or replayed against the chain
+// type it's actually valid for (see health.IsCustomProbeMethod).
+func (s *Server) chainTypeForEndpoint(chain, endpointID string) string {
+	chainEndpoints, ok := s.config.GetEndpointsForChain(chain)
+	if !ok {
+		return ""
+	}
+	return chainEndpoints[endpointID].ChainType
 }
 
 // capacityWindowSeconds resolves the window width to track usage against for the WRITE

@@ -879,8 +879,8 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 		// getBlock); this check must also pass for the endpoint to be considered healthy.
 		if healthy {
 			if probeState, err := c.valkeyClient.GetCustomProbeState(ctx, chain, endpointID); err == nil && probeState != nil {
-				if builder, ok := customProbeBuilders[probeState.Method]; ok {
-					method, params := builder(blockNumber)
+				if build, ok := customProbeBuilderFor(probeState.Method, endpoint.ChainType); ok {
+					method, params := build(blockNumber)
 					if _, callErr := c.makeRPCCallWithParams(ctx, endpoint.HTTPURL, method, params, chain, endpointID, endpoint.Provider); callErr != nil {
 						healthy = false
 						log.Warn().Str("chain", chain).Str("endpoint_id", endpointID).Str("method", method).Err(callErr).Msg("Custom probe re-test failed, endpoint still considered unhealthy for this method")

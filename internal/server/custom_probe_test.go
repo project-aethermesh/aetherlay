@@ -61,6 +61,53 @@ func TestMaybeSetCustomProbeMethodIgnoresNonAllowlistedMethod(t *testing.T) {
 	}
 }
 
+// TestMaybeSetCustomProbeMethodIgnoresMethodForWrongChainType is a regression guard:
+// eth_getBlockByNumber is a real, allowlisted method name, but not for a Solana endpoint.
+// Capturing it there would later have the health checker replay an EVM-shaped request
+// against a Solana node, which would just fail.
+func TestMaybeSetCustomProbeMethodIgnoresMethodForWrongChainType(t *testing.T) {
+	server, valkeyClient := newCustomProbeTestServer("solana-devnet", "ep1") // Solana endpoint
+
+	body := []byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`)
+	server.maybeSetCustomProbeMethod("solana-devnet", "ep1", body)
+
+	state, err := valkeyClient.GetCustomProbeState(context.Background(), "solana-devnet", "ep1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if state != nil {
+		t.Errorf("expected no custom probe state for a method that belongs to a different chain type, got %+v", state)
+	}
+}
+
+// TestMaybeSetCustomProbeMethodIgnoresGetBlockOnEVMEndpoint is the reverse case: getBlock
+// is a real Solana method name, but must not be captured for an EVM endpoint.
+func TestMaybeSetCustomProbeMethodIgnoresGetBlockOnEVMEndpoint(t *testing.T) {
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"ethereum": {
+				"ep1": config.Endpoint{Provider: "test", ChainType: config.ChainTypeEVM, HTTPURL: "http://fail", Role: "primary", Type: "full"},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
+		"ethereum:ep1": {HasHTTP: true, HealthyHTTP: true},
+	})
+	server := NewServer(cfg, valkeyClient, createTestConfig())
+
+	body := []byte(`{"jsonrpc":"2.0","method":"getBlock","params":[123],"id":1}`)
+	server.maybeSetCustomProbeMethod("ethereum", "ep1", body)
+
+	state, err := valkeyClient.GetCustomProbeState(context.Background(), "ethereum", "ep1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if state != nil {
+		t.Errorf("expected no custom probe state for getBlock on an EVM endpoint, got %+v", state)
+	}
+}
+
 func TestMaybeSetCustomProbeMethodIgnoresUnparseableBody(t *testing.T) {
 	server, valkeyClient := newCustomProbeTestServer("solana-devnet", "ep1")
 
@@ -81,44 +128,48 @@ func TestMaybeSetCustomProbeMethodIgnoresUnparseableBody(t *testing.T) {
 func TestMaybeSetCustomProbeMethodDoesNotOverwriteWithinRefreshPeriod(t *testing.T) {
 	server, valkeyClient := newCustomProbeTestServer("solana-devnet", "ep1")
 
+	seededAt := time.Now()
 	if err := valkeyClient.SetCustomProbeState(context.Background(), "solana-devnet", "ep1", store.CustomProbeState{
 		Method: "getBlock",
-		SetAt:  time.Now(),
+		SetAt:  seededAt,
 	}); err != nil {
 		t.Fatalf("failed to seed custom probe state: %v", err)
 	}
 
-	body := []byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`)
+	// Same method failing again shortly after: the capture is still gated by the refresh
+	// period, so SetAt must stay exactly as seeded rather than being bumped forward.
+	body := []byte(`{"jsonrpc":"2.0","method":"getBlock","params":[123],"id":1}`)
 	server.maybeSetCustomProbeMethod("solana-devnet", "ep1", body)
 
 	state, err := valkeyClient.GetCustomProbeState(context.Background(), "solana-devnet", "ep1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if state == nil || state.Method != "getBlock" {
-		t.Errorf("expected the original target (getBlock) to be kept stable within the refresh period, got %+v", state)
+	if state == nil || !state.SetAt.Equal(seededAt) {
+		t.Errorf("expected SetAt to stay stable within the refresh period, got %+v (seeded at %v)", state, seededAt)
 	}
 }
 
 func TestMaybeSetCustomProbeMethodOverwritesAfterRefreshPeriodElapses(t *testing.T) {
 	server, valkeyClient := newCustomProbeTestServer("solana-devnet", "ep1")
 
+	oldSetAt := time.Now().Add(-2 * server.customProbeRefreshPeriod)
 	if err := valkeyClient.SetCustomProbeState(context.Background(), "solana-devnet", "ep1", store.CustomProbeState{
 		Method: "getBlock",
-		SetAt:  time.Now().Add(-2 * server.customProbeRefreshPeriod),
+		SetAt:  oldSetAt,
 	}); err != nil {
 		t.Fatalf("failed to seed custom probe state: %v", err)
 	}
 
-	body := []byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`)
+	body := []byte(`{"jsonrpc":"2.0","method":"getBlock","params":[456],"id":1}`)
 	server.maybeSetCustomProbeMethod("solana-devnet", "ep1", body)
 
 	state, err := valkeyClient.GetCustomProbeState(context.Background(), "solana-devnet", "ep1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if state == nil || state.Method != "eth_getBlockByNumber" {
-		t.Errorf("expected the target to switch once the refresh period elapsed, got %+v", state)
+	if state == nil || state.SetAt.Equal(oldSetAt) || time.Since(state.SetAt) > time.Second {
+		t.Errorf("expected SetAt to refresh to now once the refresh period elapsed, got %+v (old was %v)", state, oldSetAt)
 	}
 }
 
