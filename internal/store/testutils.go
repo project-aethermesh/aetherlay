@@ -11,6 +11,7 @@ import (
 // It supports in-memory endpoint status storage and is safe for concurrent use.
 type MockValkeyClient struct {
 	rateLimitStates   map[string]*RateLimitState
+	customProbeStates map[string]*CustomProbeState
 	requestCounts     map[string]map[string]map[string][3]int64 // [0]=24h, [1]=1m, [2]=all
 	capacityCounts    map[string]map[int64]int64                // "chain:endpoint" -> bucket -> count
 	capacityEstimates map[string]*CapacityEstimate              // "chain:endpoint" -> learned estimate
@@ -27,6 +28,7 @@ type MockValkeyClient struct {
 func NewMockValkeyClient() *MockValkeyClient {
 	return &MockValkeyClient{
 		rateLimitStates:   make(map[string]*RateLimitState),
+		customProbeStates: make(map[string]*CustomProbeState),
 		requestCounts:     make(map[string]map[string]map[string][3]int64),
 		capacityCounts:    make(map[string]map[int64]int64),
 		capacityEstimates: make(map[string]*CapacityEstimate),
@@ -127,6 +129,34 @@ func (m *MockValkeyClient) GetRateLimitState(_ context.Context, chain, endpoint 
 		}, nil
 	}
 	return state, nil
+}
+
+// GetCustomProbeState returns the custom probe state for a given chain and endpoint, if
+// one has been set. A nil result (with a nil error) means no custom probe method is
+// currently active, matching the real ValkeyClient's behavior on a cache miss.
+func (m *MockValkeyClient) GetCustomProbeState(_ context.Context, chain, endpoint string) (*CustomProbeState, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	key := chain + ":" + endpoint
+	return m.customProbeStates[key], nil
+}
+
+// SetCustomProbeState sets the custom probe state for a given chain and endpoint.
+func (m *MockValkeyClient) SetCustomProbeState(_ context.Context, chain, endpoint string, state CustomProbeState) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := chain + ":" + endpoint
+	m.customProbeStates[key] = &state
+	return nil
+}
+
+// ClearCustomProbeState removes the custom probe state for a given chain and endpoint.
+func (m *MockValkeyClient) ClearCustomProbeState(_ context.Context, chain, endpoint string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := chain + ":" + endpoint
+	delete(m.customProbeStates, key)
+	return nil
 }
 
 // CleanupStaleEndpoints is a no-op stub for tests; returns 0 deleted and no error.

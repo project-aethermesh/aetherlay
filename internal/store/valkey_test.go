@@ -133,6 +133,68 @@ func TestGetEndpointStatusForNonExistentEndpoint(t *testing.T) {
 	}
 }
 
+func TestSetAndGetCustomProbeState(t *testing.T) {
+	client := NewMockValkeyClient()
+	ctx := context.Background()
+	chain := "solana-devnet"
+	endpoint := "ep1"
+
+	setAt := time.Now()
+	err := client.SetCustomProbeState(ctx, chain, endpoint, CustomProbeState{Method: "getBlock", SetAt: setAt})
+	if err != nil {
+		t.Fatalf("SetCustomProbeState failed: %v", err)
+	}
+
+	state, err := client.GetCustomProbeState(ctx, chain, endpoint)
+	if err != nil {
+		t.Fatalf("GetCustomProbeState failed: %v", err)
+	}
+	if state == nil {
+		t.Fatal("expected a non-nil custom probe state")
+	}
+	if state.Method != "getBlock" {
+		t.Errorf("expected method getBlock, got %q", state.Method)
+	}
+	if !state.SetAt.Equal(setAt) {
+		t.Errorf("expected SetAt %v, got %v", setAt, state.SetAt)
+	}
+}
+
+func TestGetCustomProbeStateForNonExistentEndpoint(t *testing.T) {
+	client := NewMockValkeyClient()
+	ctx := context.Background()
+
+	state, err := client.GetCustomProbeState(ctx, "solana-devnet", "no-such-endpoint")
+	if err != nil {
+		t.Fatalf("GetCustomProbeState failed: %v", err)
+	}
+	if state != nil {
+		t.Errorf("expected a nil custom probe state for an endpoint that was never set, got %+v", state)
+	}
+}
+
+func TestClearCustomProbeState(t *testing.T) {
+	client := NewMockValkeyClient()
+	ctx := context.Background()
+	chain := "solana-devnet"
+	endpoint := "ep1"
+
+	if err := client.SetCustomProbeState(ctx, chain, endpoint, CustomProbeState{Method: "getBlock", SetAt: time.Now()}); err != nil {
+		t.Fatalf("SetCustomProbeState failed: %v", err)
+	}
+	if err := client.ClearCustomProbeState(ctx, chain, endpoint); err != nil {
+		t.Fatalf("ClearCustomProbeState failed: %v", err)
+	}
+
+	state, err := client.GetCustomProbeState(ctx, chain, endpoint)
+	if err != nil {
+		t.Fatalf("GetCustomProbeState failed: %v", err)
+	}
+	if state != nil {
+		t.Errorf("expected custom probe state to be cleared, got %+v", state)
+	}
+}
+
 func uniqueTestKey(base string) string {
 	return fmt.Sprintf("%s-%d", base, time.Now().UnixNano())
 }

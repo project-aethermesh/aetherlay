@@ -19,6 +19,7 @@ const (
 	rateLimitPrefix        = "rate_limit:"
 	capacityPrefix         = "capacity:"
 	capacityEstimatePrefix = "capacity_estimate:"
+	customProbePrefix      = "custom_probe:"
 	proxyRequests          = "proxy_requests"
 	healthRequests         = "health_requests"
 	requests24hKey         = "requests_24h"
@@ -46,6 +47,8 @@ type EndpointStatus struct {
 
 // NewEndpointStatus creates a new endpoint status with default values.
 // All health flags are set to false and request counts are initialized to 0.
+// LastHealthCheck is left at its zero value; it's the signal callers use to tell a
+// never-checked endpoint apart from one that was actually observed unhealthy.
 func NewEndpointStatus() EndpointStatus {
 	return EndpointStatus{
 		BlockNumber:      0,
@@ -53,7 +56,6 @@ func NewEndpointStatus() EndpointStatus {
 		HasWS:            false,
 		HealthyHTTP:      false,
 		HealthyWS:        false,
-		LastHealthCheck:  time.Now(),
 		Requests24h:      0,
 		Requests1Month:   0,
 		RequestsLifetime: 0,
@@ -70,6 +72,9 @@ type ValkeyClientIface interface {
 	GetCombinedRequestCounts(ctx context.Context, chain, endpoint string) (int64, int64, int64, error)
 	GetRateLimitState(ctx context.Context, chain, endpoint string) (*RateLimitState, error)
 	SetRateLimitState(ctx context.Context, chain, endpoint string, state RateLimitState) error
+	GetCustomProbeState(ctx context.Context, chain, endpoint string) (*CustomProbeState, error)
+	SetCustomProbeState(ctx context.Context, chain, endpoint string, state CustomProbeState) error
+	ClearCustomProbeState(ctx context.Context, chain, endpoint string) error
 	IncrementCapacityCount(ctx context.Context, chain, endpoint string, windowSeconds int) (int64, error)
 	GetCapacityCount(ctx context.Context, chain, endpoint string, windowSeconds int) (int64, error)
 	GetCapacityEstimate(ctx context.Context, chain, endpoint string) (*CapacityEstimate, error)
@@ -303,7 +308,7 @@ func (r *ValkeyClient) CleanupStaleEndpoints(ctx context.Context, activeEndpoint
 		}
 	}
 
-	prefixes := []string{healthPrefix, metricsPrefix, rateLimitPrefix, capacityEstimatePrefix}
+	prefixes := []string{healthPrefix, metricsPrefix, rateLimitPrefix, capacityEstimatePrefix, customProbePrefix}
 	var staleKeys []string
 
 	for _, prefix := range prefixes {
@@ -413,6 +418,60 @@ func (r *ValkeyClient) SetRateLimitState(ctx context.Context, chain, endpoint st
 
 	// Simple SET operation with expiration, last write wins
 	cmd := r.client.B().Set().Key(key).Value(string(jsonBytes)).Ex(24 * time.Hour).Build()
+	return r.client.Do(ctx, cmd).Error()
+}
+
+// CustomProbeState records which allowlisted method the health checker should
+// additionally re-test for an endpoint, captured from a real 5xx on that method, until
+// either the refresh period elapses or the endpoint's ephemeral recovery threshold is
+// reached (see health.IsCustomProbeMethod and Checker.runEphemeralCheckProtocol).
+type CustomProbeState struct {
+	Method string    `json:"method"`
+	SetAt  time.Time `json:"set_at"`
+}
+
+// GetCustomProbeState retrieves the custom probe state for an endpoint, if one is set.
+// A nil result (with a nil error) means no custom probe method is currently active.
+func (r *ValkeyClient) GetCustomProbeState(ctx context.Context, chain, endpoint string) (*CustomProbeState, error) {
+	key := customProbePrefix + chain + ":" + endpoint
+	cmd := r.client.B().Get().Key(key).Build()
+	result := r.client.Do(ctx, cmd)
+
+	if valkey.IsValkeyNil(result.Error()) {
+		return nil, nil
+	}
+
+	data, err := result.AsBytes()
+	if err != nil {
+		return nil, err
+	}
+
+	var state CustomProbeState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	return &state, nil
+}
+
+// SetCustomProbeState stores the custom probe state for an endpoint in Valkey, with a
+// bounded expiration so a stale entry can never outlive the endpoint it refers to.
+func (r *ValkeyClient) SetCustomProbeState(ctx context.Context, chain, endpoint string, state CustomProbeState) error {
+	key := customProbePrefix + chain + ":" + endpoint
+
+	jsonBytes, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+
+	cmd := r.client.B().Set().Key(key).Value(string(jsonBytes)).Ex(24 * time.Hour).Build()
+	return r.client.Do(ctx, cmd).Error()
+}
+
+// ClearCustomProbeState removes the custom probe state for an endpoint, reverting future
+// health checks to the endpoint's default probe method.
+func (r *ValkeyClient) ClearCustomProbeState(ctx context.Context, chain, endpoint string) error {
+	key := customProbePrefix + chain + ":" + endpoint
+	cmd := r.client.B().Del().Key(key).Build()
 	return r.client.Do(ctx, cmd).Error()
 }
 

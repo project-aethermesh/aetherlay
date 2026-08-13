@@ -329,6 +329,14 @@ func (c *Checker) runEphemeralCheckProtocol(ctx context.Context, chain, endpoint
 						}
 						c.updateStatus(ctx, chain, endpointID, *status)
 					}
+					// Recovery confirmed via the same threshold used above, so any custom
+					// probe method targeted at this endpoint (see custom_probe.go) has now
+					// also passed that many times in a row, revert to the default probe.
+					if protocol == "http" {
+						if err := c.valkeyClient.ClearCustomProbeState(ctx, chain, endpointID); err != nil {
+							log.Error().Err(err).Str("chain", chain).Str("endpoint_id", endpointID).Msg("Failed to clear custom probe state")
+						}
+					}
 					// Remove from ephemeralChecks
 					if state, ok := c.ephemeralChecks[key]; ok {
 						state.cancel()
@@ -405,6 +413,16 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 	status := store.NewEndpointStatus()
 	status.LastHealthCheck = time.Now()
 
+	// Fetch the currently stored health status so this write's healthy transitions can
+	// be resolved the same way checkHTTPHealth/checkWSHealth already resolved theirs for
+	// this same probe round, instead of blindly persisting the raw probe result again.
+	var wasHealthyHTTP, wasHealthyWS, hasPriorCheck bool
+	if prevStatus, err := c.valkeyClient.GetEndpointStatus(ctx, chain, endpointID); err == nil && prevStatus != nil {
+		wasHealthyHTTP = prevStatus.HealthyHTTP
+		wasHealthyWS = prevStatus.HealthyWS
+		hasPriorCheck = !prevStatus.LastHealthCheck.IsZero()
+	}
+
 	// Create channels to collect results from parallel health checks
 	httpResult := make(chan bool, 1)
 	wsResult := make(chan bool, 1)
@@ -424,8 +442,8 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 	// Collect results
 	status.HasHTTP = endpoint.HTTPURL != ""
 	status.HasWS = endpoint.WSURL != ""
-	status.HealthyHTTP = <-httpResult
-	status.HealthyWS = <-wsResult
+	status.HealthyHTTP = c.resolveHealthTransition(hasPriorCheck, wasHealthyHTTP, <-httpResult)
+	status.HealthyWS = c.resolveHealthTransition(hasPriorCheck, wasHealthyWS, <-wsResult)
 
 	// Get current request counts
 	r24h, r1m, rAll, err := c.valkeyClient.GetCombinedRequestCounts(ctx, chain, endpointID)
@@ -439,9 +457,23 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 	c.updateStatus(ctx, chain, endpointID, status)
 }
 
-// makeRPCCall makes a single JSON-RPC call and returns the result
+// makeRPCCall makes a single JSON-RPC call with empty params and returns the result
 func (c *Checker) makeRPCCall(ctx context.Context, url, method, chain, endpointID, provider string) (any, error) {
-	payload := []byte(`{"jsonrpc":"2.0","method":"` + method + `","params":[],"id":1}`)
+	return c.makeRPCCallWithParams(ctx, url, method, []any{}, chain, endpointID, provider)
+}
+
+// makeRPCCallWithParams makes a single JSON-RPC call with the given params and returns
+// the result.
+func (c *Checker) makeRPCCallWithParams(ctx context.Context, url, method string, params []any, chain, endpointID, provider string) (any, error) {
+	payload, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  method,
+		"params":  params,
+		"id":      1,
+	})
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payload))
 	if err != nil {
 		return nil, err
@@ -757,6 +789,26 @@ func (c *Checker) incrementHealthRequestCount(ctx context.Context, chain, endpoi
 	}
 }
 
+// resolveHealthTransition decides whether a fresh probe result should overwrite the
+// currently stored health status for a protocol. Failures are always applied
+// immediately so a bad endpoint is ejected fast. The unhealthy to healthy transition is
+// left to the ephemeral checker (see runEphemeralCheckProtocol), which requires several
+// consecutive successful probes rather than accepting a single passing periodic check.
+// Without this, a lucky, shallow probe on the main sweep can silently erase a failure
+// surfaced by real production traffic (see the passive tracking in server.go) or by a
+// prior periodic check. hasPriorCheck should be false only for an endpoint's very first
+// ever check (no baseline to protect yet), so a fresh endpoint can still become healthy
+// immediately at startup instead of waiting on the ephemeral checker's threshold.
+func (c *Checker) resolveHealthTransition(hasPriorCheck, currentlyHealthy, probeHealthy bool) bool {
+	if !c.ephemeralChecksEnabled || !hasPriorCheck {
+		return probeHealthy // no other recovery path exists, preserve old behavior
+	}
+	if probeHealthy && !currentlyHealthy {
+		return false // stay unhealthy, the ephemeral checker owns recovery
+	}
+	return probeHealthy
+}
+
 // updateEndpointStatusInValkey fetches current status, updates it with new values, and stores it in Valkey
 func (c *Checker) updateEndpointStatusInValkey(ctx context.Context, chain, endpointID string, updateFn func(*store.EndpointStatus)) {
 	status, err := c.valkeyClient.GetEndpointStatus(ctx, chain, endpointID)
@@ -821,12 +873,31 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 	// Check all health parameters
 	healthy, blockNumber := c.checkHealthParams(chain, endpointID, endpoint.HTTPURL, "HTTP", endpoint.ChainType, syncResult, blockResult)
 
+	// If a real proxied request recently failed on one of the allowlisted methods (see
+	// custom_probe.go and server.go's maybeSetCustomProbeMethod), additionally re-test
+	// that exact method with Aetherlay's own canned request. getSlot/getHealth passing
+	// says nothing about a failure isolated to a different method (e.g. getBlock); this
+	// check must also pass for the endpoint to be considered healthy.
+	if healthy {
+		if probeState, err := c.valkeyClient.GetCustomProbeState(ctx, chain, endpointID); err == nil && probeState != nil {
+			if builder, ok := customProbeBuilders[probeState.Method]; ok {
+				method, params := builder(blockNumber)
+				if _, callErr := c.makeRPCCallWithParams(ctx, endpoint.HTTPURL, method, params, chain, endpointID, endpoint.Provider); callErr != nil {
+					healthy = false
+					log.Warn().Str("chain", chain).Str("endpoint_id", endpointID).Str("method", method).Err(callErr).Msg("Custom probe re-test failed, endpoint still considered unhealthy for this method")
+				}
+				c.incrementHealthRequestCount(ctx, chain, endpointID)
+			}
+		}
+	}
+
 	// Update metrics and status in Valkey
 	c.updateHealthMetrics(chain, endpointID, healthy)
 	c.updateEndpointStatusInValkey(ctx, chain, endpointID, func(status *store.EndpointStatus) {
+		hasPriorCheck := !status.LastHealthCheck.IsZero()
 		status.BlockNumber = blockNumber // Store the block number for future reference
 		status.HasHTTP = endpoint.HTTPURL != ""
-		status.HealthyHTTP = healthy
+		status.HealthyHTTP = c.resolveHealthTransition(hasPriorCheck, status.HealthyHTTP, healthy)
 		status.LastHealthCheck = time.Now()
 	})
 	return healthy
@@ -876,9 +947,10 @@ func (c *Checker) checkWSHealth(ctx context.Context, chain, endpointID string, e
 	// Update metrics and status in Valkey
 	c.updateHealthMetrics(chain, endpointID, healthy)
 	c.updateEndpointStatusInValkey(ctx, chain, endpointID, func(status *store.EndpointStatus) {
+		hasPriorCheck := !status.LastHealthCheck.IsZero()
 		status.BlockNumber = blockNumber // Store the block number for future reference
 		status.HasWS = endpoint.WSURL != ""
-		status.HealthyWS = healthy
+		status.HealthyWS = c.resolveHealthTransition(hasPriorCheck, status.HealthyWS, healthy)
 		status.LastHealthCheck = time.Now()
 	})
 	return healthy
