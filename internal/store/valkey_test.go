@@ -136,6 +136,8 @@ func TestGetEndpointStatusForNonExistentEndpoint(t *testing.T) {
 	}
 }
 
+// TestSetAndGetCustomProbeState verifies that a stored custom probe state round-trips
+// with its method and timestamp intact.
 func TestSetAndGetCustomProbeState(t *testing.T) {
 	client := NewMockValkeyClient()
 	ctx := context.Background()
@@ -196,6 +198,8 @@ func TestTryAcquireCustomProbeGateIsExclusiveUnderConcurrency(t *testing.T) {
 	}
 }
 
+// TestGetCustomProbeStateForNonExistentEndpoint verifies a nil, error-free result for an
+// endpoint that has never had a custom probe state set.
 func TestGetCustomProbeStateForNonExistentEndpoint(t *testing.T) {
 	client := NewMockValkeyClient()
 	ctx := context.Background()
@@ -209,6 +213,8 @@ func TestGetCustomProbeStateForNonExistentEndpoint(t *testing.T) {
 	}
 }
 
+// TestClearCustomProbeState verifies that clearing removes a previously set custom probe
+// state.
 func TestClearCustomProbeState(t *testing.T) {
 	client := NewMockValkeyClient()
 	ctx := context.Background()

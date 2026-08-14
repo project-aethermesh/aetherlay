@@ -6,6 +6,8 @@ import (
 	"aetherlay/internal/config"
 )
 
+// TestCustomProbeBuilderGetBlockUsesMarginBehindTip verifies that the Solana getBlock
+// builder targets a slot solanaFinalizedSlotMargin behind the reported tip.
 func TestCustomProbeBuilderGetBlockUsesMarginBehindTip(t *testing.T) {
 	build, ok := customProbeBuilderFor("getBlock", config.ChainTypeSolana)
 	if !ok {
@@ -25,6 +27,8 @@ func TestCustomProbeBuilderGetBlockUsesMarginBehindTip(t *testing.T) {
 	}
 }
 
+// TestCustomProbeBuilderGetBlockClampsToZero verifies that the Solana getBlock builder
+// never targets a negative slot when the current slot is below the finalized margin.
 func TestCustomProbeBuilderGetBlockClampsToZero(t *testing.T) {
 	build, _ := customProbeBuilderFor("getBlock", config.ChainTypeSolana)
 
@@ -35,6 +39,8 @@ func TestCustomProbeBuilderGetBlockClampsToZero(t *testing.T) {
 	}
 }
 
+// TestCustomProbeBuilderEthGetBlockByNumberIsAlwaysLatest verifies that the EVM
+// eth_getBlockByNumber builder always requests the latest block, ignoring its input.
 func TestCustomProbeBuilderEthGetBlockByNumberIsAlwaysLatest(t *testing.T) {
 	build, ok := customProbeBuilderFor("eth_getBlockByNumber", config.ChainTypeEVM)
 	if !ok {
@@ -70,6 +76,8 @@ func TestCustomProbeBuilderForRejectsMismatchedChainType(t *testing.T) {
 	}
 }
 
+// TestIsCustomProbeMethod covers allowlist membership across matching, mismatched, and
+// unregistered method/chain-type combinations.
 func TestIsCustomProbeMethod(t *testing.T) {
 	if !IsCustomProbeMethod("getBlock", config.ChainTypeSolana) {
 		t.Error("expected getBlock to be allowlisted for Solana")

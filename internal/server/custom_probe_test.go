@@ -11,6 +11,8 @@ import (
 	"aetherlay/internal/store"
 )
 
+// newCustomProbeTestServer builds a Server with a single healthy Solana endpoint, for
+// tests exercising maybeSetCustomProbeMethod in isolation.
 func newCustomProbeTestServer(chain, endpointID string) (*Server, *store.MockValkeyClient) {
 	cfg := &config.Config{
 		Endpoints: map[string]config.ChainEndpoints{
@@ -27,6 +29,8 @@ func newCustomProbeTestServer(chain, endpointID string) (*Server, *store.MockVal
 	return server, valkeyClient
 }
 
+// TestMaybeSetCustomProbeMethodSetsAllowlistedMethod verifies that a 5xx on an allowlisted
+// method captures it as the endpoint's custom probe method.
 func TestMaybeSetCustomProbeMethodSetsAllowlistedMethod(t *testing.T) {
 	server, valkeyClient := newCustomProbeTestServer("solana-devnet", "ep1")
 
@@ -45,6 +49,8 @@ func TestMaybeSetCustomProbeMethodSetsAllowlistedMethod(t *testing.T) {
 	}
 }
 
+// TestMaybeSetCustomProbeMethodIgnoresNonAllowlistedMethod verifies that a state-mutating
+// method like sendTransaction is never captured for replay, even on a real 5xx.
 func TestMaybeSetCustomProbeMethodIgnoresNonAllowlistedMethod(t *testing.T) {
 	server, valkeyClient := newCustomProbeTestServer("solana-devnet", "ep1")
 
@@ -108,6 +114,8 @@ func TestMaybeSetCustomProbeMethodIgnoresGetBlockOnEVMEndpoint(t *testing.T) {
 	}
 }
 
+// TestMaybeSetCustomProbeMethodIgnoresUnparseableBody verifies that a body that doesn't
+// unmarshal into the expected single-object shape is skipped rather than erroring.
 func TestMaybeSetCustomProbeMethodIgnoresUnparseableBody(t *testing.T) {
 	server, valkeyClient := newCustomProbeTestServer("solana-devnet", "ep1")
 
@@ -125,6 +133,9 @@ func TestMaybeSetCustomProbeMethodIgnoresUnparseableBody(t *testing.T) {
 	}
 }
 
+// TestMaybeSetCustomProbeMethodDoesNotOverwriteWithinRefreshPeriod verifies that a second
+// failure on the same method within the refresh period is a no-op, since the gate acquired
+// by the first call is still held.
 func TestMaybeSetCustomProbeMethodDoesNotOverwriteWithinRefreshPeriod(t *testing.T) {
 	server, valkeyClient := newCustomProbeTestServer("solana-devnet", "ep1")
 
@@ -149,6 +160,8 @@ func TestMaybeSetCustomProbeMethodDoesNotOverwriteWithinRefreshPeriod(t *testing
 	}
 }
 
+// TestMaybeSetCustomProbeMethodOverwritesAfterRefreshPeriodElapses verifies that once the
+// refresh period elapses, the gate expires and a fresh failure refreshes SetAt.
 func TestMaybeSetCustomProbeMethodOverwritesAfterRefreshPeriodElapses(t *testing.T) {
 	server, valkeyClient := newCustomProbeTestServer("solana-devnet", "ep1")
 

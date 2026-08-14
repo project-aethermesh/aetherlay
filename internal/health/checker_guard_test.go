@@ -15,6 +15,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// TestResolveHealthTransition covers every (hasPriorCheck, currentlyHealthy, probeHealthy)
+// combination, including the ephemeral-checks-disabled fallback.
 func TestResolveHealthTransition(t *testing.T) {
 	tests := []struct {
 		name                   string
@@ -45,6 +47,8 @@ func TestResolveHealthTransition(t *testing.T) {
 	}
 }
 
+// TestCheckHTTPHealthGuardKeepsUnhealthyOnPassingProbe verifies that a single passing
+// periodic sweep does not flip a previously-unhealthy endpoint back to healthy.
 func TestCheckHTTPHealthGuardKeepsUnhealthyOnPassingProbe(t *testing.T) {
 	server := solanaRPCTestServer(t, 123456, true)
 	defer server.Close()
@@ -73,6 +77,8 @@ func TestCheckHTTPHealthGuardKeepsUnhealthyOnPassingProbe(t *testing.T) {
 	}
 }
 
+// TestCheckHTTPHealthGuardFlipsToUnhealthyImmediately verifies that a failing probe ejects
+// a previously-healthy endpoint right away, with no debounce.
 func TestCheckHTTPHealthGuardFlipsToUnhealthyImmediately(t *testing.T) {
 	// Slot 0 is an invalid/unhealthy result parsed by checkHealthParams itself, not a
 	// hard RPC-level error on the block/sync call (see
@@ -169,6 +175,9 @@ func TestCheckHTTPHealthPersistsUnhealthyOnHardSyncCallError(t *testing.T) {
 	}
 }
 
+// TestCheckHTTPHealthGuardFallbackWhenEphemeralDisabled verifies that the old
+// unconditional-overwrite behavior is preserved when ephemeral checks are disabled, since
+// there's no other recovery path in that case.
 func TestCheckHTTPHealthGuardFallbackWhenEphemeralDisabled(t *testing.T) {
 	server := solanaRPCTestServer(t, 123456, true)
 	defer server.Close()
@@ -195,6 +204,9 @@ func TestCheckHTTPHealthGuardFallbackWhenEphemeralDisabled(t *testing.T) {
 	}
 }
 
+// TestCheckHTTPHealthFirstEverCheckBecomesHealthyImmediately verifies that a brand new
+// endpoint's very first check can become healthy right away, without waiting on the
+// ephemeral checker.
 func TestCheckHTTPHealthFirstEverCheckBecomesHealthyImmediately(t *testing.T) {
 	server := solanaRPCTestServer(t, 123456, true)
 	defer server.Close()
@@ -219,6 +231,9 @@ func TestCheckHTTPHealthFirstEverCheckBecomesHealthyImmediately(t *testing.T) {
 	}
 }
 
+// TestCheckEndpointGuardKeepsUnhealthyOnPassingProbe verifies that checkEndpoint's own
+// write site respects the same guard as checkHTTPHealth, instead of re-introducing the raw
+// unguarded probe result.
 func TestCheckEndpointGuardKeepsUnhealthyOnPassingProbe(t *testing.T) {
 	valkeyClient := store.NewMockValkeyClient()
 	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
@@ -268,6 +283,8 @@ func solanaGetBlockTestServer(t *testing.T, slot int64) *httptest.Server {
 	}))
 }
 
+// TestCheckHTTPHealthCustomProbeFailureOverridesOtherwiseHealthy verifies that a failing
+// custom probe re-test overrides an otherwise-healthy getSlot/getHealth result.
 func TestCheckHTTPHealthCustomProbeFailureOverridesOtherwiseHealthy(t *testing.T) {
 	// solanaRPCTestServer only understands getSlot/getHealth; any custom probe method
 	// (like getBlock) hits its default "method not found" branch, which is a real
@@ -291,6 +308,8 @@ func TestCheckHTTPHealthCustomProbeFailureOverridesOtherwiseHealthy(t *testing.T
 	}
 }
 
+// TestCheckHTTPHealthCustomProbeSuccessKeepsHealthy verifies that a passing custom probe
+// re-test alongside a healthy default probe reports healthy overall.
 func TestCheckHTTPHealthCustomProbeSuccessKeepsHealthy(t *testing.T) {
 	server := solanaGetBlockTestServer(t, 123456)
 	defer server.Close()
@@ -311,6 +330,8 @@ func TestCheckHTTPHealthCustomProbeSuccessKeepsHealthy(t *testing.T) {
 	}
 }
 
+// TestRunEphemeralCheckProtocolClearsCustomProbeStateOnRecovery verifies that reaching the
+// ephemeral recovery threshold clears any active custom probe state.
 func TestRunEphemeralCheckProtocolClearsCustomProbeStateOnRecovery(t *testing.T) {
 	valkeyClient := store.NewMockValkeyClient()
 	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
