@@ -223,6 +223,15 @@ The service checks the health of an endpoint by sending these requests to it. Wh
 
 In both cases, the sync/health-status call is treated as optional: if an endpoint doesn't implement it (a JSON-RPC "method not found" error), it's assumed healthy rather than being marked down over a missing optional method. You can also skip it for a specific endpoint with `"skip_sync_check": true`.
 
+### Failing-Method Detection
+
+The `eth_blockNumber`/`getSlot` and sync-status calls above only prove those specific methods work, they say nothing about a provider that's healthy overall but failing on a different method on which your traffic actually depends (e.g., `eth_getBlockByNumber` or `getBlock`). Aetherlay closes that gap automatically, with no configuration needed:
+
+1. **Capture**: When a proxied request to an endpoint fails with a real 5xx, Aetherlay checks whether the failed request's JSON-RPC method is on a small allowlist of methods it knows how to safely re-test on its own with a read-only, proven-to-be-valid request (currently `eth_getBlockByNumber` for `evm` chains and `getBlock` for `solana`). This is keyed off the method name only; the client's original request body is never replayed, so a captured failure can never cause Aetherlay to resubmit a state-mutating call.
+2. **Targeted re-testing**: While a method is captured for an endpoint, every health check that would otherwise mark it healthy also re-tests that exact method. The endpoint isn't considered healthy again until both the regular probe and the captured method's request succeed.
+3. **Stability window**: The captured method stays the target for `ephemeral-checks-healthy-threshold * ephemeral-checks-interval` seconds (plus a small fixed overhead), so an endpoint failing on every method doesn't have its target constantly overwritten before any single method can accumulate enough consecutive passes to prove recovery.
+4. **Automatic reset**: Once the endpoint passes the configured consecutive-success threshold, the captured method is cleared and health checks revert to the default probe.
+
 ### Chain Types
 
 Each endpoint can declare a `chain_type`, which selects the JSON-RPC dialect used for health checks (and the rate-limit recovery probe):
