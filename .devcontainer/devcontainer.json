@@ -17,7 +17,7 @@
 				},
 				"terminal.integrated.defaultProfile.linux": "bash",
 				"terminal.integrated.profiles.linux": {
-					"zsh": {
+					"bash": {
 						"path": "/bin/bash"
 					}
 				}
