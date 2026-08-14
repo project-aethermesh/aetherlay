@@ -11,6 +11,7 @@ RUN apt update && apt upgrade -y && export DEBIAN_FRONTEND=noninteractive \
     bsdutils \
     curl \
     git \
+    gzip \
     libc-bin \
     locales \
     unzip \
