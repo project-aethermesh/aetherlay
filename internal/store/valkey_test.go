@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -158,6 +160,39 @@ func TestSetAndGetCustomProbeState(t *testing.T) {
 	}
 	if !state.SetAt.Equal(setAt) {
 		t.Errorf("expected SetAt %v, got %v", setAt, state.SetAt)
+	}
+}
+
+// TestTryAcquireCustomProbeGateIsExclusiveUnderConcurrency is a regression guard for the
+// atomicity that's required here: many concurrent callers racing for the same endpoint's
+// gate must see exactly one winner, never more.
+func TestTryAcquireCustomProbeGateIsExclusiveUnderConcurrency(t *testing.T) {
+	client := NewMockValkeyClient()
+	ctx := context.Background()
+	chain := "solana-devnet"
+	endpoint := "ep1"
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+	var acquiredCount int64
+	wg.Add(goroutines)
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			acquired, err := client.TryAcquireCustomProbeGate(ctx, chain, endpoint, time.Minute)
+			if err != nil {
+				t.Errorf("TryAcquireCustomProbeGate failed: %v", err)
+				return
+			}
+			if acquired {
+				atomic.AddInt64(&acquiredCount, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if acquiredCount != 1 {
+		t.Errorf("expected exactly 1 caller to acquire the gate, got %d", acquiredCount)
 	}
 }
 

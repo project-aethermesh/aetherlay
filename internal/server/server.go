@@ -1207,6 +1207,12 @@ func extractRPCMethod(bodyBytes []byte) string {
 	return req.Method
 }
 
+// customProbeValkeyTimeout bounds every Valkey call maybeSetCustomProbeMethod makes. It's
+// invoked from the request-forwarding path on a real 5xx; if Valkey stalls, this must not
+// hold up the caller's retry-another-endpoint or return-a-response decision for longer
+// than a short, fixed bound, regardless of how generous the request's own context is.
+const customProbeValkeyTimeout = 2 * time.Second
+
 // maybeSetCustomProbeMethod records the JSON-RPC method of a request that just failed
 // with a real 5xx, if that method is on the allowlist of methods the health checker
 // knows how to safely re-test on its own (see health.IsCustomProbeMethod). This is
@@ -1219,16 +1225,29 @@ func extractRPCMethod(bodyBytes []byte) string {
 // endpoint that's failing on every method would have its target method constantly
 // overwritten by whichever request happened to fail last, before any single method could
 // accumulate enough consecutive successful re-checks to prove it recovered.
-func (s *Server) maybeSetCustomProbeMethod(chain, endpointID string, bodyBytes []byte) {
+//
+// The gate itself is acquired via TryAcquireCustomProbeGate, a single atomic Valkey SET
+// NX EX, rather than a get-then-compare-then-set from here: two concurrent failed
+// requests could otherwise both observe a missing or expired gate and both write, with
+// the second silently replacing the first's target inside what was supposed to be the
+// debounce window. A process-local lock can't fix this either, since multiple server
+// instances share the same Valkey.
+func (s *Server) maybeSetCustomProbeMethod(ctx context.Context, chain, endpointID string, bodyBytes []byte) {
 	method := extractRPCMethod(bodyBytes)
 	if method == "" || !health.IsCustomProbeMethod(method, s.chainTypeForEndpoint(chain, endpointID)) {
 		return
 	}
 
-	ctx := context.Background()
-	existing, err := s.valkeyClient.GetCustomProbeState(ctx, chain, endpointID)
-	if err == nil && existing != nil && time.Since(existing.SetAt) < s.customProbeRefreshPeriod {
-		return // keep the current target stable until the refresh period elapses
+	ctx, cancel := context.WithTimeout(ctx, customProbeValkeyTimeout)
+	defer cancel()
+
+	acquired, err := s.valkeyClient.TryAcquireCustomProbeGate(ctx, chain, endpointID, s.customProbeRefreshPeriod)
+	if err != nil {
+		log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to acquire custom probe gate")
+		return
+	}
+	if !acquired {
+		return // another request already captured/refreshed the target within this window
 	}
 
 	if err := s.valkeyClient.SetCustomProbeState(ctx, chain, endpointID, store.CustomProbeState{
@@ -1319,7 +1338,7 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 				s.markEndpointUnhealthyProtocol(chain, endpointID, "http")
 				log.Debug().Str("url", helpers.RedactAPIKey(targetURL)).Int("status_code", resp.StatusCode).Msg("Endpoint returned non-2xx status, marked unhealthy")
 				if resp.StatusCode >= 500 {
-					s.maybeSetCustomProbeMethod(chain, endpointID, bodyBytes)
+					s.maybeSetCustomProbeMethod(ctx, chain, endpointID, bodyBytes)
 				}
 			}
 		}

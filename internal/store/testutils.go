@@ -12,6 +12,7 @@ import (
 type MockValkeyClient struct {
 	rateLimitStates   map[string]*RateLimitState
 	customProbeStates map[string]*CustomProbeState
+	customProbeGates  map[string]time.Time                      // "chain:endpoint" -> when the gate expires
 	requestCounts     map[string]map[string]map[string][3]int64 // [0]=24h, [1]=1m, [2]=all
 	capacityCounts    map[string]map[int64]int64                // "chain:endpoint" -> bucket -> count
 	capacityEstimates map[string]*CapacityEstimate              // "chain:endpoint" -> learned estimate
@@ -29,6 +30,7 @@ func NewMockValkeyClient() *MockValkeyClient {
 	return &MockValkeyClient{
 		rateLimitStates:   make(map[string]*RateLimitState),
 		customProbeStates: make(map[string]*CustomProbeState),
+		customProbeGates:  make(map[string]time.Time),
 		requestCounts:     make(map[string]map[string]map[string][3]int64),
 		capacityCounts:    make(map[string]map[int64]int64),
 		capacityEstimates: make(map[string]*CapacityEstimate),
@@ -164,6 +166,23 @@ func (m *MockValkeyClient) ClearCustomProbeState(_ context.Context, chain, endpo
 	key := chain + ":" + endpoint
 	delete(m.customProbeStates, key)
 	return nil
+}
+
+// TryAcquireCustomProbeGate mirrors the real ValkeyClient's SET NX EX gate: it atomically
+// (under the mock's own lock) checks whether the gate for chain:endpoint is currently
+// held and, if not, claims it for ttl and returns true. Concurrent callers under -race
+// exercise the same lock, so this only "succeeds" for exactly one caller per window, same
+// as SET NX would on a real Valkey server.
+func (m *MockValkeyClient) TryAcquireCustomProbeGate(_ context.Context, chain, endpoint string, ttl time.Duration) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := chain + ":" + endpoint
+	now := m.NowFunc()
+	if expiresAt, held := m.customProbeGates[key]; held && now.Before(expiresAt) {
+		return false, nil
+	}
+	m.customProbeGates[key] = now.Add(ttl)
+	return true, nil
 }
 
 // CleanupStaleEndpoints is a no-op stub for tests; returns 0 deleted and no error.

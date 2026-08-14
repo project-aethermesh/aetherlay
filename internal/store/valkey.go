@@ -20,6 +20,7 @@ const (
 	capacityPrefix         = "capacity:"
 	capacityEstimatePrefix = "capacity_estimate:"
 	customProbePrefix      = "custom_probe:"
+	customProbeGatePrefix  = "custom_probe_gate:"
 	proxyRequests          = "proxy_requests"
 	healthRequests         = "health_requests"
 	requests24hKey         = "requests_24h"
@@ -83,6 +84,7 @@ type ValkeyClientIface interface {
 	GetCustomProbeState(ctx context.Context, chain, endpoint string) (*CustomProbeState, error)
 	SetCustomProbeState(ctx context.Context, chain, endpoint string, state CustomProbeState) error
 	ClearCustomProbeState(ctx context.Context, chain, endpoint string) error
+	TryAcquireCustomProbeGate(ctx context.Context, chain, endpoint string, ttl time.Duration) (bool, error)
 	IncrementCapacityCount(ctx context.Context, chain, endpoint string, windowSeconds int) (int64, error)
 	GetCapacityCount(ctx context.Context, chain, endpoint string, windowSeconds int) (int64, error)
 	GetCapacityEstimate(ctx context.Context, chain, endpoint string) (*CapacityEstimate, error)
@@ -316,7 +318,7 @@ func (r *ValkeyClient) CleanupStaleEndpoints(ctx context.Context, activeEndpoint
 		}
 	}
 
-	prefixes := []string{healthPrefix, metricsPrefix, rateLimitPrefix, capacityEstimatePrefix, customProbePrefix}
+	prefixes := []string{healthPrefix, metricsPrefix, rateLimitPrefix, capacityEstimatePrefix, customProbePrefix, customProbeGatePrefix}
 	var staleKeys []string
 
 	for _, prefix := range prefixes {
@@ -487,6 +489,30 @@ func (r *ValkeyClient) ClearCustomProbeState(ctx context.Context, chain, endpoin
 	key := customProbePrefix + chain + ":" + endpoint
 	cmd := r.client.B().Del().Key(key).Build()
 	return r.client.Do(ctx, cmd).Error()
+}
+
+// TryAcquireCustomProbeGate atomically decides whether the caller is allowed to
+// (re)capture the custom probe method for an endpoint right now, using a separate,
+// short-lived gate key (SET NX EX) rather than reading CustomProbeState and comparing a
+// stored timestamp. A plain get-then-set from application code has a race: two concurrent
+// requests can both observe a missing or expired gate before either writes, and both then
+// write, with the later one winning even though it's supposed to be debounced. SET NX is
+// atomic at the Valkey server itself, so exactly one caller ever acquires the gate in a
+// given ttl window, even across multiple server instances sharing the same Valkey. Note
+// the gate key's ttl only bounds how often the target method can change (see
+// server.maybeSetCustomProbeMethod); it is not the lifetime of CustomProbeState itself,
+// which has no expiration (see SetCustomProbeState).
+func (r *ValkeyClient) TryAcquireCustomProbeGate(ctx context.Context, chain, endpoint string, ttl time.Duration) (bool, error) {
+	key := customProbeGatePrefix + chain + ":" + endpoint
+	cmd := r.client.B().Set().Key(key).Value("1").Nx().Ex(ttl).Build()
+	result := r.client.Do(ctx, cmd)
+	if valkey.IsValkeyNil(result.Error()) {
+		return false, nil // gate already held by another caller within this window
+	}
+	if err := result.Error(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // capacityBucketKey returns the Valkey key for the current fixed window of width
