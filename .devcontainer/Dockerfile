@@ -42,8 +42,10 @@ RUN go install golang.org/x/tools/gopls@latest \
     && go install github.com/air-verse/air@latest
 
 # Install Valkey's CLI
-RUN getent group adm >/dev/null || groupadd -r -g 4 adm \
-    && apt install -y valkey-tools
+RUN apt update \
+    && (getent group adm >/dev/null || groupadd -r -g 4 adm) \
+    && apt install -y --no-install-recommends valkey-tools \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set up the workspace
 WORKDIR /workspace
