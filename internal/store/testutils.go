@@ -142,12 +142,21 @@ func (m *MockValkeyClient) GetRateLimitState(_ context.Context, chain, endpoint 
 
 // GetCustomProbeState returns the custom probe state for a given chain and endpoint, if
 // one has been set. A nil result (with a nil error) means no custom probe method is
-// currently active, matching the real ValkeyClient's behavior on a cache miss.
+// currently active, matching the real ValkeyClient's behavior on a cache miss. It returns
+// a copy, not the stored pointer, for the same reason GetEndpointStatus does: exposing
+// the map-owned pointer after releasing m.mu would let a caller mutate the stored state
+// without synchronization, and would behave differently from the real ValkeyClient, which
+// JSON-decodes a fresh value on every read.
 func (m *MockValkeyClient) GetCustomProbeState(_ context.Context, chain, endpoint string) (*CustomProbeState, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	key := chain + ":" + endpoint
-	return m.customProbeStates[key], nil
+	state := m.customProbeStates[key]
+	if state == nil {
+		return nil, nil
+	}
+	stateCopy := *state
+	return &stateCopy, nil
 }
 
 // SetCustomProbeState sets the custom probe state for a given chain and endpoint.
