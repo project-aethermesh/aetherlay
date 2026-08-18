@@ -134,6 +134,14 @@ type Checker struct {
 	ephemeralChecksInterval  time.Duration
 	ephemeralChecksThreshold int
 
+	// statusMu serializes the read-modify-write status update sequence per endpoint (key:
+	// chain+":"+endpointID, value: *sync.Mutex), since checkEndpoint runs the HTTP and WS
+	// checks for the same endpoint concurrently and both can independently persist status
+	// via updateEndpointStatusInValkey. Without this, two concurrent get-then-put cycles on
+	// the same Valkey key can interleave, with the later write silently reverting the field
+	// the other one had just set.
+	statusMu sync.Map
+
 	// Rate limit handler function provided by server
 	HandleRateLimitFunc func(chain, endpointID, protocol string, signal RateLimitSignal)
 
@@ -318,17 +326,18 @@ func (c *Checker) runEphemeralCheckProtocol(ctx context.Context, chain, endpoint
 				log.Debug().Str("chain", chain).Str("endpoint_id", endpointID).Str("protocol", protocol).Int("consecutive", consecutive).Msg("Ephemeral check: success")
 				if consecutive >= threshold {
 					log.Info().Str("chain", chain).Str("endpoint_id", endpointID).Str("protocol", protocol).Msg("Ephemeral check: protocol considered healthy again")
-					// Mark protocol healthy in Valkey
-					status, err := c.valkeyClient.GetEndpointStatus(ctx, chain, endpointID)
-					if err == nil {
+					// Mark protocol healthy in Valkey. Routed through updateEndpointStatusInValkey
+					// (the same locked read-modify-write path checkHTTPHealth/checkWSHealth/
+					// checkEndpoint use) rather than a standalone get-then-put, since this can run
+					// concurrently with a periodic sweep checking the same endpoint.
+					c.updateEndpointStatusInValkey(ctx, chain, endpointID, func(status *store.EndpointStatus) {
 						switch protocol {
 						case "http":
 							status.HealthyHTTP = true
 						case "ws":
 							status.HealthyWS = true
 						}
-						c.updateStatus(ctx, chain, endpointID, *status)
-					}
+					})
 					// Recovery confirmed via the same threshold used above, so any custom
 					// probe method targeted at this endpoint (see custom_probe.go) has now
 					// also passed that many times in a row, revert to the default probe.
@@ -410,10 +419,7 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 		return
 	}
 
-	status := store.NewEndpointStatus()
 	now := time.Now()
-	status.LastHTTPHealthCheck = now
-	status.LastWSHealthCheck = now
 
 	// Fetch the currently stored health status so this write's healthy transitions can
 	// be resolved the same way checkHTTPHealth/checkWSHealth already resolved theirs for
@@ -446,21 +452,23 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 	}()
 
 	// Collect results
-	status.HasHTTP = endpoint.HTTPURL != ""
-	status.HasWS = endpoint.WSURL != ""
-	status.HealthyHTTP = c.resolveHealthTransition(hasPriorCheckHTTP, wasHealthyHTTP, <-httpResult)
-	status.HealthyWS = c.resolveHealthTransition(hasPriorCheckWS, wasHealthyWS, <-wsResult)
+	httpHealthy := <-httpResult
+	wsHealthy := <-wsResult
 
-	// Get current request counts
-	r24h, r1m, rAll, err := c.valkeyClient.GetCombinedRequestCounts(ctx, chain, endpointID)
-	if err == nil {
-		status.Requests24h = r24h
-		status.Requests1Month = r1m
-		status.RequestsLifetime = rAll
-	}
-
-	// Update status in Valkey
-	c.updateStatus(ctx, chain, endpointID, status)
+	// Persist through updateEndpointStatusInValkey, the same locked read-modify-write path
+	// checkHTTPHealth/checkWSHealth just used above for their own per-protocol writes,
+	// instead of a raw overwrite. checkHTTPHealth/checkWSHealth may have independently
+	// persisted fields this function never learns about (e.g. BlockNumber); a raw overwrite
+	// here would silently erase those, and racing the read-modify-write cycles above would
+	// let this write revert whichever field the other finished last.
+	c.updateEndpointStatusInValkey(ctx, chain, endpointID, func(status *store.EndpointStatus) {
+		status.LastHTTPHealthCheck = now
+		status.LastWSHealthCheck = now
+		status.HasHTTP = endpoint.HTTPURL != ""
+		status.HasWS = endpoint.WSURL != ""
+		status.HealthyHTTP = c.resolveHealthTransition(hasPriorCheckHTTP, wasHealthyHTTP, httpHealthy)
+		status.HealthyWS = c.resolveHealthTransition(hasPriorCheckWS, wasHealthyWS, wsHealthy)
+	})
 }
 
 // makeRPCCall makes a single JSON-RPC call with empty params and returns the result
@@ -815,8 +823,19 @@ func (c *Checker) resolveHealthTransition(hasPriorCheck, currentlyHealthy, probe
 	return probeHealthy
 }
 
+// statusLockFor returns the mutex guarding status read-modify-write cycles for a single
+// endpoint, creating it on first use.
+func (c *Checker) statusLockFor(chain, endpointID string) *sync.Mutex {
+	mu, _ := c.statusMu.LoadOrStore(chain+":"+endpointID, &sync.Mutex{})
+	return mu.(*sync.Mutex)
+}
+
 // updateEndpointStatusInValkey fetches current status, updates it with new values, and stores it in Valkey
 func (c *Checker) updateEndpointStatusInValkey(ctx context.Context, chain, endpointID string, updateFn func(*store.EndpointStatus)) {
+	mu := c.statusLockFor(chain, endpointID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	status, err := c.valkeyClient.GetEndpointStatus(ctx, chain, endpointID)
 	if err != nil || status == nil {
 		st := store.NewEndpointStatus()
