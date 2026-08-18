@@ -113,16 +113,14 @@ k8s-delete:
 build-hc-native:
 	@echo "Building Health Checker (native)..."
 	mkdir -p bin
-	unset GOOS GOARCH
-	go build -o bin/aetherlay-hc ./services/health-checker/main.go
+	env -u GOOS -u GOARCH go build -o bin/aetherlay-hc ./services/health-checker/main.go
 
 # Build load balancer for the local host (no GOOS/GOARCH override)
 .PHONY: build-lb-native
 build-lb-native:
 	@echo "Building RPC Load Balancer (native)..."
 	mkdir -p bin
-	unset GOOS GOARCH
-	go build -o bin/aetherlay-lb ./services/load-balancer/main.go
+	env -u GOOS -u GOARCH go build -o bin/aetherlay-lb ./services/load-balancer/main.go
 
 # Run both services in the background
 .PHONY: run
