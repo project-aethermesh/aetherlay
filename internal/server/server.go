@@ -1232,7 +1232,17 @@ const customProbeValkeyTimeout = 2 * time.Second
 // the second silently replacing the first's target inside what was supposed to be the
 // debounce window. A process-local lock can't fix this either, since multiple server
 // instances share the same Valkey.
+//
+// This is a no-op when ephemeral checks are disabled: the only path that ever clears a
+// captured custom probe state is runEphemeralCheckProtocol's recovery handling, so
+// without it running, a captured target would stay pinned forever, permanently
+// re-testing a method that may no longer be relevant instead of falling back to the
+// endpoint's default probe.
 func (s *Server) maybeSetCustomProbeMethod(ctx context.Context, chain, endpointID string, bodyBytes []byte) {
+	if !s.ephemeralChecksEnabled {
+		return
+	}
+
 	method := extractRPCMethod(bodyBytes)
 	if method == "" || !health.IsCustomProbeMethod(method, s.chainTypeForEndpoint(chain, endpointID)) {
 		return

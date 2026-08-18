@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"aetherlay/internal/config"
+	"aetherlay/internal/helpers"
 	"aetherlay/internal/store"
 )
 
@@ -188,6 +189,44 @@ func TestMaybeSetCustomProbeMethodOverwritesAfterRefreshPeriodElapses(t *testing
 	}
 	if state == nil || !state.SetAt.After(firstState.SetAt) {
 		t.Errorf("expected SetAt to refresh once the gate's refresh period elapsed, got %+v (first was %+v)", state, firstState)
+	}
+}
+
+// TestMaybeSetCustomProbeMethodNoopWhenEphemeralChecksDisabled verifies that capture is
+// skipped entirely when ephemeral checks are disabled, since runEphemeralCheckProtocol,
+// the only path that ever clears a captured state, never runs in that case, and a
+// captured target would otherwise stay pinned forever.
+func TestMaybeSetCustomProbeMethodNoopWhenEphemeralChecksDisabled(t *testing.T) {
+	cfg := &config.Config{
+		Endpoints: map[string]config.ChainEndpoints{
+			"solana-devnet": {
+				"ep1": config.Endpoint{Provider: "test", ChainType: config.ChainTypeSolana, HTTPURL: "http://fail", Role: "primary", Type: "full"},
+			},
+		},
+	}
+	valkeyClient := store.NewMockValkeyClient()
+	valkeyClient.PopulateStatuses(map[string]*store.EndpointStatus{
+		"solana-devnet:ep1": {HasHTTP: true, HealthyHTTP: true},
+	})
+	appConfig := &helpers.LoadedConfig{
+		EphemeralChecksEnabled:   false,
+		EndpointFailureThreshold: 1,
+		EndpointSuccessThreshold: 1,
+		ProxyMaxRetries:          3,
+		ProxyTimeout:             15,
+		ProxyTimeoutPerTry:       5,
+	}
+	server := NewServer(cfg, valkeyClient, appConfig)
+
+	body := []byte(`{"jsonrpc":"2.0","method":"getBlock","params":[123],"id":1}`)
+	server.maybeSetCustomProbeMethod(context.Background(), "solana-devnet", "ep1", body)
+
+	state, err := valkeyClient.GetCustomProbeState(context.Background(), "solana-devnet", "ep1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if state != nil {
+		t.Errorf("expected no custom probe state to be captured when ephemeral checks are disabled, got %+v", state)
 	}
 }
 
