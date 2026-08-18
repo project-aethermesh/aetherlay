@@ -442,8 +442,6 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 		return
 	}
 
-	now := time.Now()
-
 	// Create channels to collect results from parallel health checks
 	httpResult := make(chan bool, 1)
 	wsResult := make(chan bool, 1)
@@ -485,11 +483,12 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 		// Only record a check timestamp for a protocol the endpoint actually has; otherwise
 		// an HTTP-only endpoint would end up with a LastWSHealthCheck timestamp despite
 		// checkWSHealth never having run a real probe for it (it returns early instead).
+		checkedAt := time.Now()
 		if status.HasHTTP {
-			status.LastHTTPHealthCheck = now
+			status.LastHTTPHealthCheck = checkedAt
 		}
 		if status.HasWS {
-			status.LastWSHealthCheck = now
+			status.LastWSHealthCheck = checkedAt
 		}
 		status.HealthyHTTP = c.resolveHealthTransition(hasPriorCheckHTTP, wasHealthyHTTP, httpHealthy)
 		status.HealthyWS = c.resolveHealthTransition(hasPriorCheckWS, wasHealthyWS, wsHealthy)
