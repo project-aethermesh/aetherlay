@@ -444,20 +444,6 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 
 	now := time.Now()
 
-	// Fetch the currently stored health status so this write's healthy transitions can
-	// be resolved the same way checkHTTPHealth/checkWSHealth already resolved theirs for
-	// this same probe round, instead of blindly persisting the raw probe result again.
-	// hasPriorCheckHTTP/hasPriorCheckWS are tracked separately: HTTP and WS run in
-	// parallel here, but StartEphemeralChecks' own startup sweep runs them sequentially,
-	// so only one protocol's prior-check marker may be set at a time for a new endpoint.
-	var wasHealthyHTTP, wasHealthyWS, hasPriorCheckHTTP, hasPriorCheckWS bool
-	if prevStatus, err := c.valkeyClient.GetEndpointStatus(ctx, chain, endpointID); err == nil && prevStatus != nil {
-		wasHealthyHTTP = prevStatus.HealthyHTTP
-		wasHealthyWS = prevStatus.HealthyWS
-		hasPriorCheckHTTP = !prevStatus.LastHTTPHealthCheck.IsZero()
-		hasPriorCheckWS = !prevStatus.LastWSHealthCheck.IsZero()
-	}
-
 	// Create channels to collect results from parallel health checks
 	httpResult := make(chan bool, 1)
 	wsResult := make(chan bool, 1)
@@ -485,6 +471,15 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 	// here would silently erase those, and racing the read-modify-write cycles above would
 	// let this write revert whichever field the other finished last.
 	c.updateEndpointStatusInValkey(ctx, chain, endpointID, func(status *store.EndpointStatus) {
+		// wasHealthyHTTP/wasHealthyWS and hasPriorCheckHTTP/hasPriorCheckWS are read here,
+		// under the same lock this closure runs in, rather than before the probes above ran.
+		// The probes can take seconds; if a concurrent runEphemeralCheckProtocol confirmed
+		// recovery during that window, reading these values any earlier would resolve
+		// against a stale, already-superseded status and could revert that confirmed
+		// recovery back to unhealthy.
+		wasHealthyHTTP, wasHealthyWS := status.HealthyHTTP, status.HealthyWS
+		hasPriorCheckHTTP, hasPriorCheckWS := !status.LastHTTPHealthCheck.IsZero(), !status.LastWSHealthCheck.IsZero()
+
 		status.HasHTTP = endpoint.HTTPURL != ""
 		status.HasWS = endpoint.WSURL != ""
 		// Only record a check timestamp for a protocol the endpoint actually has; otherwise
