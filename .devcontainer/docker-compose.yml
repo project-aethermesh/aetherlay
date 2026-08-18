@@ -45,7 +45,7 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.path=/var/prometheus"
       - "--storage.tsdb.retention.time=24h"
       - "--web.enable-lifecycle"
     restart: unless-stopped
