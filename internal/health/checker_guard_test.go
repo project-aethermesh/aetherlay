@@ -265,7 +265,8 @@ func solanaGetBlockTestServer(t *testing.T, slot int64) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("failed to decode request: %v", err)
+			t.Errorf("failed to decode request: %v", err)
+			return
 		}
 		method, _ := req["method"].(string)
 
@@ -374,7 +375,8 @@ func solanaWSTestServer(t *testing.T, slot int64, healthy bool) *httptest.Server
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			t.Fatalf("failed to upgrade connection: %v", err)
+			t.Errorf("failed to upgrade connection: %v", err)
+			return
 		}
 		defer conn.Close()
 
