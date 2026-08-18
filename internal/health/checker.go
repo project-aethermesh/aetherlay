@@ -26,6 +26,18 @@ import (
 // ErrMethodNotFound indicates that the RPC method is not supported by the endpoint
 var ErrMethodNotFound = errors.New("method not found")
 
+// ErrSlotSkipped indicates a Solana getBlock call failed because the requested slot has
+// no block, not because the endpoint itself is unhealthy. Solana returns this same error
+// code both when a slot was genuinely skipped (a routine, expected occurrence) and when
+// the endpoint has pruned it from long-term storage, so it is deliberately not treated as
+// equivalent to success; see its use in checkHTTPHealth's custom probe re-test.
+var ErrSlotSkipped = errors.New("solana: slot skipped or missing from history")
+
+// solanaSlotSkippedCodes are the JSON-RPC error codes Solana returns for getBlock when
+// the requested slot has no block: -32007 ("skipped, or missing due to ledger jump to
+// recent snapshot") and -32009 ("skipped, or missing in long-term storage").
+var solanaSlotSkippedCodes = map[int]bool{-32007: true, -32009: true}
+
 // JSON-RPC methods used for health checks, keyed by chain type. Block/slot methods are
 // always required; sync/health methods are only called when sync-status checking is
 // enabled and are tolerated as "not found" (see optionalHealthCheckMethods below).
@@ -82,6 +94,17 @@ type RpcResponse struct {
 func checkRPCError(response *RpcResponse, method, protocol, chain, endpointID, url string) error {
 	if response.Error == nil {
 		return nil
+	}
+
+	if method == "getBlock" && solanaSlotSkippedCodes[response.Error.Code] {
+		log.Debug().
+			Str("chain", chain).
+			Str("endpoint", helpers.RedactAPIKey(url)).
+			Str("endpoint_id", endpointID).
+			Int("error_code", response.Error.Code).
+			Str("error_message", response.Error.Message).
+			Msg("getBlock reported the requested slot as skipped or unavailable")
+		return ErrSlotSkipped
 	}
 
 	// Check for "method not found" errors
@@ -914,8 +937,15 @@ func (c *Checker) checkHTTPHealth(ctx context.Context, chain, endpointID string,
 				if build, ok := customProbeBuilderFor(probeState.Method, endpoint.ChainType); ok {
 					method, params := build(blockNumber)
 					if _, callErr := c.makeRPCCallWithParams(ctx, endpoint.HTTPURL, method, params, chain, endpointID, endpoint.Provider); callErr != nil {
-						healthy = false
-						log.Warn().Str("chain", chain).Str("endpoint_id", endpointID).Str("method", method).Err(callErr).Msg("Custom probe re-test failed, endpoint still considered unhealthy for this method")
+						if errors.Is(callErr, ErrSlotSkipped) {
+							// The target slot itself had no block; this says nothing about
+							// whether the endpoint can serve getBlock, so it's left out of the
+							// healthy determination rather than counted as a failure.
+							log.Debug().Str("chain", chain).Str("endpoint_id", endpointID).Str("method", method).Msg("Custom probe target slot skipped, treating as inconclusive rather than a failure")
+						} else {
+							healthy = false
+							log.Warn().Str("chain", chain).Str("endpoint_id", endpointID).Str("method", method).Err(callErr).Msg("Custom probe re-test failed, endpoint still considered unhealthy for this method")
+						}
 					}
 					c.incrementHealthRequestCount(ctx, chain, endpointID)
 				}

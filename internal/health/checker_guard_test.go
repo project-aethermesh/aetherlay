@@ -331,6 +331,49 @@ func TestCheckHTTPHealthCustomProbeSuccessKeepsHealthy(t *testing.T) {
 	}
 }
 
+// TestCheckHTTPHealthCustomProbeSlotSkippedTreatedAsInconclusive verifies that a getBlock
+// re-test failing with a skipped-slot error code (-32007/-32009) does not flip an
+// otherwise-healthy endpoint to unhealthy, since that indicates the target slot has no
+// block rather than that the endpoint can't serve getBlock.
+func TestCheckHTTPHealthCustomProbeSlotSkippedTreatedAsInconclusive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request: %v", err)
+			return
+		}
+		method, _ := req["method"].(string)
+
+		w.Header().Set("Content-Type", "application/json")
+		switch method {
+		case "getSlot":
+			json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": 123456})
+		case "getHealth":
+			json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": "ok"})
+		case "getBlock":
+			json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32009, "message": "Slot 123424 was skipped, or missing in long-term storage"}})
+		default:
+			json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32601, "message": "Method not found"}})
+		}
+	}))
+	defer server.Close()
+
+	valkeyClient := store.NewMockValkeyClient()
+	if err := valkeyClient.SetCustomProbeState(context.Background(), "solana-mainnet", "test-1", store.CustomProbeState{
+		Method: "getBlock",
+		SetAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("failed to seed custom probe state: %v", err)
+	}
+
+	checker := &Checker{valkeyClient: valkeyClient, healthCheckSyncStatus: true}
+	endpoint := config.Endpoint{Provider: "test", ChainType: config.ChainTypeSolana, HTTPURL: server.URL}
+
+	if healthy := checker.checkHTTPHealth(context.Background(), "solana-mainnet", "test-1", endpoint); !healthy {
+		t.Error("expected a skipped-slot custom probe response to be treated as inconclusive, not a failure")
+	}
+}
+
 // TestRunEphemeralCheckProtocolClearsCustomProbeStateOnRecovery verifies that reaching the
 // ephemeral recovery threshold clears any active custom probe state.
 func TestRunEphemeralCheckProtocolClearsCustomProbeStateOnRecovery(t *testing.T) {
