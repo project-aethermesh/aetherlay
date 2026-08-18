@@ -503,6 +503,14 @@ func (r *ValkeyClient) ClearCustomProbeState(ctx context.Context, chain, endpoin
 // server.maybeSetCustomProbeMethod); it is not the lifetime of CustomProbeState itself,
 // which has no expiration (see SetCustomProbeState).
 func (r *ValkeyClient) TryAcquireCustomProbeGate(ctx context.Context, chain, endpoint string, ttl time.Duration) (bool, error) {
+	// Ex() below takes whole seconds; a sub-second ttl would round down to EX 0, which
+	// Valkey rejects as an invalid expire time, when the caller almost certainly meant
+	// "expire quickly" rather than "expire immediately." Reject it here with a clear error
+	// instead of letting that surface as an opaque Valkey command failure.
+	if ttl < time.Second {
+		return false, fmt.Errorf("custom probe gate ttl must be at least 1 second, got %s", ttl)
+	}
+
 	key := customProbeGatePrefix + chain + ":" + endpoint
 	cmd := r.client.B().Set().Key(key).Value("1").Nx().Ex(ttl).Build()
 	result := r.client.Do(ctx, cmd)

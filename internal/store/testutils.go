@@ -183,6 +183,10 @@ func (m *MockValkeyClient) ClearCustomProbeState(_ context.Context, chain, endpo
 // exercise the same lock, so this only "succeeds" for exactly one caller per window, same
 // as SET NX would on a real Valkey server.
 func (m *MockValkeyClient) TryAcquireCustomProbeGate(_ context.Context, chain, endpoint string, ttl time.Duration) (bool, error) {
+	if ttl < time.Second {
+		return false, fmt.Errorf("custom probe gate ttl must be at least 1 second, got %s", ttl)
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := chain + ":" + endpoint

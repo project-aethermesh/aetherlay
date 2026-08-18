@@ -198,6 +198,20 @@ func TestTryAcquireCustomProbeGateIsExclusiveUnderConcurrency(t *testing.T) {
 	}
 }
 
+// TestTryAcquireCustomProbeGateRejectsSubSecondTTL verifies that a ttl below one second is
+// rejected up front, rather than silently rounding down to a zero-second Valkey EX, which
+// the server would reject anyway with a far less clear error.
+func TestTryAcquireCustomProbeGateRejectsSubSecondTTL(t *testing.T) {
+	client := NewMockValkeyClient()
+	acquired, err := client.TryAcquireCustomProbeGate(context.Background(), "solana-devnet", "ep1", 500*time.Millisecond)
+	if err == nil {
+		t.Error("expected an error for a sub-second ttl")
+	}
+	if acquired {
+		t.Error("expected acquired=false alongside the error")
+	}
+}
+
 // TestGetCustomProbeStateForNonExistentEndpoint verifies a nil, error-free result for an
 // endpoint that has never had a custom probe state set.
 func TestGetCustomProbeStateForNonExistentEndpoint(t *testing.T) {
