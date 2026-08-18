@@ -462,10 +462,17 @@ func (c *Checker) checkEndpoint(ctx context.Context, chain, endpointID string, e
 	// here would silently erase those, and racing the read-modify-write cycles above would
 	// let this write revert whichever field the other finished last.
 	c.updateEndpointStatusInValkey(ctx, chain, endpointID, func(status *store.EndpointStatus) {
-		status.LastHTTPHealthCheck = now
-		status.LastWSHealthCheck = now
 		status.HasHTTP = endpoint.HTTPURL != ""
 		status.HasWS = endpoint.WSURL != ""
+		// Only record a check timestamp for a protocol the endpoint actually has; otherwise
+		// an HTTP-only endpoint would end up with a LastWSHealthCheck timestamp despite
+		// checkWSHealth never having run a real probe for it (it returns early instead).
+		if status.HasHTTP {
+			status.LastHTTPHealthCheck = now
+		}
+		if status.HasWS {
+			status.LastWSHealthCheck = now
+		}
 		status.HealthyHTTP = c.resolveHealthTransition(hasPriorCheckHTTP, wasHealthyHTTP, httpHealthy)
 		status.HealthyWS = c.resolveHealthTransition(hasPriorCheckWS, wasHealthyWS, wsHealthy)
 	})
