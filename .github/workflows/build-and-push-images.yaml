@@ -27,6 +27,8 @@ jobs:
       - name: Checkout
         id: checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set outputs
         id: set_outputs
@@ -104,12 +106,6 @@ jobs:
         id: checkout
         uses: actions/checkout@v7
 
-      - name: Set up Go
-        id: setup_go
-        uses: actions/setup-go@v7
-        with:
-          go-version: "1.26"
-
       - name: Log in to GitHub Container Registry
         id: login_ghcr
         uses: docker/login-action@v4
@@ -161,12 +157,6 @@ jobs:
       - name: Checkout code
         id: checkout_lb
         uses: actions/checkout@v7
-
-      - name: Set up Go
-        id: setup_go
-        uses: actions/setup-go@v7
-        with:
-          go-version: "1.26"
 
       - name: Log in to GitHub Container Registry
         id: login_ghcr_lb
