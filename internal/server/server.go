@@ -87,6 +87,12 @@ type Server struct {
 	successThreshold int
 	failureStatesMu  sync.RWMutex
 
+	// customProbeRefreshPeriod gates how often the custom probe method captured for an
+	// endpoint (see maybeSetCustomProbeMethod) can change, so a 100%-down endpoint (every
+	// method failing) can't thrash the target before a full ephemeral recovery check
+	// cycle has a chance to complete.
+	customProbeRefreshPeriod time.Duration
+
 	// Health checker grace period state tracking
 	initialCheckPassed bool
 	hcFailureTimestamp time.Time
@@ -99,21 +105,28 @@ type Server struct {
 	proxyWebSocket         func(w http.ResponseWriter, r *http.Request, backendURL string) error
 }
 
+// customProbeRefreshOverheadSeconds is added on top of ephemeralChecksHealthyThreshold *
+// ephemeralChecksInterval when deriving customProbeRefreshPeriod, so the derived window
+// comfortably covers a full run of consecutive ephemeral recovery checks (e.g. the
+// default 3 * 30s + 10s = 100s) instead of expiring right as the last one lands.
+const customProbeRefreshOverheadSeconds = 10
+
 // NewServer creates a new server instance
 func NewServer(cfg *config.Config, valkeyClient store.ValkeyClientIface, appConfig *helpers.LoadedConfig) *Server {
 	s := &Server{
-		appConfig:              appConfig,
-		config:                 cfg,
-		ephemeralChecksEnabled: appConfig.EphemeralChecksEnabled,
-		failureStates:          make(map[string]*endpointFailureState),
-		failureThreshold:       appConfig.EndpointFailureThreshold,
-		healthCache:            cache.NewHealthCache(time.Duration(appConfig.HealthCacheTTL) * time.Second),
-		maxRetries:             appConfig.ProxyMaxRetries,
-		requestTimeout:         time.Duration(appConfig.ProxyTimeout) * time.Second,
-		requestTimeoutPerTry:   time.Duration(appConfig.ProxyTimeoutPerTry) * time.Second,
-		router:                 mux.NewRouter(),
-		successThreshold:       appConfig.EndpointSuccessThreshold,
-		valkeyClient:           valkeyClient,
+		appConfig:                appConfig,
+		config:                   cfg,
+		customProbeRefreshPeriod: time.Duration(appConfig.EphemeralChecksHealthyThreshold*appConfig.EphemeralChecksInterval+customProbeRefreshOverheadSeconds) * time.Second,
+		ephemeralChecksEnabled:   appConfig.EphemeralChecksEnabled,
+		failureStates:            make(map[string]*endpointFailureState),
+		failureThreshold:         appConfig.EndpointFailureThreshold,
+		healthCache:              cache.NewHealthCache(time.Duration(appConfig.HealthCacheTTL) * time.Second),
+		maxRetries:               appConfig.ProxyMaxRetries,
+		requestTimeout:           time.Duration(appConfig.ProxyTimeout) * time.Second,
+		requestTimeoutPerTry:     time.Duration(appConfig.ProxyTimeoutPerTry) * time.Second,
+		router:                   mux.NewRouter(),
+		successThreshold:         appConfig.EndpointSuccessThreshold,
+		valkeyClient:             valkeyClient,
 	}
 
 	s.forwardRequestWithBody = s.defaultForwardRequestWithBodyFunc
@@ -1182,6 +1195,79 @@ func (s *Server) markEndpointHealthyAttempt(chain, endpointID, protocol string) 
 	s.updateEndpointHealthState(chain, endpointID, protocol, true)
 }
 
+// extractRPCMethod returns the JSON-RPC method name from a single (non-batch) JSON-RPC
+// request body, or "" if the body isn't a single object with a string "method" field.
+func extractRPCMethod(bodyBytes []byte) string {
+	var req struct {
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		return ""
+	}
+	return req.Method
+}
+
+// customProbeValkeyTimeout bounds every Valkey call maybeSetCustomProbeMethod makes. It's
+// invoked from the request-forwarding path on a real 5xx; if Valkey stalls, this must not
+// hold up the caller's retry-another-endpoint or return-a-response decision for longer
+// than a short, fixed bound, regardless of how generous the request's own context is.
+const customProbeValkeyTimeout = 2 * time.Second
+
+// maybeSetCustomProbeMethod records the JSON-RPC method of a request that just failed
+// with a real 5xx, if that method is on the allowlist of methods the health checker
+// knows how to safely re-test on its own (see health.IsCustomProbeMethod). This is
+// deliberately keyed off the method name only, never the client's original request body,
+// so a captured failure can never cause Aetherlay to replay a state-mutating call.
+//
+// Updates are gated by customProbeRefreshPeriod: once a method is recorded, it stays the
+// target until that period elapses or the endpoint's ephemeral recovery threshold is
+// reached (see runEphemeralCheckProtocol clearing it on recovery). Without this gate, an
+// endpoint that's failing on every method would have its target method constantly
+// overwritten by whichever request happened to fail last, before any single method could
+// accumulate enough consecutive successful re-checks to prove it recovered.
+//
+// The gate itself is acquired via TryAcquireCustomProbeGate, a single atomic Valkey SET
+// NX EX, rather than a get-then-compare-then-set from here: two concurrent failed
+// requests could otherwise both observe a missing or expired gate and both write, with
+// the second silently replacing the first's target inside what was supposed to be the
+// debounce window. A process-local lock can't fix this either, since multiple server
+// instances share the same Valkey.
+//
+// This is a no-op when ephemeral checks are disabled: the only path that ever clears a
+// captured custom probe state is runEphemeralCheckProtocol's recovery handling, so
+// without it running, a captured target would stay pinned forever, permanently
+// re-testing a method that may no longer be relevant instead of falling back to the
+// endpoint's default probe.
+func (s *Server) maybeSetCustomProbeMethod(ctx context.Context, chain, endpointID string, bodyBytes []byte) {
+	if !s.ephemeralChecksEnabled {
+		return
+	}
+
+	method := extractRPCMethod(bodyBytes)
+	if method == "" || !health.IsCustomProbeMethod(method, s.chainTypeForEndpoint(chain, endpointID)) {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, customProbeValkeyTimeout)
+	defer cancel()
+
+	acquired, err := s.valkeyClient.TryAcquireCustomProbeGate(ctx, chain, endpointID, s.customProbeRefreshPeriod)
+	if err != nil {
+		log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Msg("Failed to acquire custom probe gate")
+		return
+	}
+	if !acquired {
+		return // another request already captured/refreshed the target within this window
+	}
+
+	if err := s.valkeyClient.SetCustomProbeState(ctx, chain, endpointID, store.CustomProbeState{
+		Method: method,
+		SetAt:  time.Now(),
+	}); err != nil {
+		log.Error().Err(err).Str("chain", chain).Str("endpoint", endpointID).Str("method", method).Msg("Failed to set custom probe method")
+	}
+}
+
 // findChainAndEndpointByURL searches the config for an endpoint matching the given URL (HTTPURL or WSURL) and returns the chain and endpoint ID.
 func (s *Server) findChainAndEndpointByURL(url string) (chain string, endpointID string, found bool) {
 	for chainName, endpoints := range s.config.Endpoints {
@@ -1261,6 +1347,9 @@ func (s *Server) defaultForwardRequestWithBodyFunc(w http.ResponseWriter, ctx co
 			} else {
 				s.markEndpointUnhealthyProtocol(chain, endpointID, "http")
 				log.Debug().Str("url", helpers.RedactAPIKey(targetURL)).Int("status_code", resp.StatusCode).Msg("Endpoint returned non-2xx status, marked unhealthy")
+				if resp.StatusCode >= 500 {
+					s.maybeSetCustomProbeMethod(ctx, chain, endpointID, bodyBytes)
+				}
 			}
 		}
 
@@ -1353,6 +1442,17 @@ func (s *Server) providerForEndpoint(chain, endpointID string) string {
 		return ""
 	}
 	return chainEndpoints[endpointID].Provider
+}
+
+// chainTypeForEndpoint looks up the configured chain type for a chain/endpoint, used to
+// make sure a custom probe method is only ever captured or replayed against the chain
+// type it's actually valid for (see health.IsCustomProbeMethod).
+func (s *Server) chainTypeForEndpoint(chain, endpointID string) string {
+	chainEndpoints, ok := s.config.GetEndpointsForChain(chain)
+	if !ok {
+		return ""
+	}
+	return chainEndpoints[endpointID].ChainType
 }
 
 // capacityWindowSeconds resolves the window width to track usage against for the WRITE

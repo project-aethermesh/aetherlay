@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -51,14 +53,15 @@ func TestUpdateAndGetEndpointStatus(t *testing.T) {
 
 	// Create a test status
 	status := EndpointStatus{
-		LastHealthCheck:  time.Now(),
-		Requests24h:      10,
-		Requests1Month:   100,
-		RequestsLifetime: 1000,
-		HasHTTP:          true,
-		HasWS:            true,
-		HealthyHTTP:      true,
-		HealthyWS:        false,
+		LastHTTPHealthCheck: time.Now(),
+		LastWSHealthCheck:   time.Now(),
+		Requests24h:         10,
+		Requests1Month:      100,
+		RequestsLifetime:    1000,
+		HasHTTP:             true,
+		HasWS:               true,
+		HealthyHTTP:         true,
+		HealthyWS:           false,
 	}
 
 	// Update the status
@@ -130,6 +133,121 @@ func TestGetEndpointStatusForNonExistentEndpoint(t *testing.T) {
 	}
 	if status.RequestsLifetime != 0 {
 		t.Error("Non-existent endpoint should have 0 lifetime requests")
+	}
+}
+
+// TestSetAndGetCustomProbeState verifies that a stored custom probe state round-trips
+// with its method and timestamp intact.
+func TestSetAndGetCustomProbeState(t *testing.T) {
+	client := NewMockValkeyClient()
+	ctx := context.Background()
+	chain := "solana-devnet"
+	endpoint := "ep1"
+
+	setAt := time.Now()
+	err := client.SetCustomProbeState(ctx, chain, endpoint, CustomProbeState{Method: "getBlock", SetAt: setAt})
+	if err != nil {
+		t.Fatalf("SetCustomProbeState failed: %v", err)
+	}
+
+	state, err := client.GetCustomProbeState(ctx, chain, endpoint)
+	if err != nil {
+		t.Fatalf("GetCustomProbeState failed: %v", err)
+	}
+	if state == nil {
+		t.Fatal("expected a non-nil custom probe state")
+	}
+	if state.Method != "getBlock" {
+		t.Errorf("expected method getBlock, got %q", state.Method)
+	}
+	if !state.SetAt.Equal(setAt) {
+		t.Errorf("expected SetAt %v, got %v", setAt, state.SetAt)
+	}
+}
+
+// TestTryAcquireCustomProbeGateIsExclusiveUnderConcurrency is a regression guard for the
+// atomicity that's required here: many concurrent callers racing for the same endpoint's
+// gate must see exactly one winner, never more.
+func TestTryAcquireCustomProbeGateIsExclusiveUnderConcurrency(t *testing.T) {
+	client := NewMockValkeyClient()
+	ctx := context.Background()
+	chain := "solana-devnet"
+	endpoint := "ep1"
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+	var acquiredCount int64
+	wg.Add(goroutines)
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			acquired, err := client.TryAcquireCustomProbeGate(ctx, chain, endpoint, time.Minute)
+			if err != nil {
+				t.Errorf("TryAcquireCustomProbeGate failed: %v", err)
+				return
+			}
+			if acquired {
+				atomic.AddInt64(&acquiredCount, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if acquiredCount != 1 {
+		t.Errorf("expected exactly 1 caller to acquire the gate, got %d", acquiredCount)
+	}
+}
+
+// TestTryAcquireCustomProbeGateRejectsSubSecondTTL verifies that a ttl below one second is
+// rejected up front, rather than silently rounding down to a zero-second Valkey EX, which
+// the server would reject anyway with a far less clear error.
+func TestTryAcquireCustomProbeGateRejectsSubSecondTTL(t *testing.T) {
+	client := NewMockValkeyClient()
+	acquired, err := client.TryAcquireCustomProbeGate(context.Background(), "solana-devnet", "ep1", 500*time.Millisecond)
+	if err == nil {
+		t.Error("expected an error for a sub-second ttl")
+	}
+	if acquired {
+		t.Error("expected acquired=false alongside the error")
+	}
+}
+
+// TestGetCustomProbeStateForNonExistentEndpoint verifies a nil, error-free result for an
+// endpoint that has never had a custom probe state set.
+func TestGetCustomProbeStateForNonExistentEndpoint(t *testing.T) {
+	client := NewMockValkeyClient()
+	ctx := context.Background()
+
+	state, err := client.GetCustomProbeState(ctx, "solana-devnet", "no-such-endpoint")
+	if err != nil {
+		t.Fatalf("GetCustomProbeState failed: %v", err)
+	}
+	if state != nil {
+		t.Errorf("expected a nil custom probe state for an endpoint that was never set, got %+v", state)
+	}
+}
+
+// TestClearCustomProbeState verifies that clearing removes a previously set custom probe
+// state.
+func TestClearCustomProbeState(t *testing.T) {
+	client := NewMockValkeyClient()
+	ctx := context.Background()
+	chain := "solana-devnet"
+	endpoint := "ep1"
+
+	if err := client.SetCustomProbeState(ctx, chain, endpoint, CustomProbeState{Method: "getBlock", SetAt: time.Now()}); err != nil {
+		t.Fatalf("SetCustomProbeState failed: %v", err)
+	}
+	if err := client.ClearCustomProbeState(ctx, chain, endpoint); err != nil {
+		t.Fatalf("ClearCustomProbeState failed: %v", err)
+	}
+
+	state, err := client.GetCustomProbeState(ctx, chain, endpoint)
+	if err != nil {
+		t.Fatalf("GetCustomProbeState failed: %v", err)
+	}
+	if state != nil {
+		t.Errorf("expected custom probe state to be cleared, got %+v", state)
 	}
 }
 

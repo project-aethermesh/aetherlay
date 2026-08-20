@@ -16,7 +16,7 @@ services:
       - "8081:8081"
 
   valkey:
-    image: valkey/valkey:8.1-alpine
+    image: dhi.io/valkey:8.1-dev
     ports:
       - "6379:6379"
       # If you want to enable TLS, uncomment the following line
@@ -38,20 +38,20 @@ services:
       - valkey
 
   prometheus:
-    image: prom/prometheus:latest
+    image: dhi.io/prometheus:3.13
     ports:
       - "9999:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.path=/var/prometheus"
       - "--storage.tsdb.retention.time=24h"
       - "--web.enable-lifecycle"
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:latest
+    image: dhi.io/grafana:13-dev
     ports:
       - "3000:3000"
     environment:

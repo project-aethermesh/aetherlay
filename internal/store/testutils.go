@@ -11,6 +11,8 @@ import (
 // It supports in-memory endpoint status storage and is safe for concurrent use.
 type MockValkeyClient struct {
 	rateLimitStates   map[string]*RateLimitState
+	customProbeStates map[string]*CustomProbeState
+	customProbeGates  map[string]time.Time                      // "chain:endpoint" -> when the gate expires
 	requestCounts     map[string]map[string]map[string][3]int64 // [0]=24h, [1]=1m, [2]=all
 	capacityCounts    map[string]map[int64]int64                // "chain:endpoint" -> bucket -> count
 	capacityEstimates map[string]*CapacityEstimate              // "chain:endpoint" -> learned estimate
@@ -27,6 +29,8 @@ type MockValkeyClient struct {
 func NewMockValkeyClient() *MockValkeyClient {
 	return &MockValkeyClient{
 		rateLimitStates:   make(map[string]*RateLimitState),
+		customProbeStates: make(map[string]*CustomProbeState),
+		customProbeGates:  make(map[string]time.Time),
 		requestCounts:     make(map[string]map[string]map[string][3]int64),
 		capacityCounts:    make(map[string]map[int64]int64),
 		capacityEstimates: make(map[string]*CapacityEstimate),
@@ -36,7 +40,13 @@ func NewMockValkeyClient() *MockValkeyClient {
 	}
 }
 
-// GetEndpointStatus returns the status for a given chain and endpoint.
+// GetEndpointStatus returns the status for a given chain and endpoint. It returns a copy,
+// not the stored pointer, matching the real ValkeyClient (which always hands back a
+// freshly unmarshaled value). Callers that mutate the fields of an EndpointStatus they
+// got from a prior Get (checker.go, server.go's updateEndpointHealthState) always
+// explicitly write it back via UpdateEndpointStatus; if Get returned the live stored
+// pointer instead, that in-place mutation would race with any concurrent reader of the
+// same endpoint's status, such as a test polling health state from another goroutine.
 func (m *MockValkeyClient) GetEndpointStatus(_ context.Context, chain, endpointID string) (*EndpointStatus, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -45,7 +55,8 @@ func (m *MockValkeyClient) GetEndpointStatus(_ context.Context, chain, endpointI
 	if !ok {
 		return &EndpointStatus{}, nil
 	}
-	return status, nil
+	statusCopy := *status
+	return &statusCopy, nil
 }
 
 // UpdateEndpointStatus sets the status for a given chain and endpoint.
@@ -127,6 +138,64 @@ func (m *MockValkeyClient) GetRateLimitState(_ context.Context, chain, endpoint 
 		}, nil
 	}
 	return state, nil
+}
+
+// GetCustomProbeState returns the custom probe state for a given chain and endpoint, if
+// one has been set. A nil result (with a nil error) means no custom probe method is
+// currently active, matching the real ValkeyClient's behavior on a cache miss. It returns
+// a copy, not the stored pointer, for the same reason GetEndpointStatus does: exposing
+// the map-owned pointer after releasing m.mu would let a caller mutate the stored state
+// without synchronization, and would behave differently from the real ValkeyClient, which
+// JSON-decodes a fresh value on every read.
+func (m *MockValkeyClient) GetCustomProbeState(_ context.Context, chain, endpoint string) (*CustomProbeState, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	key := chain + ":" + endpoint
+	state := m.customProbeStates[key]
+	if state == nil {
+		return nil, nil
+	}
+	stateCopy := *state
+	return &stateCopy, nil
+}
+
+// SetCustomProbeState sets the custom probe state for a given chain and endpoint.
+func (m *MockValkeyClient) SetCustomProbeState(_ context.Context, chain, endpoint string, state CustomProbeState) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := chain + ":" + endpoint
+	m.customProbeStates[key] = &state
+	return nil
+}
+
+// ClearCustomProbeState removes the custom probe state for a given chain and endpoint.
+func (m *MockValkeyClient) ClearCustomProbeState(_ context.Context, chain, endpoint string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := chain + ":" + endpoint
+	delete(m.customProbeStates, key)
+	return nil
+}
+
+// TryAcquireCustomProbeGate mirrors the real ValkeyClient's SET NX EX gate: it atomically
+// (under the mock's own lock) checks whether the gate for chain:endpoint is currently
+// held and, if not, claims it for ttl and returns true. Concurrent callers under -race
+// exercise the same lock, so this only "succeeds" for exactly one caller per window, same
+// as SET NX would on a real Valkey server.
+func (m *MockValkeyClient) TryAcquireCustomProbeGate(_ context.Context, chain, endpoint string, ttl time.Duration) (bool, error) {
+	if ttl < time.Second {
+		return false, fmt.Errorf("custom probe gate ttl must be at least 1 second, got %s", ttl)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := chain + ":" + endpoint
+	now := m.NowFunc()
+	if expiresAt, held := m.customProbeGates[key]; held && now.Before(expiresAt) {
+		return false, nil
+	}
+	m.customProbeGates[key] = now.Add(ttl)
+	return true, nil
 }
 
 // CleanupStaleEndpoints is a no-op stub for tests; returns 0 deleted and no error.
